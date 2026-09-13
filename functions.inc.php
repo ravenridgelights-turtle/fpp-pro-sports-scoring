@@ -31,26 +31,74 @@ if(isset($_POST['action']) && !empty($_POST['action'])) {
 }
 
 function getTeams($sport='football', $league='nfl'){
-	if ($sport == 'football' && $league == 'ncaa') {
-		return getNCAATeams();
-	} else {
-		$url = "https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/teams";
-		$options = array(
-		'http' => array(
-			'method'  => 'GET',
-			)
-		);
-		$context = stream_context_create( $options );
-		$result = file_get_contents( $url, false, $context );
-		$result = json_decode($result, true);
-		$teams = $result['sports']['0']['leagues']['0']['teams'];
-		$teamNames["No team"]="";
-		foreach ($teams as $team) {
-			$team = $team['team'];
-			$teamNames[$team['displayName']] = $team['id'];		
-		}	
-		return $teamNames;
-	}
+        if ($sport == 'football' && $league == 'ncaa') {
+                return getNCAATeams();
+        } else {
+                $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/teams";
+
+                $options = array(
+                        'http' => array(
+                                'method'  => 'GET',
+                                'timeout' => 10,
+                                'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
+                        )
+                );
+
+                $context = stream_context_create($options);
+                $result = @file_get_contents($url, false, $context);
+
+                $teamNames = array(
+                        "No team" => ""
+                );
+
+                if ($result === false) {
+                        return $teamNames;
+                }
+
+                $data = json_decode($result, true);
+
+                if (
+                        !is_array($data) ||
+                        !isset($data['sports'][0]['leagues'][0]['teams']) ||
+                        !is_array($data['sports'][0]['leagues'][0]['teams'])
+                ) {
+                        return $teamNames;
+                }
+
+                foreach ($data['sports'][0]['leagues'][0]['teams'] as $teamEntry) {
+                        if (!isset($teamEntry['team'])) {
+                                continue;
+                        }
+
+                        $team = $teamEntry['team'];
+
+                        if (!isset($team['displayName']) || !isset($team['id'])) {
+                                continue;
+                        }
+
+                        $teamNames[$team['displayName']] = $team['id'];
+                }
+
+                return $teamNames;
+        }
+}
+
+    foreach ($data['sports'][0]['leagues'][0]['teams'] as $teamEntry) {
+        if (!isset($teamEntry['team'])) {
+            continue;
+        }
+
+        $team = $teamEntry['team'];
+
+        if (!isset($team['displayName']) || !isset($team['id'])) {
+            continue;
+        }
+
+        $teamNames[$team['displayName']] = $team['id'];
+    }
+
+    return $teamNames;
+}
 }
 
 function getNCAATeams(){
