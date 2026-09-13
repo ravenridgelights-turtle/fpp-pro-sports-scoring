@@ -102,33 +102,57 @@ function getTeams($sport='football', $league='nfl'){
 }
 
 function getNCAATeams(){
-	$url = "https://site.api.espn.com/apis/v2/sports/football/college-football/standings";
-	$options = array(
-  		'http' => array(
-    		'method'  => 'GET',
-    	)
-	);
-	$context = stream_context_create( $options );
-	$result = file_get_contents( $url, false, $context );
-	$result = json_decode($result, true);
-	$teams = array();
-	$conferences = $result['children'];
-	foreach ($conferences as $conference) {
-		if (array_key_exists("children", $conference)) {
-			foreach($conference['children'] as $subConference) {
-				foreach ($subConference['standings']['entries'] as $team) {
-					$teamNames[$team['team']['displayName']] = $team['team']['id'];
-				}
-			}
-		} else {
-			foreach ($conference['standings']['entries'] as $team) {
-				$teamNames[$team['team']['displayName']] = $team['team']['id'];
-			}
-		}	
-	}
-	ksort($teamNames);
-	$teamNames = array('No team' => "") + $teamNames;
-	return $teamNames;
+        $url = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000";
+
+        $options = array(
+                'http' => array(
+                        'method'  => 'GET',
+                        'timeout' => 10,
+                        'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
+                )
+        );
+
+        $context = stream_context_create($options);
+        $result = @file_get_contents($url, false, $context);
+
+        $teamNames = array(
+                "No team" => ""
+        );
+
+        if ($result === false) {
+                return $teamNames;
+        }
+
+        $data = json_decode($result, true);
+
+        if (
+                !is_array($data) ||
+                !isset($data['sports'][0]['leagues'][0]['teams']) ||
+                !is_array($data['sports'][0]['leagues'][0]['teams'])
+        ) {
+                return $teamNames;
+        }
+
+        foreach ($data['sports'][0]['leagues'][0]['teams'] as $teamEntry) {
+                if (!isset($teamEntry['team'])) {
+                        continue;
+                }
+
+                $team = $teamEntry['team'];
+
+                if (!isset($team['displayName']) || !isset($team['id'])) {
+                        continue;
+                }
+
+                $teamNames[$team['displayName']] = $team['id'];
+        }
+
+        ksort($teamNames);
+
+        $noTeam = array("No team" => "");
+        unset($teamNames["No team"]);
+
+        return $noTeam + $teamNames;
 }
 
 function getSequences(){
