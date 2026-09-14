@@ -316,7 +316,7 @@ function getGameStatus($sport, $league, $gameID, $teamID) {
                 'http' => array(
                         'method'  => 'GET',
                         'timeout' => 10,
-                        'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
+                        'header'  => "User-Agent: Mozilla/5.0 (compatible; FPP-Pro-Sports-Scoring/1.0)\r\nAccept: application/json\r\n"
                 )
         );
 
