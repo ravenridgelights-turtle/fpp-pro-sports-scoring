@@ -681,7 +681,7 @@ function updateTeamStatus($reparseSettings=true){
 	
 	}
 
-	return min($nflSleepTime, $ncaaSleepTime, $nhlSleepTime);
+	return min($nflSleepTime, $ncaaSleepTime, $nhlSleepTime, $mlbSleepTime);
 }
 	
 function insertPlaylistImmediate($playlist) {
