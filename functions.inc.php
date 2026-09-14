@@ -173,34 +173,78 @@ function getSequences(){
 }
 
 function getTeamInfo($sport, $league, $team){
-	if ($league == "ncaa") {
-		$league = "college-football";
-	}
-	$url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/teams/{$team}";
-	$options = array(
-  		'http' => array(
-    		'method'  => 'GET',
-    	)
-	);
-	$context = stream_context_create( $options );
-	$result = file_get_contents( $url, false, $context );
-	$result = json_decode($result, true);
+        if ($league == "ncaa") {
+                $league = "college-football";
+        }
 
-	$teamInfo["logo"] = $result['team']['logos'][0]['href'];
-	$teamInfo["abbreviation"] = $result['team']['abbreviation'];
-	$teamInfo["name"] = $result['team']['displayName'];
-	if (isset($result['team']['nextEvent'][0])) {
-		$teamInfo["nextEventID"] = $result['team']['nextEvent'][0]['id'];
-		$teamInfo["nextEventDate"] = $result['team']['nextEvent'][0]['date'];
-		$teamInfo["nextEventStatus"] = $result['team']['nextEvent'][0]['competitions'][0]['status']['type']['state'];
-	} else {
-		$teamInfo["nextEventID"] = '';
-		$teamInfo["nextEventDate"] = 0;
-		$teamInfo["nextEventStatus"] = 'post';
-	}
-	
-	return $teamInfo;
+        $teamInfo = array(
+                "logo" => "",
+                "abbreviation" => "",
+                "name" => "",
+                "nextEventID" => "",
+                "nextEventDate" => 0,
+                "nextEventStatus" => "post"
+        );
 
+        if (empty($team)) {
+                return $teamInfo;
+        }
+
+        $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/teams/{$team}";
+
+        $options = array(
+                'http' => array(
+                        'method'  => 'GET',
+                        'timeout' => 10,
+                        'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
+                )
+        );
+
+        $context = stream_context_create($options);
+        $result = @file_get_contents($url, false, $context);
+
+        if ($result === false) {
+                return $teamInfo;
+        }
+
+        $data = json_decode($result, true);
+
+        if (!is_array($data) || !isset($data['team']) || !is_array($data['team'])) {
+                return $teamInfo;
+        }
+
+        $teamData = $data['team'];
+
+        if (isset($teamData['logos'][0]['href'])) {
+                $teamInfo["logo"] = $teamData['logos'][0]['href'];
+        }
+
+        if (isset($teamData['abbreviation'])) {
+                $teamInfo["abbreviation"] = $teamData['abbreviation'];
+        }
+
+        if (isset($teamData['displayName'])) {
+                $teamInfo["name"] = $teamData['displayName'];
+        }
+
+        if (isset($teamData['nextEvent'][0]) && is_array($teamData['nextEvent'][0])) {
+                $nextEvent = $teamData['nextEvent'][0];
+
+                if (isset($nextEvent['id'])) {
+                        $teamInfo["nextEventID"] = $nextEvent['id'];
+                }
+
+                if (isset($nextEvent['date'])) {
+                        $teamInfo["nextEventDate"] = $nextEvent['date'];
+                }
+
+                if (isset($nextEvent['competitions'][0]['status']['type']['state'])) {
+                        $teamInfo["nextEventStatus"] =
+                                $nextEvent['competitions'][0]['status']['type']['state'];
+                }
+        }
+
+        return $teamInfo;
 }
 
 function updateTeam($sport, $league){
