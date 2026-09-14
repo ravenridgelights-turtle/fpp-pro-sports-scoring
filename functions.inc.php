@@ -296,6 +296,7 @@ function getGameStatus($sport, $league, $gameID, $teamID) {
         }
 
         $gameStatus = array(
+                "valid" => false,
                 "start" => 0,
                 "state" => "pre",
                 "oppoID" => "",
@@ -397,7 +398,7 @@ function getGameStatus($sport, $league, $gameID, $teamID) {
         if (isset($opponent['score'])) {
                 $gameStatus['oppoScore'] = (int)$opponent['score'];
         }
-
+        $gameStatus['valid'] = true;
         return $gameStatus;
 }
 
@@ -581,6 +582,12 @@ function updateTeamStatus($reparseSettings=true){
 
 				//get game status
 				$status = getGameStatus($sport, $league, ${$league . "TeamNextEventID"}, ${$league . "TeamID"});
+
+				if (!$status['valid']) {
+					logEntry("{$league} ESPN game status request failed. Keeping existing game data.");
+					${$league . "SleepTime"} = 30;
+					continue 2;
+				}
 
 				// set opponent ID
 				if (${$league . "OppoID"} != $status['oppoID']) {
