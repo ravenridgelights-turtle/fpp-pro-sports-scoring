@@ -183,7 +183,7 @@ function getTeamInfo($sport, $league, $team){
                 "name" => "",
                 "nextEventID" => "",
                 "nextEventDate" => 0,
-                "nextEventStatus" => "post"
+                "nextEventStatus" => ""
         );
 
         if (empty($team)) {
@@ -265,19 +265,21 @@ function updateTeam($sport, $league){
 		$teamName = $teamInfo['name'];
 		$teamNextEventID = $teamInfo['nextEventID'];
 		$teamNextEventDate = $teamInfo['nextEventDate'];
+        $teamNextEventStatus = $teamInfo['nextEventStatus'];
 	}else{
 		$teamLogo = "";
 		$teamAbbreviation = "";
 		$teamName = "";
 		$teamNextEventID = "";
 		$teamNextEventDate = "";
+        $teamNextEventStatus = "";
 	}
 	WriteSettingToFile("{$league}TeamLogo",$teamLogo,$pluginName);
 	WriteSettingToFile("{$league}TeamAbbreviation",$teamAbbreviation,$pluginName);
 	WriteSettingToFile("{$league}TeamName",$teamName,$pluginName);
 	WriteSettingToFile("{$league}TeamNextEventID",$teamNextEventID,$pluginName);
 	WriteSettingToFile("{$league}Start",$teamNextEventDate,$pluginName);
-	WriteSettingToFile("{$league}GameStatus","",$pluginName);
+	WriteSettingToFile("{$league}GameStatus",$teamNextEventStatus,$pluginName);
 
 	logEntry("{$league} Logo updated " . $teamLogo);
 	logEntry("{$league} Abbreviation updated " . $teamAbbreviation);
