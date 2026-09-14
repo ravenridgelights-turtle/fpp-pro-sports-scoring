@@ -291,45 +291,114 @@ function updateTeam($sport, $league){
 }
 
 function getGameStatus($sport, $league, $gameID, $teamID) {
-	if ($league == "ncaa") {
-		$league = "college-football";
-	}
+        if ($league == "ncaa") {
+                $league = "college-football";
+        }
 
-	$url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/scoreboard/{$gameID}";
-	$options = array(
-	'http' => array(
-		'method'  => 'GET',
-		)
-	);
-	
-	$context = stream_context_create( $options );
-	$game = file_get_contents( $url, false, $context );
-	$game = json_decode($game, true);
+        $gameStatus = array(
+                "start" => 0,
+                "state" => "pre",
+                "oppoID" => "",
+                "oppoAbbreviation" => "",
+                "oppoName" => "",
+                "myScore" => 0,
+                "oppoScore" => 0
+        );
 
-	//get game info
-	$gameStatus['start'] = $game['date'];
-	$gameStatus['state'] = $game['status']['type']['state'];
+        if (empty($gameID) || empty($teamID)) {
+                return $gameStatus;
+        }
 
-	//check opponent ID
-	if ($game['competitions'][0]['competitors'][0]['team']['id'] == $teamID) {
-		$teamIndex = 0;
-		$oppoIndex = 1;
-	} else {
-		$teamIndex = 1;
-		$oppoIndex = 0;
-	}
+        $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/summary?event={$gameID}";
 
-	//get competitor info
-	$gameStatus['oppoID'] = $game['competitions'][0]['competitors'][$oppoIndex]['team']['id'];
-	$gameStatus['oppoAbbreviation'] = $game['competitions'][0]['competitors'][$oppoIndex]['team']['abbreviation'];
-	$gameStatus['oppoName'] = $game['competitions'][0]['competitors'][$oppoIndex]['team']['displayName'];
+        $options = array(
+                'http' => array(
+                        'method'  => 'GET',
+                        'timeout' => 10,
+                        'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
+                )
+        );
 
-	//get score
-	$gameStatus['myScore'] = $game['competitions'][0]['competitors'][$teamIndex]['score'];
-	$gameStatus['oppoScore'] = $game['competitions'][0]['competitors'][$oppoIndex]['score'];
+        $context = stream_context_create($options);
+        $result = @file_get_contents($url, false, $context);
 
-	return $gameStatus;
+        if ($result === false) {
+                return $gameStatus;
+        }
 
+        $data = json_decode($result, true);
+
+        if (!is_array($data)) {
+                return $gameStatus;
+        }
+
+        if (
+                !isset($data['header']['competitions'][0]) ||
+                !is_array($data['header']['competitions'][0])
+        ) {
+                return $gameStatus;
+        }
+
+        $competition = $data['header']['competitions'][0];
+
+        if (isset($competition['date'])) {
+                $gameStatus['start'] = $competition['date'];
+        }
+
+        if (isset($competition['status']['type']['state'])) {
+                $gameStatus['state'] = $competition['status']['type']['state'];
+        }
+
+        if (
+                !isset($competition['competitors']) ||
+                !is_array($competition['competitors'])
+        ) {
+                return $gameStatus;
+        }
+
+        $myTeam = null;
+        $opponent = null;
+
+        foreach ($competition['competitors'] as $competitor) {
+                if (
+                        !isset($competitor['team']['id']) ||
+                        !isset($competitor['team'])
+                ) {
+                        continue;
+                }
+
+                if ((string)$competitor['team']['id'] === (string)$teamID) {
+                        $myTeam = $competitor;
+                } else {
+                        $opponent = $competitor;
+                }
+        }
+
+        if ($myTeam === null || $opponent === null) {
+                return $gameStatus;
+        }
+
+        if (isset($opponent['team']['id'])) {
+                $gameStatus['oppoID'] = $opponent['team']['id'];
+        }
+
+        if (isset($opponent['team']['abbreviation'])) {
+                $gameStatus['oppoAbbreviation'] = $opponent['team']['abbreviation'];
+        }
+
+        if (isset($opponent['team']['displayName'])) {
+                $gameStatus['oppoName'] = $opponent['team']['displayName'];
+        }
+
+        if (isset($myTeam['score'])) {
+                $gameStatus['myScore'] = (int)$myTeam['score'];
+        }
+
+        if (isset($opponent['score'])) {
+                $gameStatus['oppoScore'] = (int)$opponent['score'];
+        }
+
+        return $gameStatus;
 }
 
 function updateTeamStatus($reparseSettings=true){
