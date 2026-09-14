@@ -560,10 +560,13 @@ function updateTeamStatus($reparseSettings=true){
 				}
 				//check for next game
 				$newInfo = getTeamInfo($sport, $league, ${$league . "TeamID"});
-				if ($newInfo['nextEventID'] != ${$league . "TeamNextEventID"}) {
+                                if (
+                                        $newInfo['nextEventID'] != '' &&
+                                        $newInfo['nextEventID'] != ${$league . "TeamNextEventID"}
+                                ) {
 					WriteSettingToFile("{$league}TeamNextEventID",$newInfo['nextEventID'],$pluginName);
 					WriteSettingToFile("{$league}Start",$newInfo['nextEventDate'],$pluginName);
-					WriteSettingToFile("{$league}GameStatus","",$pluginName);
+					WriteSettingToFile("{$league}GameStatus",$newInfo['nextEventStatus'],$pluginName);
 					logEntry("{$league} Next game updated " . $newInfo['nextEventDate']);
 					//clear old scores
 					WriteSettingToFile("{$league}MyScore",0,$pluginName);
