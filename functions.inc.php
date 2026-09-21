@@ -618,22 +618,40 @@ function pss_sendOverlayTickerText($text, $force = false) {
         pss_clearOverlayModel($lastModel);
     }
 
-    // This command signature has been supported by FPP since the older FPP 3.x/4.x command system
-    // and remains the most compatible path for FPP 7/8/9 while also working on current FPP.
+    // FPP 10 exposes scrolling text through "Overlay Model Effect" with the
+    // Text effect.  "Overlay Model Text" is the older command used by FPP 7/8/9.
+    //
+    // FPP 10 Text effect argument order:
+    // Models, Auto Enable/Disable, Effect, Color, Font, FontSize,
+    // Anti-Aliased, Position, Scroll Speed, Duration, Text.
+    //
+    // TickerDirection maps directly to the Text effect Position values
+    // "Right to Left" / "Left to Right".
     $args = array(
         $model,
+        'Enabled',
+        'Text',
         $color,
         $font,
         (string)$fontSize,
         'false',
         $direction,
         (string)$speed,
-        'true',
+        '0',
         $text
     );
-    $response = pss_runFppCommand('Overlay Model Text', $args);
+
+    $response = pss_runFppCommand('Overlay Model Effect', $args);
     if (!$response['ok']) {
-        pss_logEntry("FPP rejected sports ticker text for model {$model} with HTTP {$response['status']}");
+        $body = trim(isset($response['body']) ? (string)$response['body'] : '');
+        if (strlen($body) > 300) {
+            $body = substr($body, 0, 300);
+        }
+        pss_logEntry(
+            "FPP rejected Overlay Model Effect/Text for sports ticker model {$model} "
+            . "with HTTP {$response['status']}"
+            . ($body !== '' ? ": {$body}" : '')
+        );
         return false;
     }
 

@@ -189,7 +189,7 @@ function pss_currentValue($key, $default = '') {
 
                 <hr>
                 <h5>Pixel Overlay Output</h5>
-                <p class="text-muted small">Uses FPP's built-in Overlay Model Text command. The actual output area is the Pixel Overlay Model you select; width and height below are for preview/validation and font-size planning.</p>
+                <p class="text-muted small">Uses FPP 10's built-in Overlay Model Effect → Text command. The actual output area is the Pixel Overlay Model you select; width and height below are for preview/validation and font-size planning.</p>
 
                 <div class="row mb-3 align-items-center">
                     <div class="col-md-4"><strong>Enable Pixel Overlay ticker</strong></div>
