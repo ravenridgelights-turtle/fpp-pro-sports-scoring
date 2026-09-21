@@ -94,6 +94,46 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
     return '<div class="pss-team-logo-fallback" aria-label="' . htmlspecialchars($name, ENT_QUOTES) . '">' . htmlspecialchars($fallback) . '</div>';
 }
 
+function pss_manualTriggerButtonsMarkup($league, $slot, $prefix) {
+    $info = pss_leagueInfo($league);
+    if ($info['sport'] === '') {
+        return '';
+    }
+
+    if ($info['sport'] === 'football') {
+        $buttons = array(
+            array('trigger' => 'touchdown', 'suffix' => 'TouchdownSequence', 'label' => 'Touchdown'),
+            array('trigger' => 'fieldgoal', 'suffix' => 'FieldgoalSequence', 'label' => 'Field Goal'),
+            array('trigger' => 'win', 'suffix' => 'WinSequence', 'label' => 'Win')
+        );
+    } else {
+        $buttons = array(
+            array('trigger' => 'score', 'suffix' => 'ScoreSequence', 'label' => 'Score'),
+            array('trigger' => 'win', 'suffix' => 'WinSequence', 'label' => 'Win')
+        );
+    }
+
+    $html = '<div class="pss-manual-controls" aria-label="Manual celebration controls">';
+    foreach ($buttons as $button) {
+        $sequence = trim(pss_statusValue($prefix . $button['suffix']));
+        $enabled = ($sequence !== '');
+        $title = $enabled
+            ? 'Trigger ' . $button['label'] . ': ' . preg_replace('/\\.fseq$/i', '', basename($sequence))
+            : 'No ' . $button['label'] . ' sequence configured';
+
+        $html .= '<button type="button" class="pss-manual-trigger"'
+            . ' data-pss-manual-trigger="1"'
+            . ' data-league="' . htmlspecialchars($league, ENT_QUOTES) . '"'
+            . ' data-slot="' . (int)$slot . '"'
+            . ' data-trigger="' . htmlspecialchars($button['trigger'], ENT_QUOTES) . '"'
+            . ' title="' . htmlspecialchars($title, ENT_QUOTES) . '"'
+            . ($enabled ? '' : ' disabled')
+            . '>' . htmlspecialchars($button['label']) . '</button>';
+    }
+    $html .= '</div><div class="pss-manual-feedback" data-pss-manual-feedback="1" aria-live="polite"></div>';
+    return $html;
+}
+
 function pss_statusSnapshotData() {
     global $leagues;
 
@@ -251,6 +291,49 @@ if ($pssDataMode) {
     margin-top: 4px;
     font-size: 0.82rem;
     opacity: 0.62;
+}
+.pss-manual-controls {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+.pss-manual-trigger {
+    min-height: 30px;
+    padding: 4px 9px;
+    border: 1px solid rgba(127, 127, 127, 0.42);
+    border-radius: 7px;
+    background: rgba(127, 127, 127, 0.10);
+    color: inherit;
+    font: inherit;
+    font-size: 0.70rem;
+    font-weight: 800;
+    line-height: 1.1;
+    cursor: pointer;
+}
+.pss-manual-trigger:hover:not(:disabled),
+.pss-manual-trigger:focus-visible:not(:disabled) {
+    background: rgba(127, 127, 127, 0.22);
+}
+.pss-manual-trigger:disabled {
+    opacity: 0.34;
+    cursor: not-allowed;
+}
+.pss-manual-trigger.pss-trigger-busy {
+    opacity: 0.60;
+    cursor: wait;
+}
+.pss-manual-feedback {
+    min-height: 1.1em;
+    margin-top: 5px;
+    font-size: 0.66rem;
+    font-weight: 700;
+    line-height: 1.2;
+    opacity: 0.76;
+}
+.pss-manual-feedback.pss-trigger-error {
+    opacity: 1;
 }
 .pss-score-center {
     text-align: center;
@@ -696,6 +779,7 @@ body {
                     <?=pss_teamLogoMarkup($myLogo, $myAbbr, $myName)?>
                     <div class="pss-team-name" data-pss-field="team-name"><?=htmlspecialchars($myName)?></div>
                     <div class="pss-team-abbr" data-pss-field="team-abbr"><?=htmlspecialchars($myAbbr)?></div>
+                    <?=pss_manualTriggerButtonsMarkup($league, $slot, $prefix)?>
                 </div>
             </div>
 
@@ -989,3 +1073,69 @@ function pssKioskFullscreen() {
 <?php else: ?>
 </div>
 <?php endif; ?>
+
+<script>
+(function () {
+    var buttons = document.querySelectorAll('[data-pss-manual-trigger="1"]');
+    if (!buttons.length) return;
+
+    var triggerUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1';
+
+    function setFeedback(button, message, isError) {
+        var panel = button.closest ? button.closest('.pss-team-selected') : null;
+        var feedback = panel ? panel.querySelector('[data-pss-manual-feedback="1"]') : null;
+        if (!feedback) return;
+        feedback.textContent = message || '';
+        if (isError) {
+            feedback.classList.add('pss-trigger-error');
+        } else {
+            feedback.classList.remove('pss-trigger-error');
+        }
+    }
+
+    function finishButton(button, oldText) {
+        button.classList.remove('pss-trigger-busy');
+        button.disabled = false;
+        button.textContent = oldText;
+    }
+
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function () {
+            var button = this;
+            if (button.disabled || button.classList.contains('pss-trigger-busy')) return;
+
+            var oldText = button.textContent;
+            var params = new URLSearchParams();
+            params.append('action', 'manualTrigger');
+            params.append('league', button.getAttribute('data-league') || '');
+            params.append('slot', button.getAttribute('data-slot') || '1');
+            params.append('trigger', button.getAttribute('data-trigger') || '');
+
+            button.disabled = true;
+            button.classList.add('pss-trigger-busy');
+            button.textContent = 'Sending…';
+            setFeedback(button, 'Sending celebration to FPP…', false);
+
+            fetch(triggerUrl, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+                body: params.toString(),
+                cache: 'no-store'
+            })
+            .then(function (response) {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return response.json();
+            })
+            .then(function (data) {
+                setFeedback(button, data && data.message ? data.message : 'Trigger sent.', !(data && data.ok));
+                finishButton(button, oldText);
+            })
+            .catch(function () {
+                setFeedback(button, 'Unable to trigger the playlist. Check the plugin log.', true);
+                finishButton(button, oldText);
+            });
+        });
+    }
+})();
+</script>
+

@@ -63,6 +63,9 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
         case 'saveCelebrationDelay':
             pss_saveCelebrationDelay($_POST);
             break;
+        case 'manualTrigger':
+            pss_manualTrigger($_POST);
+            break;
         case 'saveTickerSettings':
             pss_saveTickerSettings($_POST);
             break;
@@ -737,6 +740,80 @@ function pss_testTickerOutput() {
     pss_jsonResponse($ok, $ok ? 'Test ticker sent to ' . $model . '.' : 'FPP rejected the test ticker. Check the plugin log.');
 }
 
+function pss_manualTrigger($post) {
+    global $pluginSettings;
+
+    // Re-read settings so the button always uses the currently selected team,
+    // sequence, delay and slot.  The client never sends a playlist name.
+    $pluginSettings = pss_loadPluginSettings();
+
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    $trigger = isset($post['trigger']) ? strtolower(trim((string)$post['trigger'])) : '';
+    $info = pss_leagueInfo($league);
+
+    if ($info['sport'] === '') {
+        pss_jsonResponse(false, 'Invalid league.');
+    }
+
+    $map = array();
+    if ($info['sport'] === 'football') {
+        $map = array(
+            'touchdown' => array('suffix' => 'TouchdownSequence', 'label' => 'Touchdown'),
+            'fieldgoal' => array('suffix' => 'FieldgoalSequence', 'label' => 'Field goal'),
+            'win' => array('suffix' => 'WinSequence', 'label' => 'Win')
+        );
+    } else {
+        $map = array(
+            'score' => array('suffix' => 'ScoreSequence', 'label' => 'Score'),
+            'win' => array('suffix' => 'WinSequence', 'label' => 'Win')
+        );
+    }
+
+    if (!isset($map[$trigger])) {
+        pss_jsonResponse(false, 'Invalid manual trigger for this sport.');
+    }
+
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamID = trim(pss_pluginSetting("{$prefix}TeamID", ''));
+    if ($teamID === '') {
+        pss_jsonResponse(false, 'No team is selected for this slot.');
+    }
+
+    $suffix = $map[$trigger]['suffix'];
+    $label = $map[$trigger]['label'];
+    $sequence = trim(pss_pluginSetting("{$prefix}{$suffix}", ''));
+    if ($sequence === '') {
+        pss_jsonResponse(false, "No {$label} sequence is configured for this team.");
+    }
+
+    $teamName = trim(pss_pluginSetting("{$prefix}TeamName", ''));
+    if ($teamName === '') {
+        $teamName = strtoupper($league) . ' team ' . $slot;
+    }
+
+    $delay = pss_teamCelebrationDelay($league, $slot);
+    $playlist = pss_generatedPlaylistName($league, $suffix, $slot);
+    $ok = pss_playConfiguredSequence($league, $suffix, 'Manual ' . strtolower($label), $slot);
+    if (!$ok) {
+        pss_jsonResponse(false, "FPP could not trigger the {$label} playlist. Check the plugin log.");
+    }
+
+    $message = $teamName . ': ' . $label . ' triggered';
+    if ($delay > 0) {
+        $message .= ' (' . $delay . ' sec delay)';
+    }
+
+    pss_jsonResponse(true, $message . '.', array(
+        'playlist' => $playlist,
+        'sequence' => $sequence,
+        'delay' => $delay,
+        'league' => $league,
+        'slot' => $slot,
+        'trigger' => $trigger
+    ));
+}
+
 function pss_teamCelebrationDelay($league, $slot = 1) {
     $prefix = pss_teamPrefix($league, $slot);
     return pss_clampInt(pss_pluginSetting("{$prefix}CelebrationDelay", '0'), 0, 300, 0);
@@ -1407,22 +1484,24 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
 
     if ($sequence === '') {
         pss_logEntry("{$logLabel} {$label} detected but no sequence is selected");
-        return;
+        return false;
     }
 
     $playlist = pss_generatedPlaylistName($league, $suffix, $slot);
     $delaySeconds = pss_teamCelebrationDelay($league, $slot);
     if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $sequence, $delaySeconds)) {
         pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$sequence}");
-        return;
+        return false;
     }
 
     if (pss_insertPlaylistImmediate($playlist)) {
         $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
         pss_logEntry("{$logLabel} {$label} detected; inserted {$sequence}{$delayText} using playlist {$playlist}");
-    } else {
-        pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated playlist {$playlist}");
+        return true;
     }
+
+    pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated playlist {$playlist}");
+    return false;
 }
 
 function pss_updateTeamStatus($reparseSettings = true) {
