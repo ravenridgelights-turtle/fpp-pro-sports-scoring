@@ -3,9 +3,9 @@ $skipJSsettings = true;
 include_once "/opt/fpp/www/common.php";
 include_once __DIR__ . '/functions.inc.php';
 
-function initializePluginDefaults() {
+function pss_initializePluginDefaults() {
     global $leagues, $pluginSettings;
-    $pluginSettings = loadPluginSettings();
+    $pluginSettings = pss_loadPluginSettings();
 
     $defaults = array(
         'ENABLED' => 'OFF',
@@ -38,26 +38,26 @@ function initializePluginDefaults() {
 
     foreach ($defaults as $key => $value) {
         if (!array_key_exists($key, $pluginSettings)) {
-            setPluginSetting($key, $value);
+            pss_setPluginSetting($key, $value);
         }
     }
 }
 
-initializePluginDefaults();
-logEntry('Sports scoring daemon started');
+pss_initializePluginDefaults();
+pss_logEntry('Sports scoring daemon started');
 
 while (true) {
-    $pluginSettings = loadPluginSettings();
-    if (pluginSetting('ENABLED', 'OFF') !== 'ON') {
+    $pluginSettings = pss_loadPluginSettings();
+    if (pss_pluginSetting('ENABLED', 'OFF') !== 'ON') {
         sleep(10);
         continue;
     }
 
     try {
-        $sleepTime = updateTeamStatus(false);
+        $sleepTime = pss_updateTeamStatus(false);
         sleep(max(5, (int)$sleepTime));
     } catch (Throwable $e) {
-        logEntry('Daemon error: ' . $e->getMessage());
+        pss_logEntry('Daemon error: ' . $e->getMessage());
         sleep(30);
     }
 }

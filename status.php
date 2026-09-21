@@ -1,13 +1,13 @@
 <?php
 include_once "/opt/fpp/www/common.php";
 include_once __DIR__ . '/functions.inc.php';
-$pluginSettings = loadPluginSettings();
+$pluginSettings = pss_loadPluginSettings();
 
-function s($key, $default = '') {
+function pss_statusValue($key, $default = '') {
     global $pluginSettings;
     return isset($pluginSettings[$key]) ? urldecode((string)$pluginSettings[$key]) : $default;
 }
-function formatStart($value) {
+function pss_formatStart($value) {
     if ($value === '' || $value === '0') {
         return 'No scheduled event found';
     }
@@ -19,7 +19,7 @@ function formatStart($value) {
         return 'Unknown';
     }
 }
-function stateLabel($state) {
+function pss_stateLabel($state) {
     if ($state === 'pre') return 'Pregame';
     if ($state === 'in') return 'Playing';
     if ($state === 'post') return 'Postgame';
@@ -28,27 +28,27 @@ function stateLabel($state) {
 ?>
 <div class="container-fluid">
     <h2>Pro Sports Scoring Status</h2>
-    <?php if (s('ENABLED', 'OFF') !== 'ON'): ?>
+    <?php if (pss_statusValue('ENABLED', 'OFF') !== 'ON'): ?>
         <div class="alert alert-warning">The plugin is currently disabled.</div>
     <?php endif; ?>
 
     <div class="row">
     <?php foreach ($leagues as $league):
-        $teamID = s($league . 'TeamID');
+        $teamID = pss_statusValue($league . 'TeamID');
         if ($teamID === '') continue;
         $label = ($league === 'ncaa') ? 'NCAA Football' : strtoupper($league);
     ?>
         <div class="col-12 col-lg-6 mb-3">
             <div class="card h-100">
                 <div class="card-body">
-                    <h4 class="card-title"><?=htmlspecialchars($label)?> — <?=htmlspecialchars(s($league . 'TeamName', s($league . 'TeamAbbreviation', 'Selected team')))?></h4>
+                    <h4 class="card-title"><?=htmlspecialchars($label)?> — <?=htmlspecialchars(pss_statusValue($league . 'TeamName', pss_statusValue($league . 'TeamAbbreviation', 'Selected team')))?></h4>
                     <dl class="row mb-0">
-                        <dt class="col-sm-4">Start</dt><dd class="col-sm-8"><?=htmlspecialchars(formatStart(s($league . 'Start')))?></dd>
-                        <dt class="col-sm-4">Opponent</dt><dd class="col-sm-8"><?=htmlspecialchars(s($league . 'OppoName', 'Not loaded yet'))?></dd>
-                        <dt class="col-sm-4">Status</dt><dd class="col-sm-8"><?=htmlspecialchars(stateLabel(s($league . 'GameStatus')))?></dd>
-                        <dt class="col-sm-4"><?=htmlspecialchars(s($league . 'TeamAbbreviation', 'Team'))?> score</dt><dd class="col-sm-8"><?=htmlspecialchars(s($league . 'MyScore', '0'))?></dd>
-                        <dt class="col-sm-4"><?=htmlspecialchars(s($league . 'OppoAbbreviation', 'Opponent'))?> score</dt><dd class="col-sm-8"><?=htmlspecialchars(s($league . 'OppoScore', '0'))?></dd>
-                        <dt class="col-sm-4">ESPN event</dt><dd class="col-sm-8"><code><?=htmlspecialchars(s($league . 'TeamNextEventID', ''))?></code></dd>
+                        <dt class="col-sm-4">Start</dt><dd class="col-sm-8"><?=htmlspecialchars(pss_formatStart(pss_statusValue($league . 'Start')))?></dd>
+                        <dt class="col-sm-4">Opponent</dt><dd class="col-sm-8"><?=htmlspecialchars(pss_statusValue($league . 'OppoName', 'Not loaded yet'))?></dd>
+                        <dt class="col-sm-4">Status</dt><dd class="col-sm-8"><?=htmlspecialchars(pss_stateLabel(pss_statusValue($league . 'GameStatus')))?></dd>
+                        <dt class="col-sm-4"><?=htmlspecialchars(pss_statusValue($league . 'TeamAbbreviation', 'Team'))?> score</dt><dd class="col-sm-8"><?=htmlspecialchars(pss_statusValue($league . 'MyScore', '0'))?></dd>
+                        <dt class="col-sm-4"><?=htmlspecialchars(pss_statusValue($league . 'OppoAbbreviation', 'Opponent'))?> score</dt><dd class="col-sm-8"><?=htmlspecialchars(pss_statusValue($league . 'OppoScore', '0'))?></dd>
+                        <dt class="col-sm-4">ESPN event</dt><dd class="col-sm-8"><code><?=htmlspecialchars(pss_statusValue($league . 'TeamNextEventID', ''))?></code></dd>
                     </dl>
                 </div>
             </div>

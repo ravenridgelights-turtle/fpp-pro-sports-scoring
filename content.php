@@ -2,9 +2,9 @@
 include_once "/opt/fpp/www/common.php";
 include_once __DIR__ . '/functions.inc.php';
 $pluginName = basename(dirname(__FILE__));
-$pluginSettings = loadPluginSettings();
+$pluginSettings = pss_loadPluginSettings();
 
-function currentValue($key, $default = '') {
+function pss_currentValue($key, $default = '') {
     global $pluginSettings;
     return isset($pluginSettings[$key]) ? urldecode((string)$pluginSettings[$key]) : $default;
 }
@@ -28,7 +28,7 @@ function currentValue($key, $default = '') {
     </div>
 
     <?php foreach ($leagues as $league):
-        $meta = leagueInfo($league);
+        $meta = pss_leagueInfo($league);
         $label = ($league === 'ncaa') ? 'NCAA Football' : strtoupper($league);
     ?>
     <div class="card mb-3">
@@ -36,28 +36,28 @@ function currentValue($key, $default = '') {
             <h4 class="card-title"><?=htmlspecialchars($label)?></h4>
             <div class="row mb-3 align-items-center">
                 <div class="col-md-5"><strong>Team</strong><div class="text-muted small">Selecting a team refreshes its current or next game.</div></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'TeamID', $league . 'TeamID', 0, 0, '', getTeams($meta['sport'], $league), $pluginName, 'update' . strtoupper($league) . 'Team', ''); ?></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'TeamID', $league . 'TeamID', 0, 0, '', pss_getTeams($meta['sport'], $league), $pluginName, 'update' . strtoupper($league) . 'Team', ''); ?></div>
             </div>
 
             <?php if ($meta['sport'] === 'football'): ?>
             <div class="row mb-3 align-items-center">
                 <div class="col-md-5"><strong>Touchdown sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'TouchdownSequence', $league . 'TouchdownSequence', 0, 0, '', getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'TouchdownSequence', $league . 'TouchdownSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
             </div>
             <div class="row mb-3 align-items-center">
                 <div class="col-md-5"><strong>Field goal sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'FieldgoalSequence', $league . 'FieldgoalSequence', 0, 0, '', getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'FieldgoalSequence', $league . 'FieldgoalSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
             </div>
             <?php else: ?>
             <div class="row mb-3 align-items-center">
                 <div class="col-md-5"><strong>Score sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'ScoreSequence', $league . 'ScoreSequence', 0, 0, '', getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'ScoreSequence', $league . 'ScoreSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
             </div>
             <?php endif; ?>
 
             <div class="row mb-3 align-items-center">
                 <div class="col-md-5"><strong>Win sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'WinSequence', $league . 'WinSequence', 0, 0, '', getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'WinSequence', $league . 'WinSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
             </div>
         </div>
     </div>
