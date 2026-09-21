@@ -563,14 +563,9 @@ function pss_runFppCommand($command, $args) {
 
 function pss_legacyOverlayTickerPaths() {
     return array(
-        'script' => '/tmp/fpp-pro-sports-scoring-overlay-ticker.pl',
+        'script' => '/tmp/fpp-pro-sports-scoring-overlay-ticker.php',
         'pid' => '/tmp/fpp-pro-sports-scoring-overlay-ticker.pid'
     );
-}
-
-function pss_legacyOverlayTickerAvailable() {
-    return is_file('/opt/fpp/lib/perl/FPP/MemoryMap.pm')
-        && (is_executable('/usr/bin/perl') || is_executable('/usr/local/bin/perl'));
 }
 
 function pss_legacyOverlayTickerProcessMatches($pid) {
@@ -580,7 +575,7 @@ function pss_legacyOverlayTickerProcessMatches($pid) {
     }
     $cmdline = @file_get_contents('/proc/' . $pid . '/cmdline');
     return is_string($cmdline)
-        && strpos($cmdline, 'fpp-pro-sports-scoring-overlay-ticker.pl') !== false;
+        && strpos($cmdline, 'fpp-pro-sports-scoring-overlay-ticker.php') !== false;
 }
 
 function pss_legacyOverlayTickerPid() {
@@ -610,7 +605,6 @@ function pss_stopLegacyOverlayTicker() {
             @exec('kill -TERM ' . (int)$pid . ' >/dev/null 2>&1');
         }
 
-        // Do not leave the old scroller racing the replacement process.
         for ($i = 0; $i < 20 && pss_legacyOverlayTickerProcessMatches($pid); $i++) {
             usleep(25000);
         }
@@ -625,36 +619,222 @@ function pss_stopLegacyOverlayTicker() {
     @unlink($paths['pid']);
 }
 
+function pss_findPhpCli() {
+    $candidates = array();
+    if (defined('PHP_BINARY') && PHP_BINARY !== '') {
+        $candidates[] = PHP_BINARY;
+    }
+    $candidates[] = '/usr/bin/php';
+    $candidates[] = '/usr/local/bin/php';
+    foreach ($candidates as $candidate) {
+        if (is_string($candidate) && $candidate !== '' && is_executable($candidate)) {
+            return $candidate;
+        }
+    }
+    return '';
+}
+
 function pss_writeLegacyOverlayTickerHelper() {
     $paths = pss_legacyOverlayTickerPaths();
-    $script = <<<'PERL'
-#!/usr/bin/perl
-use strict;
-use warnings;
-use lib "/opt/fpp/lib/perl/";
-use FPP::MemoryMap;
+    $script = <<<'PHPHELPER'
+#!/usr/bin/php
+<?php
+// FPP 10 direct shared-memory sports ticker fallback.
+// This intentionally does not depend on FPP::MemoryMap, GD, or ImageMagick.
 
-my ($name, $msg, $color, $size, $dir, $pps) = @ARGV;
-die "Missing Pixel Overlay model\n" unless defined($name) && length($name);
-$msg = 'PRO SPORTS SCORING' unless defined($msg) && length($msg);
-$color = '#FFFFFF' unless defined($color) && length($color);
-$size = int($size || 16);
-$dir = ($dir && $dir eq 'L2R') ? 'L2R' : 'R2L';
-$pps = int($pps || 10);
-$pps = 1 if $pps < 1;
-
-my $fppmm = new FPP::MemoryMap;
-$fppmm->OpenMaps();
-my $blk = $fppmm->GetBlockInfo($name);
-$fppmm->SetBlockColor($blk, 0, 0, 0);
-$fppmm->SetBlockState($blk, 1);
-
-# FPP::MemoryMap::TextMessage scrolls one pass. Repeat so the sports ticker
-# remains on the selected model until PHP replaces or stops this process.
-while (1) {
-    $fppmm->TextMessage($blk, $msg, $color, '#000000', 'fixed', $size, 'scroll', $dir, $pps);
+if (PHP_SAPI !== 'cli') {
+    fwrite(STDERR, "CLI PHP required\n");
+    exit(2);
 }
-PERL;
+
+function fail($msg, $code = 2) {
+    fwrite(STDERR, $msg . "\n");
+    exit($code);
+}
+
+function loadModel($name) {
+    $file = '/home/fpp/media/config/model-overlays.json';
+    $raw = @file_get_contents($file);
+    if ($raw === false) fail("Cannot read {$file}");
+    $json = json_decode($raw, true);
+    if (!is_array($json)) fail("Invalid model-overlays.json");
+    $models = isset($json['models']) && is_array($json['models']) ? $json['models'] : $json;
+    foreach ($models as $m) {
+        if (is_array($m) && isset($m['Name']) && (string)$m['Name'] === $name) return $m;
+    }
+    fail("Pixel Overlay model not found in model-overlays.json: {$name}");
+}
+
+function sharedDataPath($name) {
+    $exact = '/dev/shm/FPP-Model-Data-' . $name;
+    if (is_file($exact)) return $exact;
+    foreach ((array)glob('/dev/shm/FPP-Model-Data-*') as $path) {
+        if (substr($path, strlen('/dev/shm/FPP-Model-Data-')) === $name) return $path;
+    }
+    return '';
+}
+
+function rgbFromHex($hex) {
+    $hex = ltrim(trim((string)$hex), '#');
+    if (strlen($hex) === 3) {
+        $hex = $hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2];
+    }
+    if (!preg_match('/^[0-9a-fA-F]{6}$/', $hex)) $hex = 'FFFFFF';
+    return array(hexdec(substr($hex,0,2)), hexdec(substr($hex,2,2)), hexdec(substr($hex,4,2)));
+}
+
+function fontMap() {
+    // Compact 5x7 bitmap font. Each glyph is seven 5-bit rows.
+    return array(
+        ' '=>array(0,0,0,0,0,0,0),'!'=>array(4,4,4,4,4,0,4),'"'=>array(10,10,10,0,0,0,0),
+        '#'=>array(10,31,10,10,31,10,0),'$'=>array(4,15,20,14,5,30,4),'%'=>array(24,25,2,4,8,19,3),
+        '&'=>array(12,18,20,8,21,18,13),"'"=>array(4,4,8,0,0,0,0),'('=>array(2,4,8,8,8,4,2),')'=>array(8,4,2,2,2,4,8),
+        '*'=>array(0,4,21,14,21,4,0),'+'=>array(0,4,4,31,4,4,0),','=>array(0,0,0,0,4,4,8),'-'=>array(0,0,0,31,0,0,0),
+        '.'=>array(0,0,0,0,0,12,12),'/'=>array(1,2,2,4,8,8,16),
+        '0'=>array(14,17,19,21,25,17,14),'1'=>array(4,12,4,4,4,4,14),'2'=>array(14,17,1,2,4,8,31),
+        '3'=>array(30,1,1,14,1,1,30),'4'=>array(2,6,10,18,31,2,2),'5'=>array(31,16,16,30,1,1,30),
+        '6'=>array(14,16,16,30,17,17,14),'7'=>array(31,1,2,4,8,8,8),'8'=>array(14,17,17,14,17,17,14),
+        '9'=>array(14,17,17,15,1,1,14),':'=>array(0,12,12,0,12,12,0),';'=>array(0,12,12,0,12,4,8),
+        '<'=>array(2,4,8,16,8,4,2),'='=>array(0,31,0,31,0,0,0),'>'=>array(8,4,2,1,2,4,8),'?'=>array(14,17,1,2,4,0,4),
+        '@'=>array(14,17,23,21,23,16,14),
+        'A'=>array(14,17,17,31,17,17,17),'B'=>array(30,17,17,30,17,17,30),'C'=>array(14,17,16,16,16,17,14),
+        'D'=>array(28,18,17,17,17,18,28),'E'=>array(31,16,16,30,16,16,31),'F'=>array(31,16,16,30,16,16,16),
+        'G'=>array(14,17,16,23,17,17,15),'H'=>array(17,17,17,31,17,17,17),'I'=>array(14,4,4,4,4,4,14),
+        'J'=>array(7,2,2,2,2,18,12),'K'=>array(17,18,20,24,20,18,17),'L'=>array(16,16,16,16,16,16,31),
+        'M'=>array(17,27,21,21,17,17,17),'N'=>array(17,25,21,19,17,17,17),'O'=>array(14,17,17,17,17,17,14),
+        'P'=>array(30,17,17,30,16,16,16),'Q'=>array(14,17,17,17,21,18,13),'R'=>array(30,17,17,30,20,18,17),
+        'S'=>array(15,16,16,14,1,1,30),'T'=>array(31,4,4,4,4,4,4),'U'=>array(17,17,17,17,17,17,14),
+        'V'=>array(17,17,17,17,17,10,4),'W'=>array(17,17,17,21,21,21,10),'X'=>array(17,17,10,4,10,17,17),
+        'Y'=>array(17,17,10,4,4,4,4),'Z'=>array(31,1,2,4,8,16,31),'['=>array(14,8,8,8,8,8,14),
+        '\\'=>array(16,8,8,4,2,2,1),']'=>array(14,2,2,2,2,2,14),'^'=>array(4,10,17,0,0,0,0),'_'=>array(0,0,0,0,0,0,31),
+        '|'=>array(4,4,4,4,4,4,4)
+    );
+}
+
+function logicalToPhysicalMap($m, $w, $h, $cpp) {
+    $orientation = strtolower(isset($m['Orientation']) ? (string)$m['Orientation'] : 'vertical');
+    $corner = strtoupper(isset($m['StartCorner']) ? (string)$m['StartCorner'] : 'TL');
+    $map = array_fill(0, $w * $h, 0);
+
+    if ($orientation === 'horizontal') {
+        $startTop = strpos($corner, 'T') !== false;
+        $startLeft = strpos($corner, 'L') !== false;
+        for ($y = 0; $y < $h; $y++) {
+            $strand = $startTop ? $y : ($h - 1 - $y);
+            $forward = (($strand % 2) === 0) ? $startLeft : !$startLeft;
+            for ($x = 0; $x < $w; $x++) {
+                $within = $forward ? $x : ($w - 1 - $x);
+                $map[$y * $w + $x] = ($strand * $w + $within) * $cpp;
+            }
+        }
+    } else {
+        $startLeft = strpos($corner, 'L') !== false;
+        $startTop = strpos($corner, 'T') !== false;
+        for ($x = 0; $x < $w; $x++) {
+            $strand = $startLeft ? $x : ($w - 1 - $x);
+            $forward = (($strand % 2) === 0) ? $startTop : !$startTop;
+            for ($y = 0; $y < $h; $y++) {
+                $within = $forward ? $y : ($h - 1 - $y);
+                $map[$y * $w + $x] = ($strand * $h + $within) * $cpp;
+            }
+        }
+    }
+    return $map;
+}
+
+$name = isset($argv[1]) ? (string)$argv[1] : '';
+$msg = isset($argv[2]) ? (string)$argv[2] : 'PRO SPORTS SCORING';
+$color = isset($argv[3]) ? (string)$argv[3] : '#FFFFFF';
+$fontSize = isset($argv[4]) ? max(4, min(100, (int)$argv[4])) : 16;
+$direction = isset($argv[5]) && $argv[5] === 'L2R' ? 'L2R' : 'R2L';
+$speed = isset($argv[6]) ? max(1, min(200, (int)$argv[6])) : 10;
+if ($name === '') fail('Missing Pixel Overlay model');
+
+$m = loadModel($name);
+$cpp = max(3, isset($m['ChannelCountPerNode']) ? (int)$m['ChannelCountPerNode'] : 3);
+$channels = isset($m['ChannelCount']) ? (int)$m['ChannelCount'] : 0;
+$nodes = $channels > 0 ? intdiv($channels, $cpp) : 0;
+$strands = max(1, (int)(isset($m['StringCount']) ? $m['StringCount'] : 1) * (int)(isset($m['StrandsPerString']) ? $m['StrandsPerString'] : 1));
+$orientation = strtolower(isset($m['Orientation']) ? (string)$m['Orientation'] : 'vertical');
+if ($nodes <= 0 || $strands <= 0 || ($nodes % $strands) !== 0) fail('Unsupported Pixel Overlay matrix dimensions');
+if ($orientation === 'horizontal') {
+    $h = $strands;
+    $w = intdiv($nodes, $strands);
+} else {
+    $w = $strands;
+    $h = intdiv($nodes, $strands);
+}
+if ($w <= 0 || $h <= 0) fail('Invalid Pixel Overlay dimensions');
+
+$path = '';
+for ($i = 0; $i < 30; $i++) {
+    $path = sharedDataPath($name);
+    if ($path !== '') break;
+    usleep(100000);
+}
+if ($path === '') fail('FPP shared model buffer not found for ' . $name);
+$fh = @fopen($path, 'r+b');
+if (!$fh) fail('Cannot open FPP shared model buffer: ' . $path);
+
+$map = logicalToPhysicalMap($m, $w, $h, $cpp);
+$font = fontMap();
+$msg = strtoupper($msg);
+$scale = max(1, min(4, (int)round($fontSize / 7)));
+$glyphW = 5 * $scale;
+$cellW = 6 * $scale;
+$textW = max(1, strlen($msg) * $cellW);
+$textH = 7 * $scale;
+$y0 = max(0, intdiv($h - $textH, 2));
+list($red,$green,$blue) = rgbFromHex($color);
+$frameLen = $nodes * $cpp;
+$fps = 20.0;
+$step = $speed / $fps;
+if ($step < 0.25) $step = 0.25;
+$pos = ($direction === 'R2L') ? (float)$w : (float)(-$textW);
+$frameDelay = (int)round(1000000.0 / $fps);
+
+while (true) {
+    $frame = str_repeat("\0", $frameLen);
+    $left = (int)floor($pos);
+    for ($x = 0; $x < $w; $x++) {
+        $tx = $x - $left;
+        if ($tx < 0 || $tx >= $textW) continue;
+        $charIndex = intdiv($tx, $cellW);
+        $charX = $tx % $cellW;
+        if ($charX >= $glyphW || $charIndex < 0 || $charIndex >= strlen($msg)) continue;
+        $ch = $msg[$charIndex];
+        $rows = isset($font[$ch]) ? $font[$ch] : $font['?'];
+        $glyphX = intdiv($charX, $scale);
+        $mask = 1 << (4 - $glyphX);
+        for ($gy = 0; $gy < 7; $gy++) {
+            if (($rows[$gy] & $mask) === 0) continue;
+            for ($sy = 0; $sy < $scale; $sy++) {
+                $y = $y0 + $gy * $scale + $sy;
+                if ($y < 0 || $y >= $h) continue;
+                $off = $map[$y * $w + $x];
+                if ($off + 2 >= $frameLen) continue;
+                $frame[$off] = chr($red);
+                $frame[$off + 1] = chr($green);
+                $frame[$off + 2] = chr($blue);
+            }
+        }
+    }
+
+    @fseek($fh, 0);
+    $written = @fwrite($fh, $frame);
+    @fflush($fh);
+    if ($written === false || $written <= 0) fail('Lost write access to FPP shared model buffer');
+
+    if ($direction === 'R2L') {
+        $pos -= $step;
+        if ($pos < -$textW - $w) $pos = (float)$w;
+    } else {
+        $pos += $step;
+        if ($pos > $w + $textW) $pos = (float)(-$textW);
+    }
+    usleep($frameDelay);
+}
+PHPHELPER;
 
     $tmp = $paths['script'] . '.tmp.' . getmypid();
     if (@file_put_contents($tmp, $script) === false) {
@@ -671,29 +851,39 @@ PERL;
 function pss_startLegacyOverlayTicker($model, $text, $color, $fontSize, $direction, $speed) {
     global $logFile;
 
-    if (!pss_legacyOverlayTickerAvailable()) {
-        pss_logEntry('FPP MemoryMap ticker fallback is unavailable: /opt/fpp/lib/perl/FPP/MemoryMap.pm or perl is missing');
+    if (!function_exists('exec')) {
+        pss_logEntry('FPP shared-memory ticker fallback is unavailable because PHP exec() is disabled');
         return false;
     }
-    if (!function_exists('exec')) {
-        pss_logEntry('FPP MemoryMap ticker fallback is unavailable because PHP exec() is disabled');
+    $php = pss_findPhpCli();
+    if ($php === '') {
+        pss_logEntry('FPP shared-memory ticker fallback is unavailable because PHP CLI was not found');
         return false;
     }
 
     pss_stopLegacyOverlayTicker();
+
+    // The direct model-data buffer only drives output while the model is enabled.
+    $stateResponse = pss_runFppCommand('Overlay Model State', array($model, 'Enabled', '0', '100'));
+    if (!is_array($stateResponse) || !$stateResponse['ok']) {
+        $status = is_array($stateResponse) && isset($stateResponse['status']) ? $stateResponse['status'] : 0;
+        pss_logEntry("Could not enable Pixel Overlay model {$model} for shared-memory ticker fallback (HTTP {$status})");
+        return false;
+    }
+
     if (!pss_writeLegacyOverlayTickerHelper()) {
-        pss_logEntry('Could not write the FPP MemoryMap ticker helper under /tmp');
+        pss_logEntry('Could not write the FPP shared-memory ticker helper under /tmp');
         return false;
     }
 
     $paths = pss_legacyOverlayTickerPaths();
-    $perl = is_executable('/usr/bin/perl') ? '/usr/bin/perl' : '/usr/local/bin/perl';
     $legacyDirection = ($direction === 'Left to Right') ? 'L2R' : 'R2L';
     $legacySpeed = max(1, min(200, (int)$speed));
     $legacySize = max(4, min(100, (int)$fontSize));
-    $helperLog = (isset($logFile) && trim((string)$logFile) !== '') ? (string)$logFile : '/tmp/fpp-pro-sports-scoring-overlay-ticker.log';
+    $helperLog = '/tmp/fpp-pro-sports-scoring-overlay-ticker-helper.log';
+    @file_put_contents($helperLog, '');
 
-    $cmd = escapeshellarg($perl)
+    $cmd = escapeshellarg($php)
         . ' ' . escapeshellarg($paths['script'])
         . ' ' . escapeshellarg((string)$model)
         . ' ' . escapeshellarg((string)$text)
@@ -708,19 +898,21 @@ function pss_startLegacyOverlayTicker($model, $text, $color, $fontSize, $directi
     @exec($cmd, $output, $rc);
     $pid = !empty($output) ? (int)trim((string)end($output)) : 0;
     if ($rc !== 0 || $pid <= 1) {
-        pss_logEntry("Could not launch FPP MemoryMap ticker fallback for {$model}");
+        pss_logEntry("Could not launch FPP shared-memory ticker fallback for {$model}");
         return false;
     }
 
     @file_put_contents($paths['pid'], (string)$pid);
-    usleep(150000);
+    usleep(250000);
     if (!pss_legacyOverlayTickerProcessMatches($pid)) {
         @unlink($paths['pid']);
-        pss_logEntry("FPP MemoryMap ticker fallback exited immediately for {$model}; check {$helperLog}");
+        $detail = trim((string)@file_get_contents($helperLog));
+        if (strlen($detail) > 500) $detail = substr($detail, -500);
+        pss_logEntry("FPP shared-memory ticker fallback exited immediately for {$model}" . ($detail !== '' ? ": {$detail}" : ''));
         return false;
     }
 
-    pss_logEntry("Using FPP MemoryMap ticker fallback for {$model} (pid {$pid})");
+    pss_logEntry("Using FPP shared-memory ticker fallback for {$model} (pid {$pid})");
     return true;
 }
 
@@ -730,7 +922,7 @@ function pss_clearOverlayModel($model) {
         return false;
     }
 
-    // A MemoryMap fallback process writes continuously, so stop it before
+    // A direct shared-memory fallback process writes continuously, so stop it before
     // clearing/disabling the model or it would immediately paint the text back.
     pss_stopLegacyOverlayTicker();
 
@@ -832,7 +1024,7 @@ function pss_sendOverlayTickerText($text, $force = false) {
     static $lastSignature = '';
     static $lastModel = '';
     static $lastDelivery = '';
-    static $preferMemoryMap = false;
+    static $preferMemoryMap = false; // retained name: now means prefer direct shared-memory fallback
 
     if (pss_pluginSetting('TickerEnabled', 'OFF') !== 'ON' || pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
         if ($lastModel !== '' || pss_legacyOverlayTickerIsRunning()) {
@@ -896,7 +1088,7 @@ function pss_sendOverlayTickerText($text, $force = false) {
     // FPP 10.1.2 on the affected player accepts this command but returns HTTP
     // 500 "Could not start effect: Text" inside the overlay-effect engine. Once
     // that has happened in this daemon, skip repeating the known-bad call and
-    // use FPP's MemoryMap text engine directly for later ticker refreshes.
+    // use the direct FPP shared-model buffer fallback for later ticker refreshes.
     $response = null;
     if (!$preferMemoryMap) {
         pss_stopLegacyOverlayTicker();
@@ -923,7 +1115,7 @@ function pss_sendOverlayTickerText($text, $force = false) {
                 "FPP 10 Overlay Model Effect rejected sports ticker for {$model}"
                 . " HTTP {$response['status']}"
                 . ($detail !== '' ? " response={$detail}" : '')
-                . " font={$font}; switching to MemoryMap ticker fallback"
+                . " font={$font}; switching to shared-memory ticker fallback"
             );
         }
 
@@ -933,7 +1125,7 @@ function pss_sendOverlayTickerText($text, $force = false) {
         }
 
         $preferMemoryMap = true;
-        $lastDelivery = 'memorymap';
+        $lastDelivery = 'memorymap'; // internal compatibility label; delivery is direct shared memory
     } else {
         $lastDelivery = 'modern';
     }
