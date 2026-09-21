@@ -72,27 +72,72 @@ function pss_leagueInfo($league) {
 }
 
 function pss_httpJson($url, $method = 'GET', $body = null) {
-    $headers = "User-Agent: Mozilla/5.0 (compatible; FPP-Pro-Sports-Scoring/2.0)\r\nAccept: application/json\r\n";
-    $options = array(
-        'http' => array(
-            'method' => $method,
-            'timeout' => 10,
-            'ignore_errors' => true,
-            'header' => $headers
-        )
+    $headers = array(
+        'Accept: application/json',
+        'User-Agent: Mozilla/5.0 (compatible; FPP-Pro-Sports-Scoring/2.0)'
     );
-    if ($body !== null) {
-        $options['http']['header'] .= "Content-Type: application/json\r\n";
-        $options['http']['content'] = json_encode($body);
+
+    if (function_exists('curl_init')) {
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+
+        if ($body !== null) {
+            $payload = json_encode($body);
+            $headers[] = 'Content-Type: application/json';
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+        }
+
+        $result = curl_exec($ch);
+        $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+
+        if ($result === false || $result === '') {
+            pss_logEntry("HTTP request failed for {$url}: {$curlError}");
+            return null;
+        }
+
+        if ($httpCode < 200 || $httpCode >= 300) {
+            pss_logEntry("HTTP {$httpCode} returned for {$url}");
+            return null;
+        }
+    } else {
+        $headerText = implode("\r\n", $headers) . "\r\n";
+        $options = array(
+            'http' => array(
+                'method' => $method,
+                'timeout' => 10,
+                'ignore_errors' => true,
+                'header' => $headerText
+            )
+        );
+
+        if ($body !== null) {
+            $options['http']['header'] .= "Content-Type: application/json\r\n";
+            $options['http']['content'] = json_encode($body);
+        }
+
+        $context = stream_context_create($options);
+        $result = @file_get_contents($url, false, $context);
+        if ($result === false || $result === '') {
+            pss_logEntry("HTTP request failed for {$url} using PHP stream fallback");
+            return null;
+        }
     }
 
-    $context = stream_context_create($options);
-    $result = @file_get_contents($url, false, $context);
-    if ($result === false || $result === '') {
+    $data = json_decode($result, true);
+    if (!is_array($data)) {
+        pss_logEntry("Invalid JSON returned for {$url}: " . json_last_error_msg());
         return null;
     }
-    $data = json_decode($result, true);
-    return is_array($data) ? $data : null;
+
+    return $data;
 }
 
 function pss_getTeams($sport = 'football', $league = 'nfl') {
