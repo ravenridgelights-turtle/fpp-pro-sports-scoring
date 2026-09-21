@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -u
 : "${FPPDIR:=/opt/fpp}"
 . "${FPPDIR}/scripts/common"

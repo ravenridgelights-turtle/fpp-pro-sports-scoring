@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -u
 PLUGIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 PID_FILE="${PLUGIN_DIR}/sports-scoring.pid"

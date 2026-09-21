@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -u
 : "${FPPDIR:=/opt/fpp}"
 PLUGIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
