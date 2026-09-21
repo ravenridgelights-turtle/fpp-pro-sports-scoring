@@ -524,6 +524,8 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
         'oppoID' => '',
         'oppoAbbreviation' => '',
         'oppoName' => '',
+        'oppoLogo' => '',
+        'detail' => '',
         'myScore' => 0,
         'oppoScore' => 0,
         'scoringPlays' => array()
@@ -565,6 +567,14 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
     $status['oppoID'] = isset($opponent['team']['id']) ? (string)$opponent['team']['id'] : '';
     $status['oppoAbbreviation'] = isset($opponent['team']['abbreviation']) ? (string)$opponent['team']['abbreviation'] : '';
     $status['oppoName'] = isset($opponent['team']['displayName']) ? (string)$opponent['team']['displayName'] : '';
+    $status['oppoLogo'] = isset($opponent['team']['logos'][0]['href']) ? (string)$opponent['team']['logos'][0]['href'] : '';
+    if (isset($competition['status']['type']['shortDetail'])) {
+        $status['detail'] = (string)$competition['status']['type']['shortDetail'];
+    } elseif (isset($competition['status']['type']['detail'])) {
+        $status['detail'] = (string)$competition['status']['type']['detail'];
+    } elseif (isset($competition['status']['displayClock'])) {
+        $status['detail'] = (string)$competition['status']['displayClock'];
+    }
     $status['myScore'] = isset($myTeam['score']) ? (int)$myTeam['score'] : 0;
     $status['oppoScore'] = isset($opponent['score']) ? (int)$opponent['score'] : 0;
     $status['scoringPlays'] = isset($data['scoringPlays']) && is_array($data['scoringPlays']) ? $data['scoringPlays'] : array();
@@ -611,6 +621,8 @@ function pss_updateTeam($sport, $league) {
     pss_setPluginSetting("{$league}OppoID", '');
     pss_setPluginSetting("{$league}OppoName", '');
     pss_setPluginSetting("{$league}OppoAbbreviation", '');
+    pss_setPluginSetting("{$league}OppoLogo", '');
+    pss_setPluginSetting("{$league}GameDetail", '');
     pss_setPluginSetting("{$league}MyScore", '0');
     pss_setPluginSetting("{$league}OppoScore", '0');
     pss_setPluginSetting("{$league}LastScoringPlayID", '');
@@ -635,7 +647,8 @@ function pss_clearLeagueState($league, $clearTeam = false) {
     $keys = array(
         'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamNextEventID' => '',
         'Start' => '', 'GameStatus' => '', 'OppoID' => '', 'OppoName' => '', 'OppoAbbreviation' => '',
-        'MyScore' => '0', 'OppoScore' => '0', 'LastScoringPlayID' => '', 'LastCelebratedScore' => '0',
+        'OppoLogo' => '', 'GameDetail' => '', 'MyScore' => '0', 'OppoScore' => '0',
+        'LastScoringPlayID' => '', 'LastCelebratedScore' => '0',
         'LastCompletedEventID' => ''
     );
     if ($clearTeam) {
@@ -651,6 +664,8 @@ function pss_applyGameSnapshot($league, $status, $updateStatus = true) {
     pss_setPluginSetting("{$league}OppoID", $status['oppoID']);
     pss_setPluginSetting("{$league}OppoName", $status['oppoName']);
     pss_setPluginSetting("{$league}OppoAbbreviation", $status['oppoAbbreviation']);
+    pss_setPluginSetting("{$league}OppoLogo", isset($status['oppoLogo']) ? $status['oppoLogo'] : '');
+    pss_setPluginSetting("{$league}GameDetail", isset($status['detail']) ? $status['detail'] : '');
     pss_setPluginSetting("{$league}MyScore", (string)$status['myScore']);
     pss_setPluginSetting("{$league}OppoScore", (string)$status['oppoScore']);
     if ($updateStatus) {
