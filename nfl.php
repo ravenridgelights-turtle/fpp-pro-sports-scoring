@@ -10,7 +10,6 @@ function pss_initializePluginDefaults() {
     $defaults = array(
         'ENABLED' => 'OFF',
         'logLevel' => '4',
-        'HighlightQuality' => 'low',
         'TickerEnabled' => 'OFF',
         'TickerKioskEnabled' => 'ON',
         'TickerStyle' => 'normal',
@@ -75,46 +74,8 @@ function pss_initializePluginDefaults() {
     }
 }
 
-
-function pss_launchHighlightDownloader() {
-    $worker = __DIR__ . '/highlight-downloader.php';
-    if (!is_file($worker)) {
-        return;
-    }
-
-    // The downloader has its own flock, so calling this regularly is safe.
-    // The short stamp prevents needless process creation while still letting
-    // new ESPN clips get noticed quickly during long score-poll sleeps.
-    $stamp = '/tmp/fpp-nfl-highlight-downloader-launch.stamp';
-    $now = time();
-    $last = is_file($stamp) ? (int)@filemtime($stamp) : 0;
-    if ($last > 0 && ($now - $last) < 20) {
-        return;
-    }
-    @touch($stamp);
-
-    $php = is_file('/usr/bin/php') ? '/usr/bin/php' : 'php';
-    $nice = is_executable('/usr/bin/nice') ? '/usr/bin/nice -n 15 ' : '';
-    $ionice = is_executable('/usr/bin/ionice') ? '/usr/bin/ionice -c3 ' : '';
-
-    $command = $nice . $ionice . escapeshellcmd($php) . ' '
-        . escapeshellarg($worker) . ' >/dev/null 2>&1 &';
-    @exec($command);
-}
-
-function pss_sleepWithHighlightDownloader($seconds) {
-    $remaining = max(1, (int)$seconds);
-    while ($remaining > 0) {
-        pss_launchHighlightDownloader();
-        $chunk = min(20, $remaining);
-        sleep($chunk);
-        $remaining -= $chunk;
-    }
-}
-
 pss_initializePluginDefaults();
 pss_logEntry('Sports scoring daemon started');
-pss_launchHighlightDownloader();
 
 while (true) {
     $pluginSettings = pss_loadPluginSettings();
@@ -126,7 +87,7 @@ while (true) {
     try {
         $sleepTime = pss_updateTeamStatus(false);
         pss_updateTickerOutput(false);
-        pss_sleepWithHighlightDownloader(max(5, (int)$sleepTime));
+        sleep(max(5, (int)$sleepTime));
     } catch (Throwable $e) {
         pss_logEntry('Daemon error: ' . $e->getMessage());
         sleep(30);

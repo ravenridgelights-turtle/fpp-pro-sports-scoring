@@ -118,58 +118,6 @@ function pss_currentValue($key, $default = '') {
                 <div class="col-md-5"><strong>Log level</strong><div class="text-muted small">Info logs scoring actions. Debug also logs ESPN polling.</div></div>
                 <div class="col-md-7"><?php PrintSettingSelect('logLevel', 'logLevel', 0, 0, '4', array('Info' => '4', 'Debug' => '5'), $pluginName, '', ''); ?></div>
             </div>
-
-            <div class="row mb-3 align-items-center">
-                <div class="col-md-5">
-                    <strong>Highlight video quality</strong>
-                    <div class="text-muted small">Chooses a smaller ESPN-provided rendition when one exists. No transcoding is done on FPP.</div>
-                </div>
-                <div class="col-md-7">
-                    <?php PrintSettingSelect(
-                        'HighlightQuality',
-                        'HighlightQuality',
-                        0,
-                        0,
-                        'low',
-                        array(
-                            'Data Saver — prefer mobile / low resolution' => 'low',
-                            'Balanced — prefer standard resolution' => 'medium',
-                            'Best Available — prefer HD' => 'best'
-                        ),
-                        $pluginName,
-                        '',
-                        ''
-                    ); ?>
-                    <div class="text-muted small mt-1">If ESPN exposes only one MP4 for a clip, all three choices will use that same file.</div>
-                </div>
-            </div>
-
-            <div class="row mb-3 align-items-center">
-                <div class="col-md-5">
-                    <strong>Highlight storage</strong>
-                    <div class="text-muted small">Highlights are downloaded one at a time into FPP's Video files and played locally.</div>
-                </div>
-                <div class="col-md-7 text-muted small">
-                    The plugin keeps only clips still present in the current ESPN highlight lists. Files use the <code>PSSHL_</code> prefix and are removed automatically when a clip falls off the list, the event changes, or the selected quality changes.
-                </div>
-            </div>
-                <div class="col-md-7">
-                    <?php PrintSettingSelect(
-                        'HighlightBufferConcurrency',
-                        'HighlightBufferConcurrency',
-                        0,
-                        0,
-                        '1',
-                        array(
-                            '1 — safest for Pi Zero / Wi-Fi' => '1',
-                            '2 — faster on stronger hardware' => '2'
-                        ),
-                        $pluginName,
-                        '',
-                        ''
-                    ); ?>
-                </div>
-            </div>
         </div>
     </div>
 
