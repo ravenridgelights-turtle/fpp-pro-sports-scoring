@@ -532,7 +532,10 @@ function pss_highlightCachedFilePath($league, $slot, $eventID, $clipID) {
 }
 
 function pss_highlightCacheRequestPath() {
-    return pss_highlightCacheDir() . '/priority-request.json';
+    // The web UI may run as a different user than the root-owned sports daemon.
+    // Keep the tiny queue-control file in /tmp so both sides can safely access it.
+    // Video files themselves remain in the normal FPP media cache directory.
+    return '/tmp/fpp-nfl-highlight-priority-request.json';
 }
 
 function pss_highlightCachePartPath($league, $slot, $eventID, $clipID) {
@@ -596,11 +599,8 @@ function pss_requestHighlightCache($league, $slot, $clipID) {
         return array('ok' => false, 'message' => 'This highlight has no cacheable MP4 source.');
     }
 
-    $dir = pss_highlightCacheDir();
-    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-        return array('ok' => false, 'message' => 'Unable to create highlight cache directory.');
-    }
-
+    // Do not create/chown the video cache from the web request. The background
+    // worker owns that directory and will create it with the daemon's permissions.
     $target = pss_highlightCachedFilePath($league, $slot, $eventID, $clipID);
     if ($target !== '' && is_file($target) && filesize($target) > 1024) {
         @touch($target);
@@ -617,14 +617,37 @@ function pss_requestHighlightCache($league, $slot, $clipID) {
         'requestedAt' => time()
     );
     $path = pss_highlightCacheRequestPath();
-    $tmp = $path . '.tmp';
-    if (@file_put_contents($tmp, json_encode($request), LOCK_EX) === false || !@rename($tmp, $path)) {
+    $tmp = $path . '.' . getmypid() . '.tmp';
+    $payload = json_encode($request);
+
+    if ($payload === false || @file_put_contents($tmp, $payload, LOCK_EX) === false) {
         @unlink($tmp);
-        return array('ok' => false, 'message' => 'Unable to queue highlight cache request.');
+        return array(
+            'ok' => false,
+            'message' => 'Unable to write highlight cache queue file.',
+            'queuePath' => $path
+        );
     }
 
-    pss_highlightLaunchCacheWorkerNow();
-    return array('ok' => true, 'state' => 'queued', 'message' => 'Highlight queued for background caching.');
+    @chmod($tmp, 0666);
+    if (!@rename($tmp, $path)) {
+        @unlink($tmp);
+        return array(
+            'ok' => false,
+            'message' => 'Unable to publish highlight cache queue file.',
+            'queuePath' => $path
+        );
+    }
+    @chmod($path, 0666);
+
+    // Do not spawn the video worker from the web/PHP request. The normal sports
+    // daemon will pick this request up on its next low-priority cache pass.
+    return array(
+        'ok' => true,
+        'state' => 'queued',
+        'message' => 'Highlight queued for background caching.',
+        'queuePath' => $path
+    );
 }
 
 function pss_highlightCachedMediaUrl($league, $slot, $clipID) {

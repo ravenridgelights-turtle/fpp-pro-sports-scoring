@@ -179,7 +179,9 @@ $backgroundCandidates = array();
 $allItemsBySlot = array();
 
 function pss_hc_priorityRequestPath() {
-    return pss_hc_cacheDir() . '/priority-request.json';
+    // Shared control file written by the web UI and consumed by the daemon worker.
+    // /tmp avoids permission mismatches on older FPP images.
+    return '/tmp/fpp-nfl-highlight-priority-request.json';
 }
 
 function pss_hc_readPriorityRequest() {
