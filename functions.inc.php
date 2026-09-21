@@ -72,9 +72,10 @@ function pss_leagueInfo($league) {
 }
 
 function pss_httpJson($url, $method = 'GET', $body = null) {
+    // ESPN/Akamai can reject a browser User-Agent when the TLS fingerprint is libcurl.
+    // Identify as libcurl instead of pretending to be a browser.
     $headers = array(
-        'Accept: application/json',
-        'User-Agent: Mozilla/5.0 (compatible; FPP-Pro-Sports-Scoring/2.0)'
+        'Accept: application/json'
     );
 
     if (function_exists('curl_init')) {
@@ -83,6 +84,9 @@ function pss_httpJson($url, $method = 'GET', $body = null) {
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        $curlInfo = curl_version();
+        $curlVersion = isset($curlInfo['version']) ? $curlInfo['version'] : '8.0.0';
+        curl_setopt($ch, CURLOPT_USERAGENT, 'curl/' . $curlVersion);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
         curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
 
@@ -108,7 +112,9 @@ function pss_httpJson($url, $method = 'GET', $body = null) {
             return null;
         }
     } else {
-        $headerText = implode("\r\n", $headers) . "\r\n";
+        $streamHeaders = $headers;
+        $streamHeaders[] = 'User-Agent: curl/8.0.0';
+        $headerText = implode("\r\n", $streamHeaders) . "\r\n";
         $options = array(
             'http' => array(
                 'method' => $method,
