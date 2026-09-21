@@ -67,6 +67,14 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
         case 'saveCelebrationDelay':
             pss_saveCelebrationDelay($_POST);
             break;
+        case 'syncWledCelebrationSetting':
+            if (isset($_POST['setting'])) {
+                pss_syncWledCelebrationSetting((string)$_POST['setting']);
+            }
+            break;
+        case 'saveWledCelebrationDuration':
+            pss_saveWledCelebrationDuration($_POST);
+            break;
         case 'manualTrigger':
             pss_manualTrigger($_POST);
             break;
@@ -292,32 +300,167 @@ function pss_getNCAATeams() {
     return pss_getTeams('football', 'ncaa');
 }
 
-function pss_getSequences() {
-    global $settings;
+function pss_wledSelectionPrefix() {
+    return '__PSS_WLED__';
+}
 
-    $sequenceList = array('No Sequence' => '');
-    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
-    if (!is_dir($sequenceDirectory)) {
-        pss_logEntry("FPP sequence directory not found: {$sequenceDirectory}");
-        return $sequenceList;
+function pss_wledSelectionToken($effectName) {
+    $effectName = trim((string)$effectName);
+    if ($effectName === '') {
+        return '';
+    }
+    $encoded = rtrim(strtr(base64_encode($effectName), '+/', '-_'), '=');
+    return pss_wledSelectionPrefix() . $encoded;
+}
+
+function pss_wledEffectFromSelection($value) {
+    $value = trim((string)$value);
+    $prefix = pss_wledSelectionPrefix();
+    if (strpos($value, $prefix) !== 0) {
+        return '';
+    }
+    $encoded = substr($value, strlen($prefix));
+    if ($encoded === '') {
+        return '';
+    }
+    $encoded = strtr($encoded, '-_', '+/');
+    $pad = strlen($encoded) % 4;
+    if ($pad) {
+        $encoded .= str_repeat('=', 4 - $pad);
+    }
+    $decoded = base64_decode($encoded, true);
+    if ($decoded === false) {
+        return '';
+    }
+    $decoded = trim((string)$decoded);
+    return strpos($decoded, 'WLED - ') === 0 ? $decoded : '';
+}
+
+function pss_isWledSelection($value) {
+    return pss_wledEffectFromSelection($value) !== '';
+}
+
+function pss_collectWledEffectCatalog($node, &$catalog) {
+    if (is_string($node)) {
+        $name = trim($node);
+        if (strpos($name, 'WLED - ') === 0 && !isset($catalog[$name])) {
+            $catalog[$name] = null;
+        }
+        return;
+    }
+    if (!is_array($node)) {
+        return;
     }
 
-    $files = glob($sequenceDirectory . '/*.fseq');
-    if (!is_array($files)) {
-        return $sequenceList;
-    }
-
-    $sequences = array();
-    foreach ($files as $file) {
-        $filename = basename($file);
-        $label = preg_replace('/\.fseq$/i', '', $filename);
-        if ($filename !== '' && $label !== '') {
-            $sequences[$label] = $filename;
+    // Some FPP builds return an associative map keyed by effect name.
+    foreach ($node as $key => $value) {
+        if (is_string($key)) {
+            $name = trim($key);
+            if (strpos($name, 'WLED - ') === 0) {
+                $catalog[$name] = is_array($value) ? $value : (isset($catalog[$name]) ? $catalog[$name] : null);
+            }
         }
     }
 
+    // Other builds return a list of effect objects.
+    foreach (array('name', 'Name', 'effect', 'Effect', 'value', 'label', 'displayName', 'display_name') as $key) {
+        if (isset($node[$key]) && is_scalar($node[$key])) {
+            $name = trim((string)$node[$key]);
+            if (strpos($name, 'WLED - ') === 0) {
+                $catalog[$name] = $node;
+                break;
+            }
+        }
+    }
+
+    foreach ($node as $value) {
+        if (is_array($value) || is_string($value)) {
+            pss_collectWledEffectCatalog($value, $catalog);
+        }
+    }
+}
+
+function pss_getWledEffectCatalog() {
+    static $catalog = null;
+    if (is_array($catalog)) {
+        return $catalog;
+    }
+
+    $catalog = array();
+    $data = pss_httpJson('http://127.0.0.1/api/overlays/effects/');
+    if (!is_array($data)) {
+        $data = pss_httpJson('http://127.0.0.1/api/overlays/effects');
+    }
+    if (is_array($data)) {
+        pss_collectWledEffectCatalog($data, $catalog);
+    }
+
+    // Keep the two effects already proven by the live Team Palette Effect
+    // Trigger available if an older/minimal FPP build does not expose the list.
+    foreach (array('WLED - Android', 'WLED - Colortwinkles') as $fallback) {
+        if (!isset($catalog[$fallback])) {
+            $catalog[$fallback] = null;
+        }
+    }
+
+    ksort($catalog, SORT_NATURAL | SORT_FLAG_CASE);
+    return $catalog;
+}
+
+function pss_getWledEffectNames() {
+    return array_keys(pss_getWledEffectCatalog());
+}
+
+function pss_getSequences() {
+    global $settings;
+
+    $sequenceList = array('No Sequence / Effect' => '');
+    $sequences = array();
+    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
+    if (is_dir($sequenceDirectory)) {
+        $files = glob($sequenceDirectory . '/*.fseq');
+        if (is_array($files)) {
+            foreach ($files as $file) {
+                $filename = basename($file);
+                $label = preg_replace('/\.fseq$/i', '', $filename);
+                if ($filename !== '' && $label !== '') {
+                    $sequences[$label] = $filename;
+                }
+            }
+        }
+    } else {
+        pss_logEntry("FPP sequence directory not found: {$sequenceDirectory}");
+    }
     ksort($sequences, SORT_NATURAL | SORT_FLAG_CASE);
-    return $sequenceList + $sequences;
+
+    // WLED choices live in the SAME touchdown/field-goal/score/win selects as
+    // normal .fseq files.  The stored token is deliberately not a filename so
+    // the existing sequence path remains completely unchanged for old choices.
+    $wledNames = pss_getWledEffectNames();
+
+    // Keep already-selected WLED values visible even if the local effect API is
+    // temporarily unavailable while the page is loading.
+    global $pluginSettings;
+    if (is_array($pluginSettings)) {
+        foreach ($pluginSettings as $settingKey => $settingValue) {
+            if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence)$/', (string)$settingKey)) {
+                continue;
+            }
+            $selectedEffect = pss_wledEffectFromSelection(urldecode((string)$settingValue));
+            if ($selectedEffect !== '' && !in_array($selectedEffect, $wledNames, true)) {
+                $wledNames[] = $selectedEffect;
+            }
+        }
+    }
+    natcasesort($wledNames);
+
+    $wledOptions = array();
+    foreach ($wledNames as $effectName) {
+        $shortName = preg_replace('/^WLED\s*-\s*/i', '', $effectName);
+        $wledOptions['Run WLED Effect - ' . $shortName] = pss_wledSelectionToken($effectName);
+    }
+
+    return $sequenceList + $sequences + $wledOptions;
 }
 
 function pss_jsonResponse($ok, $message, $extra = array()) {
@@ -1751,7 +1894,7 @@ function pss_manualTrigger($post) {
     $label = $map[$trigger]['label'];
     $sequence = trim(pss_pluginSetting("{$prefix}{$suffix}", ''));
     if ($sequence === '') {
-        pss_jsonResponse(false, "No {$label} sequence is configured for this team.");
+        pss_jsonResponse(false, "No {$label} sequence/effect is configured for this team.");
     }
 
     $teamName = trim(pss_pluginSetting("{$prefix}TeamName", ''));
@@ -1804,6 +1947,43 @@ function pss_saveCelebrationDelay($post) {
     $pluginSettings = pss_loadPluginSettings();
     pss_syncGeneratedPlaylistsForLeague($matches[1]);
     pss_jsonResponse(true, 'Celebration delay saved.', array('value' => $delay));
+}
+
+function pss_teamWledModel($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return trim(pss_pluginSetting("{$prefix}WledModel", ''));
+}
+
+function pss_teamWledDuration($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return pss_clampInt(pss_pluginSetting("{$prefix}WledDuration", '5'), 1, 600, 5);
+}
+
+function pss_syncWledCelebrationSetting($setting) {
+    global $pluginSettings;
+    $setting = trim((string)$setting);
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?WledModel$/', $setting, $matches)) {
+        return false;
+    }
+    $pluginSettings = pss_loadPluginSettings();
+    pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    return true;
+}
+
+function pss_saveWledCelebrationDuration($post) {
+    global $pluginSettings;
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
+    $value = isset($post['value']) ? $post['value'] : 5;
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?WledDuration$/', $setting, $matches)) {
+        pss_jsonResponse(false, 'Invalid WLED celebration duration setting.');
+    }
+    $duration = pss_clampInt($value, 1, 600, 5);
+    if (!pss_setPluginSetting($setting, (string)$duration)) {
+        pss_jsonResponse(false, 'Unable to save WLED celebration duration.');
+    }
+    $pluginSettings = pss_loadPluginSettings();
+    pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    pss_jsonResponse(true, 'WLED celebration duration saved.', array('value' => $duration));
 }
 
 function pss_generatedPlaylistMarker() {
@@ -1983,6 +2163,343 @@ function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds 
     return true;
 }
 
+function pss_effectArgListLooksValid($list) {
+    if (!is_array($list) || empty($list)) {
+        return false;
+    }
+    $objects = 0;
+    $named = 0;
+    foreach ($list as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $objects++;
+        foreach (array('name', 'Name', 'label', 'Label', 'id', 'key') as $key) {
+            if (isset($item[$key]) && is_scalar($item[$key]) && trim((string)$item[$key]) !== '') {
+                $named++;
+                break;
+            }
+        }
+    }
+    return $objects > 0 && $named === $objects;
+}
+
+function pss_findEffectArgList($node) {
+    if (!is_array($node)) {
+        return array();
+    }
+    foreach (array('args', 'arguments', 'parameters', 'params', 'commandArgs', 'command_args') as $key) {
+        if (isset($node[$key]) && pss_effectArgListLooksValid($node[$key])) {
+            return array_values($node[$key]);
+        }
+    }
+    if (pss_effectArgListLooksValid($node)) {
+        return array_values($node);
+    }
+    foreach ($node as $value) {
+        if (is_array($value)) {
+            $found = pss_findEffectArgList($value);
+            if (!empty($found)) {
+                return $found;
+            }
+        }
+    }
+    return array();
+}
+
+function pss_getWledEffectDefinition($effectName) {
+    $effectName = trim((string)$effectName);
+    if ($effectName === '') {
+        return array();
+    }
+
+    $catalog = pss_getWledEffectCatalog();
+    if (isset($catalog[$effectName]) && is_array($catalog[$effectName])) {
+        $args = pss_findEffectArgList($catalog[$effectName]);
+        if (!empty($args)) {
+            return $catalog[$effectName];
+        }
+    }
+
+    foreach (array(
+        'http://127.0.0.1/api/overlays/effects/' . rawurlencode($effectName),
+        'http://127.0.0.1/api/overlays/effects/' . rawurlencode(preg_replace('/^WLED\s*-\s*/i', '', $effectName))
+    ) as $url) {
+        $data = pss_httpJson($url);
+        if (is_array($data) && !empty(pss_findEffectArgList($data))) {
+            return $data;
+        }
+    }
+
+    return isset($catalog[$effectName]) && is_array($catalog[$effectName]) ? $catalog[$effectName] : array();
+}
+
+function pss_effectArgMetaValue($arg, $keys, $default = '') {
+    if (!is_array($arg)) return $default;
+    foreach ($keys as $key) {
+        if (array_key_exists($key, $arg) && is_scalar($arg[$key])) {
+            return (string)$arg[$key];
+        }
+    }
+    return $default;
+}
+
+function pss_effectArgOptions($arg) {
+    if (!is_array($arg)) return array();
+    foreach (array('contentList', 'content_list', 'options', 'values', 'contents', 'allowedValues', 'allowed_values') as $key) {
+        if (!isset($arg[$key]) || !is_array($arg[$key])) continue;
+        $out = array();
+        foreach ($arg[$key] as $entry) {
+            if (is_scalar($entry)) {
+                $out[] = (string)$entry;
+            } elseif (is_array($entry)) {
+                foreach (array('value', 'name', 'label', 'id') as $ek) {
+                    if (isset($entry[$ek]) && is_scalar($entry[$ek])) {
+                        $out[] = (string)$entry[$ek];
+                        break;
+                    }
+                }
+            }
+        }
+        if (!empty($out)) return $out;
+    }
+    return array();
+}
+
+function pss_wledEffectArgValue($arg, $colors, &$genericColorIndex) {
+    $name = pss_effectArgMetaValue($arg, array('name', 'Name', 'label', 'Label', 'id', 'key'), '');
+    $type = strtolower(pss_effectArgMetaValue($arg, array('type', 'Type'), ''));
+    $norm = strtolower(preg_replace('/[^a-z0-9]+/i', ' ', $name));
+    $norm = trim(preg_replace('/\s+/', ' ', $norm));
+
+    if (strpos($norm, 'palette') !== false) {
+        return '* Colors Only';
+    }
+    if (preg_match('/(^| )color ?1($| )/', $norm) || strpos($norm, 'primary color') !== false) {
+        return $colors[0];
+    }
+    if (preg_match('/(^| )color ?2($| )/', $norm) || strpos($norm, 'secondary color') !== false) {
+        return $colors[1];
+    }
+    if (preg_match('/(^| )color ?3($| )/', $norm) || strpos($norm, 'tertiary color') !== false) {
+        return $colors[2];
+    }
+    if ($type === 'color') {
+        $value = $colors[min(2, $genericColorIndex)];
+        $genericColorIndex++;
+        return $value;
+    }
+
+    // Honor FPP's own default for every non-color effect control. This is what
+    // lets the scoring dropdown support the full WLED effect set without the
+    // sports plugin having to hard-code each effect's sliders.
+    $default = pss_effectArgMetaValue($arg, array('default', 'defaultValue', 'default_value', 'value'), '');
+    if ($default !== '') {
+        return $default;
+    }
+
+    $options = pss_effectArgOptions($arg);
+    if (!empty($options)) {
+        if (strpos($norm, 'buffer') !== false && in_array('Horizontal', $options, true)) return 'Horizontal';
+        return (string)$options[0];
+    }
+
+    if (strpos($norm, 'buffer') !== false && strpos($norm, 'mapping') !== false) return 'Horizontal';
+    if (strpos($norm, 'brightness') !== false) return '128';
+    if ($type === 'bool' || $type === 'boolean') return 'false';
+    if (in_array($type, array('int', 'integer', 'range', 'number', 'float', 'double'), true)) {
+        $min = pss_effectArgMetaValue($arg, array('min', 'minimum'), '');
+        $max = pss_effectArgMetaValue($arg, array('max', 'maximum'), '');
+        if (is_numeric($min) && is_numeric($max)) {
+            return (string)(int)round((((float)$min) + ((float)$max)) / 2.0);
+        }
+        return '128';
+    }
+    return '';
+}
+
+function pss_buildWledEffectArgs($effectName, $model, $palette) {
+    $effectName = trim((string)$effectName);
+    $model = trim((string)$model);
+    if ($effectName === '' || $model === '' || !is_array($palette)) {
+        return array();
+    }
+
+    $colors = isset($palette['colors']) && is_array($palette['colors']) ? array_values($palette['colors']) : array();
+    while (count($colors) < 3) $colors[] = '#000000';
+    $colors = array(
+        pss_normalizeColor($colors[0], '#FFFFFF'),
+        pss_normalizeColor($colors[1], '#000000'),
+        pss_normalizeColor($colors[2], '#808080')
+    );
+
+    $definition = pss_getWledEffectDefinition($effectName);
+    $argDefs = pss_findEffectArgList($definition);
+
+    // Known FPP 10.1 command layouts are kept only as a safety net. Normally
+    // the live FPP effect definition above supplies the exact argument order.
+    if (empty($argDefs)) {
+        if ($effectName === 'WLED - Android') {
+            return array($model, 'Enabled', $effectName, 'Horizontal', '128', '128', '128', '* Colors Only', $colors[0], $colors[1]);
+        }
+        if ($effectName === 'WLED - Colortwinkles') {
+            return array($model, 'Enabled', $effectName, 'Horizontal', '128', '128', '128', '* Colors Only', $colors[0], $colors[1], $colors[2]);
+        }
+        return array();
+    }
+
+    $args = array($model, 'Enabled', $effectName);
+    $genericColorIndex = 0;
+    foreach ($argDefs as $arg) {
+        $name = strtolower(trim(pss_effectArgMetaValue($arg, array('name', 'Name', 'label', 'Label', 'id', 'key'), '')));
+        // An endpoint that returns the full Overlay Model Effect schema rather
+        // than just the selected subcommand may repeat these three outer args.
+        if (in_array($name, array('models', 'model', 'autoenable', 'auto enable/disable', 'effect'), true)) {
+            continue;
+        }
+        $args[] = pss_wledEffectArgValue($arg, $colors, $genericColorIndex);
+    }
+    return $args;
+}
+
+function pss_teamPaletteForSlot($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamID = trim(pss_pluginSetting("{$prefix}TeamID", ''));
+    if ($teamID === '') return null;
+    return pss_findTeamPalette(strtolower((string)$league) . ':' . $teamID);
+}
+
+function pss_playlistCommandEntry($command, $args, $note = '') {
+    $entry = array(
+        'type' => 'command',
+        'enabled' => 1,
+        'playOnce' => 0,
+        'command' => (string)$command,
+        'multisyncCommand' => false,
+        'multisyncHosts' => '',
+        'args' => is_array($args) ? array_values($args) : array(),
+        'displayMode' => 'argsOnly',
+        'duration' => 0
+    );
+    if ($note !== '') $entry['note'] = (string)$note;
+    return $entry;
+}
+
+function pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds = 0) {
+    $model = pss_teamWledModel($league, $slot);
+    $effectDuration = pss_teamWledDuration($league, $slot);
+    $palette = pss_teamPaletteForSlot($league, $slot);
+    if ($model === '' || !is_array($palette)) {
+        return null;
+    }
+
+    $startArgs = pss_buildWledEffectArgs($effectName, $model, $palette);
+    if (empty($startArgs)) {
+        return null;
+    }
+
+    $delaySeconds = pss_clampInt($delaySeconds, 0, 300, 0);
+    $mainPlaylist = array();
+    if ($delaySeconds > 0) {
+        $mainPlaylist[] = array(
+            'type' => 'pause', 'enabled' => 1, 'playOnce' => 0,
+            'duration' => $delaySeconds,
+            'note' => 'Pro Sports Scoring celebration delay',
+            'displayMode' => 'argsOnly'
+        );
+    }
+
+    $teamName = isset($palette['name']) ? (string)$palette['name'] : strtoupper((string)$league);
+    $mainPlaylist[] = pss_playlistCommandEntry(
+        'Overlay Model Effect', $startArgs,
+        'Start ' . $effectName . ' using ' . $teamName . ' team colors'
+    );
+    $mainPlaylist[] = array(
+        'type' => 'pause', 'enabled' => 1, 'playOnce' => 0,
+        'duration' => $effectDuration,
+        'note' => 'Run WLED sports celebration effect',
+        'displayMode' => 'argsOnly'
+    );
+    $mainPlaylist[] = pss_playlistCommandEntry(
+        'Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'),
+        'Stop Pro Sports Scoring WLED celebration effect'
+    );
+
+    $totalDuration = $delaySeconds + $effectDuration;
+    return array(
+        'name' => $playlistName,
+        'version' => 4,
+        'repeat' => 0,
+        'loopCount' => 0,
+        'desc' => pss_generatedPlaylistMarker(),
+        'random' => 0,
+        'globalPauseBetweenSequencesMS' => 0,
+        'empty' => false,
+        'leadIn' => array(),
+        'mainPlaylist' => $mainPlaylist,
+        'leadOut' => array(),
+        'playlistInfo' => array(
+            'leadIn_duration' => 0,
+            'leadIn_items' => 0,
+            'mainPlaylist_duration' => $totalDuration,
+            'mainPlaylist_items' => count($mainPlaylist),
+            'leadOut_duration' => 0,
+            'leadOut_items' => 0,
+            'total_duration' => $totalDuration,
+            'total_items' => count($mainPlaylist)
+        )
+    );
+}
+
+function pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $effectName, $delaySeconds = 0) {
+    global $settings;
+    $playlistName = trim((string)$playlistName);
+    $effectName = trim((string)$effectName);
+    if ($playlistName === '' || $effectName === '') return false;
+
+    $model = pss_teamWledModel($league, $slot);
+    if ($model === '') {
+        pss_logEntry('Cannot build ' . $playlistName . '; select a WLED celebration model for ' . pss_teamLogLabel($league, $slot));
+        return false;
+    }
+    $models = pss_getOverlayCommandModels();
+    if (!empty($models) && !in_array($model, $models, true)) {
+        pss_logEntry('Cannot build ' . $playlistName . '; WLED celebration model is not returned by FPP: ' . $model);
+        return false;
+    }
+    if (!is_array(pss_teamPaletteForSlot($league, $slot))) {
+        pss_logEntry('Cannot build ' . $playlistName . '; team palette is unavailable for ' . pss_teamLogLabel($league, $slot));
+        return false;
+    }
+
+    $data = pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds);
+    if (!is_array($data)) {
+        pss_logEntry('Cannot build ' . $playlistName . '; FPP did not provide an argument definition for ' . $effectName);
+        return false;
+    }
+
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory) || !is_writable($playlistDirectory)) {
+        pss_logEntry('Cannot write generated playlist; directory is not writable: ' . $playlistDirectory);
+        return false;
+    }
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) return false;
+    $json .= "\n";
+    $path = $playlistDirectory . '/' . $playlistName . '.json';
+    $existing = is_file($path) ? @file_get_contents($path) : false;
+    if ($existing === $json) return true;
+    $tmp = $path . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false || !@rename($tmp, $path)) {
+        @unlink($tmp);
+        pss_logEntry('Unable to create generated WLED playlist ' . $playlistName);
+        return false;
+    }
+    @chmod($path, 0664);
+    pss_logEntry('Generated playlist ' . $playlistName . ' for ' . $effectName . ' using team palette');
+    return true;
+}
+
 function pss_isManagedGeneratedPlaylist($path) {
     $json = @file_get_contents($path);
     if ($json === false) {
@@ -2045,7 +2562,11 @@ function pss_syncGeneratedPlaylistsForLeague($league) {
                 continue;
             }
             $delaySeconds = pss_teamCelebrationDelay($league, $slot);
-            if (pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds)) {
+            $wledEffect = pss_wledEffectFromSelection($sequence);
+            $written = ($wledEffect !== '')
+                ? pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $wledEffect, $delaySeconds)
+                : pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds);
+            if ($written) {
                 $keepNames[] = $playlistName;
             }
         }
@@ -2460,24 +2981,42 @@ function pss_processSimpleScoreIncrease($league, $oldScore, $newScore, $slot = 1
 
 function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
     $prefix = pss_teamPrefix($league, $slot);
-    $sequence = pss_pluginSetting("{$prefix}{$suffix}", '');
+    $selection = pss_pluginSetting("{$prefix}{$suffix}", '');
     $logLabel = pss_teamLogLabel($league, $slot);
 
-    if ($sequence === '') {
-        pss_logEntry("{$logLabel} {$label} detected but no sequence is selected");
+    if ($selection === '') {
+        pss_logEntry("{$logLabel} {$label} detected but no sequence/effect is selected");
         return false;
     }
 
     $playlist = pss_generatedPlaylistName($league, $suffix, $slot);
     $delaySeconds = pss_teamCelebrationDelay($league, $slot);
-    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $sequence, $delaySeconds)) {
-        pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$sequence}");
+    $wledEffect = pss_wledEffectFromSelection($selection);
+
+    if ($wledEffect !== '') {
+        if ($playlist === '' || !pss_writeGeneratedWledPlaylist($playlist, $league, $slot, $wledEffect, $delaySeconds)) {
+            pss_logEntry("{$logLabel} {$label} detected but WLED helper playlist could not be prepared for {$wledEffect}");
+            return false;
+        }
+        if (pss_insertPlaylistImmediate($playlist)) {
+            $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
+            $duration = pss_teamWledDuration($league, $slot);
+            pss_logEntry("{$logLabel} {$label} detected; inserted {$wledEffect}{$delayText} for {$duration}s using playlist {$playlist}");
+            return true;
+        }
+        pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated WLED playlist {$playlist}");
+        return false;
+    }
+
+    // Existing FSEQ behavior is intentionally unchanged.
+    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $selection, $delaySeconds)) {
+        pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$selection}");
         return false;
     }
 
     if (pss_insertPlaylistImmediate($playlist)) {
         $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
-        pss_logEntry("{$logLabel} {$label} detected; inserted {$sequence}{$delayText} using playlist {$playlist}");
+        pss_logEntry("{$logLabel} {$label} detected; inserted {$selection}{$delayText} using playlist {$playlist}");
         return true;
     }
 

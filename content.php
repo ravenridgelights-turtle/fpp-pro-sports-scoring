@@ -5,6 +5,10 @@ $pluginName = basename(dirname(__FILE__));
 $pluginSettings = pss_loadPluginSettings();
 $pssSequenceOptions = pss_getSequences();
 $pssOverlayModels = pss_getOverlayCommandModels();
+$pssOverlayModelOptions = array('No WLED celebration model' => '');
+foreach ($pssOverlayModels as $pssOverlayModelName) {
+    $pssOverlayModelOptions[$pssOverlayModelName] = $pssOverlayModelName;
+}
 $pssOverlayGeometry = pss_getOverlayModels();
 $pssOverlayFonts = pss_getOverlayFonts();
 $pssTeamPalettes = pss_syncTeamPalettes(true);
@@ -573,19 +577,47 @@ function pss_currentValue($key, $default = '') {
                 </div>
             </div>
 
+            <div class="row mb-3 align-items-start">
+                <div class="col-md-4 pss-config-label">
+                    <strong>WLED celebration model</strong>
+                    <div class="text-muted small pss-config-note">Only used when a celebration dropdown is set to <strong>Run WLED Effect</strong>. The effect runs on this Pixel Overlay Model; normal .fseq selections ignore this setting.</div>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'WledModel', $prefix1 . 'WledModel', 0, 0, '', $pssOverlayModelOptions, $pluginName, 'pssWledModelChanged', ''); ?></div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'WledModel', $prefix2 . 'WledModel', 0, 0, '', $pssOverlayModelOptions, $pluginName, 'pssWledModelChanged', ''); ?></div>
+            </div>
+
+            <div class="row mb-3 align-items-start">
+                <div class="col-md-4 pss-config-label">
+                    <strong>WLED effect run time</strong>
+                    <div class="text-muted small pss-config-note">How long a selected WLED celebration runs before the helper playlist sends <strong>Stop Effects</strong>. 1–600 seconds.</div>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <div class="input-group">
+                        <input class="form-control" type="number" min="1" max="600" step="1" value="<?=htmlspecialchars(pss_currentValue($prefix1 . 'WledDuration', '5'))?>" onchange="pssWledDurationChanged('<?=htmlspecialchars($prefix1 . 'WledDuration', ENT_QUOTES)?>', this)">
+                        <div class="input-group-append"><span class="input-group-text">sec</span></div>
+                    </div>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <div class="input-group">
+                        <input class="form-control" type="number" min="1" max="600" step="1" value="<?=htmlspecialchars(pss_currentValue($prefix2 . 'WledDuration', '5'))?>" onchange="pssWledDurationChanged('<?=htmlspecialchars($prefix2 . 'WledDuration', ENT_QUOTES)?>', this)">
+                        <div class="input-group-append"><span class="input-group-text">sec</span></div>
+                    </div>
+                </div>
+            </div>
+
             <?php if ($meta['sport'] === 'football'): ?>
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
-                    <strong>Touchdown sequence</strong>
-                    <div class="text-muted small pss-config-note">Runs only when that selected team scores a touchdown.</div>
+                    <strong>Touchdown sequence / effect</strong>
+                    <div class="text-muted small pss-config-note">Choose an existing .fseq or a Run WLED Effect option. Team colors are supplied automatically for WLED effects.</div>
                 </div>
                 <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'TouchdownSequence', $prefix1 . 'TouchdownSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
                 <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'TouchdownSequence', $prefix2 . 'TouchdownSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
             </div>
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
-                    <strong>Field goal sequence</strong>
-                    <div class="text-muted small pss-config-note">Each team gets its own automatically managed helper playlist.</div>
+                    <strong>Field goal sequence / effect</strong>
+                    <div class="text-muted small pss-config-note">Existing sequences work exactly as before. WLED choices generate start → pause → stop helper playlists automatically.</div>
                 </div>
                 <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'FieldgoalSequence', $prefix1 . 'FieldgoalSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
                 <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'FieldgoalSequence', $prefix2 . 'FieldgoalSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
@@ -593,8 +625,8 @@ function pss_currentValue($key, $default = '') {
             <?php else: ?>
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
-                    <strong>Score sequence</strong>
-                    <div class="text-muted small pss-config-note">Runs only when that selected NHL or MLB team scores.</div>
+                    <strong>Score sequence / effect</strong>
+                    <div class="text-muted small pss-config-note">Choose an existing .fseq or a Run WLED Effect option for that team score.</div>
                 </div>
                 <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'ScoreSequence', $prefix1 . 'ScoreSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
                 <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'ScoreSequence', $prefix2 . 'ScoreSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
@@ -603,8 +635,8 @@ function pss_currentValue($key, $default = '') {
 
             <div class="row mb-1 align-items-start">
                 <div class="col-md-4 pss-config-label">
-                    <strong>Win sequence</strong>
-                    <div class="text-muted small pss-config-note">Runs once when that selected team finishes a game with a win.</div>
+                    <strong>Win sequence / effect</strong>
+                    <div class="text-muted small pss-config-note">Choose an existing .fseq or a Run WLED Effect option when that team wins.</div>
                 </div>
                 <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'WinSequence', $prefix1 . 'WinSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
                 <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'WinSequence', $prefix2 . 'WinSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
@@ -849,6 +881,33 @@ function pssCelebrationDelayChanged(setting, input) {
     $.ajax({
         url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
         data: { action: 'saveCelebrationDelay', setting: setting, value: value },
+        type: 'post',
+        dataType: 'json',
+        success: function(response) {
+            if (response && response.ok && typeof response.value !== 'undefined') {
+                input.value = response.value;
+            }
+        }
+    });
+}
+
+function pssWledModelChanged(setting) {
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'syncWledCelebrationSetting', setting: setting },
+        type: 'post'
+    });
+}
+
+function pssWledDurationChanged(setting, input) {
+    var value = parseInt(input.value, 10);
+    if (isNaN(value)) value = 5;
+    value = Math.max(1, Math.min(600, value));
+    input.value = value;
+
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'saveWledCelebrationDuration', setting: setting, value: value },
         type: 'post',
         dataType: 'json',
         success: function(response) {
