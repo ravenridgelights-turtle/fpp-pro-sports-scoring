@@ -1,31 +1,28 @@
 # Pro Sports Scoring Plugin for FPP
 
-Maintained fork of Ben Kools' original `fpp-nfl` plugin. It supports NFL, NCAA Football, NHL, and MLB and inserts local FPP celebration playlists when a selected team scores or wins.
+Maintained fork of Ben Kools' original `fpp-nfl` plugin. It supports NFL, NCAA Football, NHL, and MLB and plays local FPP celebration sequences when a selected team scores or wins.
 
-## What changed in this maintained version
+## How celebration playback works
 
-- Uses HTTPS ESPN Site API endpoints and the current game-summary endpoint.
-- Uses ESPN `scoringPlays` for NFL/NCAA touchdown and field-goal detection instead of guessing from `+6`/`+3` score changes.
-- Protects saved state when ESPN is unavailable or returns malformed data.
-- Prevents old scoring plays and win celebrations from replaying after a restart.
-- Uses FPP's `Insert Playlist Immediate` command so a saved celebration playlist can interrupt the active show and FPP can return to the show when the inserted playlist finishes.
-- Uses one FPP-managed log: `plugin-fpp-nfl.log`.
-- Runs one background worker that stays alive while FPP is running; enabling/disabling the plugin no longer launches PHP from a web request.
-- Removes external Bootstrap/CDN dependencies and uses FPP's own UI styling.
-- Installer/uninstaller are idempotent and do not reboot or restart FPP.
+The setup page lets the user select ordinary `.fseq` files. The plugin automatically creates small one-item FPP playlists with names such as:
 
-## ESPN note
+- `PSS_NFL_KC_Touchdown`
+- `PSS_NFL_KC_FieldGoal`
+- `PSS_NFL_KC_Win`
+- `PSS_NCAA_UGA_Touchdown`
+- `PSS_NHL_BOS_Score`
+- `PSS_MLB_ATL_Score`
 
-The ESPN Site API used here is public and does not require credentials, but it is unofficial and can change. The most likely maintenance point is the JSON parsing in `getTeams()`, `getTeamInfo()`, and `getGameStatus()` in `functions.inc.php`.
+Those generated playlists are marked as plugin-managed and are updated when the selected team or sequence changes. When a scoring event occurs, the plugin uses FPP's `Insert Playlist Immediate` command. This lets the celebration interrupt the active show and lets FPP return to the show after the inserted playlist finishes.
 
-## FPP compatibility
+## Sports data
 
-The manifest declares FPP 7, 8, 9, and 10 compatibility. Test each major before publishing a release. For FPP Plugin Manager submission, also test the latest released FPP and the current nightly build.
+Sports data is retrieved from ESPN's public Site API. The ESPN Site API is unofficial and can change without notice, so the plugin includes request validation and failure-safe behavior intended to preserve the last known game state when ESPN is unavailable.
+
+## Development notes
+
+See `MAINTAINER_NOTES.md` for the current architecture, generated-playlist rules, testing checklist, and maintenance notes.
 
 ## License and attribution
 
-GPL-3.0. Original plugin by Ben Kools (koolsb). Maintained fork by ravenridgelights-turtle.
-
-## Celebration playback
-
-Create normal saved FPP playlists for touchdown, field goal, score, and win celebrations, then select those playlists in the plugin settings. The plugin does not create temporary playlists or manually pause/resume the show; it asks FPP to insert the selected playlist immediately.
+This maintained version is derived from the original work by Ben Kools (koolsb) and remains licensed under GPL-3.0.

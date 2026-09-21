@@ -22,6 +22,11 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
         case 'updateMLBTeam':
             pss_updateTeam('baseball', 'mlb');
             break;
+        case 'syncSequencePlaylist':
+            if (isset($_POST['setting'])) {
+                pss_syncGeneratedPlaylistSetting((string)$_POST['setting']);
+            }
+            break;
     }
 }
 
@@ -200,39 +205,277 @@ function pss_getNCAATeams() {
     return pss_getTeams('football', 'ncaa');
 }
 
-function pss_getPlaylists() {
+function pss_getSequences() {
     global $settings;
 
-    $playlistList = array('No Playlist' => '');
+    $sequenceList = array('No Sequence' => '');
+    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
+    if (!is_dir($sequenceDirectory)) {
+        pss_logEntry("FPP sequence directory not found: {$sequenceDirectory}");
+        return $sequenceList;
+    }
+
+    $files = glob($sequenceDirectory . '/*.fseq');
+    if (!is_array($files)) {
+        return $sequenceList;
+    }
+
+    $sequences = array();
+    foreach ($files as $file) {
+        $filename = basename($file);
+        $label = preg_replace('/\.fseq$/i', '', $filename);
+        if ($filename !== '' && $label !== '') {
+            $sequences[$label] = $filename;
+        }
+    }
+
+    ksort($sequences, SORT_NATURAL | SORT_FLAG_CASE);
+    return $sequenceList + $sequences;
+}
+
+function pss_generatedPlaylistMarker() {
+    return 'Managed by Pro Sports Scoring plugin. Do not edit manually.';
+}
+
+function pss_generatedPlaylistType($sequenceSuffix) {
+    switch ($sequenceSuffix) {
+        case 'TouchdownSequence':
+            return 'Touchdown';
+        case 'FieldgoalSequence':
+            return 'FieldGoal';
+        case 'ScoreSequence':
+            return 'Score';
+        case 'WinSequence':
+            return 'Win';
+        default:
+            return '';
+    }
+}
+
+function pss_safePlaylistPart($value, $fallback = 'TEAM') {
+    $value = strtoupper(trim((string)$value));
+    $value = preg_replace('/[^A-Z0-9]+/', '_', $value);
+    $value = trim((string)$value, '_');
+    return $value !== '' ? $value : $fallback;
+}
+
+function pss_generatedPlaylistName($league, $sequenceSuffix) {
+    $kind = pss_generatedPlaylistType($sequenceSuffix);
+    if ($kind === '') {
+        return '';
+    }
+
+    $teamPart = pss_pluginSetting("{$league}TeamAbbreviation", '');
+    if ($teamPart === '') {
+        $teamPart = pss_pluginSetting("{$league}TeamID", '');
+    }
+    if ($teamPart === '') {
+        return '';
+    }
+
+    return 'PSS_' . pss_safePlaylistPart($league, 'LEAGUE') . '_' . pss_safePlaylistPart($teamPart, 'TEAM') . '_' . $kind;
+}
+
+function pss_sequenceDuration($sequenceName) {
+    global $settings;
+
+    $filename = basename((string)$sequenceName);
+    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
+    $path = $sequenceDirectory . '/' . $filename;
+    if ($filename === '' || !is_file($path)) {
+        return 0.0;
+    }
+
+    $fh = @fopen($path, 'rb');
+    if ($fh === false) {
+        return 0.0;
+    }
+    $header = fread($fh, 19);
+    fclose($fh);
+
+    if (!is_string($header) || strlen($header) < 19 || substr($header, 0, 4) !== 'PSEQ') {
+        return 0.0;
+    }
+
+    $frameData = unpack('Vframes', substr($header, 14, 4));
+    $frames = isset($frameData['frames']) ? (int)$frameData['frames'] : 0;
+    $stepMs = ord($header[18]);
+    if ($frames <= 0 || $stepMs <= 0) {
+        return 0.0;
+    }
+
+    return round(($frames * $stepMs) / 1000, 3);
+}
+
+function pss_generatedPlaylistData($playlistName, $sequenceName) {
+    $duration = pss_sequenceDuration($sequenceName);
+    return array(
+        'name' => $playlistName,
+        'version' => 4,
+        'repeat' => 0,
+        'loopCount' => 0,
+        'desc' => pss_generatedPlaylistMarker(),
+        'random' => 0,
+        'globalPauseBetweenSequencesMS' => 0,
+        'empty' => false,
+        'leadIn' => array(),
+        'mainPlaylist' => array(
+            array(
+                'type' => 'sequence',
+                'enabled' => 1,
+                'playOnce' => 0,
+                'sequenceName' => basename((string)$sequenceName),
+                'displayMode' => 'argsOnly',
+                'timecode' => 'Default',
+                'duration' => $duration
+            )
+        ),
+        'leadOut' => array(),
+        'playlistInfo' => array(
+            'leadIn_duration' => 0,
+            'leadIn_items' => 0,
+            'mainPlaylist_duration' => $duration,
+            'mainPlaylist_items' => 1,
+            'leadOut_duration' => 0,
+            'leadOut_items' => 0,
+            'total_duration' => $duration,
+            'total_items' => 1
+        )
+    );
+}
+
+function pss_writeGeneratedPlaylist($playlistName, $sequenceName) {
+    global $settings;
+
+    $playlistName = trim((string)$playlistName);
+    $sequenceName = basename((string)$sequenceName);
+    if ($playlistName === '' || $sequenceName === '') {
+        return false;
+    }
+
+    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
+    if (!is_file($sequenceDirectory . '/' . $sequenceName)) {
+        pss_logEntry("Cannot build {$playlistName}; sequence not found: {$sequenceName}");
+        return false;
+    }
+
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory) || !is_writable($playlistDirectory)) {
+        pss_logEntry("Cannot write generated playlist; directory is not writable: {$playlistDirectory}");
+        return false;
+    }
+
+    $data = pss_generatedPlaylistData($playlistName, $sequenceName);
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        pss_logEntry("Unable to encode generated playlist {$playlistName}");
+        return false;
+    }
+    $json .= "\n";
+
+    $path = $playlistDirectory . '/' . $playlistName . '.json';
+    $existing = is_file($path) ? @file_get_contents($path) : false;
+    if ($existing === $json) {
+        return true;
+    }
+
+    $tmp = $path . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false || !@rename($tmp, $path)) {
+        @unlink($tmp);
+        pss_logEntry("Unable to create generated playlist {$playlistName}");
+        return false;
+    }
+
+    @chmod($path, 0664);
+    pss_logEntry("Generated playlist {$playlistName} for sequence {$sequenceName}");
+    return true;
+}
+
+function pss_isManagedGeneratedPlaylist($path) {
+    $json = @file_get_contents($path);
+    if ($json === false) {
+        return false;
+    }
+    $data = json_decode($json, true);
+    return is_array($data) && isset($data['desc']) && (string)$data['desc'] === pss_generatedPlaylistMarker();
+}
+
+function pss_cleanupGeneratedPlaylists($league, $keepNames) {
+    global $settings;
+
     $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
     if (!is_dir($playlistDirectory)) {
-        pss_logEntry("FPP playlist directory not found: {$playlistDirectory}");
-        return $playlistList;
+        return;
     }
 
-    $files = glob($playlistDirectory . '/*.json');
+    $prefix = 'PSS_' . pss_safePlaylistPart($league, 'LEAGUE') . '_';
+    $files = glob($playlistDirectory . '/' . $prefix . '*.json');
     if (!is_array($files)) {
-        return $playlistList;
+        return;
     }
 
-    foreach ($files as $file) {
-        $name = pathinfo($file, PATHINFO_FILENAME);
-        $json = @file_get_contents($file);
-        if ($json !== false) {
-            $data = json_decode($json, true);
-            if (is_array($data) && isset($data['name']) && trim((string)$data['name']) !== '') {
-                $name = trim((string)$data['name']);
-            }
+    $keepLookup = array_fill_keys($keepNames, true);
+    foreach ($files as $path) {
+        $name = pathinfo($path, PATHINFO_FILENAME);
+        if (isset($keepLookup[$name])) {
+            continue;
         }
+        if (pss_isManagedGeneratedPlaylist($path) && @unlink($path)) {
+            pss_logEntry("Removed stale generated playlist {$name}");
+        }
+    }
+}
 
-        if ($name !== '') {
-            $playlistList[$name] = $name;
+function pss_syncGeneratedPlaylistsForLeague($league) {
+    $info = pss_leagueInfo($league);
+    if ($info['sport'] === '') {
+        return;
+    }
+
+    if (pss_pluginSetting("{$league}TeamID", '') === '') {
+        pss_cleanupGeneratedPlaylists($league, array());
+        return;
+    }
+
+    $suffixes = ($info['sport'] === 'football')
+        ? array('TouchdownSequence', 'FieldgoalSequence', 'WinSequence')
+        : array('ScoreSequence', 'WinSequence');
+
+    $keepNames = array();
+    foreach ($suffixes as $suffix) {
+        $sequence = pss_pluginSetting("{$league}{$suffix}", '');
+        if ($sequence === '') {
+            continue;
+        }
+        $playlistName = pss_generatedPlaylistName($league, $suffix);
+        if ($playlistName === '') {
+            continue;
+        }
+        if (pss_writeGeneratedPlaylist($playlistName, $sequence)) {
+            $keepNames[] = $playlistName;
         }
     }
 
-    unset($playlistList['No Playlist']);
-    ksort($playlistList, SORT_NATURAL | SORT_FLAG_CASE);
-    return array('No Playlist' => '') + $playlistList;
+    pss_cleanupGeneratedPlaylists($league, $keepNames);
+}
+
+function pss_syncGeneratedPlaylistSetting($setting) {
+    global $pluginSettings;
+    $pluginSettings = pss_loadPluginSettings();
+
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence)$/', (string)$setting, $matches)) {
+        return false;
+    }
+
+    pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    return true;
+}
+
+function pss_syncAllGeneratedPlaylists() {
+    global $leagues;
+    foreach ($leagues as $league) {
+        pss_syncGeneratedPlaylistsForLeague($league);
+    }
 }
 
 function pss_getTeamInfo($sport, $league, $team) {
@@ -348,6 +591,7 @@ function pss_updateTeam($sport, $league) {
 
     if ($teamID === '') {
         pss_clearLeagueState($league, true);
+        pss_syncGeneratedPlaylistsForLeague($league);
         pss_logEntry(strtoupper($league) . ' team cleared');
         return '';
     }
@@ -382,6 +626,7 @@ function pss_updateTeam($sport, $league) {
         }
     }
 
+    pss_syncGeneratedPlaylistsForLeague($league);
     pss_logEntry("{$league} team updated to {$teamInfo['name']}");
     return $teamInfo['logo'];
 }
@@ -453,9 +698,9 @@ function pss_processFootballScoring($league, $teamID, $plays) {
         $haystack = $typeText . ' ' . $playText;
 
         if (strpos($haystack, 'touchdown') !== false) {
-            pss_playConfiguredPlaylist($league, 'TouchdownPlaylist', 'Touchdown');
+            pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown');
         } elseif (strpos($haystack, 'field goal') !== false && strpos($haystack, 'no good') === false && strpos($haystack, 'miss') === false) {
-            pss_playConfiguredPlaylist($league, 'FieldgoalPlaylist', 'Field goal');
+            pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal');
         }
     }
 
@@ -468,23 +713,30 @@ function pss_processSimpleScoreIncrease($league, $oldScore, $newScore) {
     $lastCelebrated = (int)pss_pluginSetting("{$league}LastCelebratedScore", '0');
 
     if ($newScore > $oldScore && $newScore > $lastCelebrated) {
-        pss_playConfiguredPlaylist($league, 'ScorePlaylist', 'Score');
+        pss_playConfiguredSequence($league, 'ScoreSequence', 'Score');
         pss_setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
     } elseif ($newScore > $lastCelebrated) {
         pss_setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
     }
 }
 
-function pss_playConfiguredPlaylist($league, $suffix, $label) {
-    $playlist = pss_pluginSetting("{$league}{$suffix}", '');
-    if ($playlist === '') {
-        pss_logEntry("{$league} {$label} detected but no playlist is selected");
+function pss_playConfiguredSequence($league, $suffix, $label) {
+    $sequence = pss_pluginSetting("{$league}{$suffix}", '');
+    if ($sequence === '') {
+        pss_logEntry("{$league} {$label} detected but no sequence is selected");
         return;
     }
+
+    $playlist = pss_generatedPlaylistName($league, $suffix);
+    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $sequence)) {
+        pss_logEntry("{$league} {$label} detected but helper playlist could not be prepared for {$sequence}");
+        return;
+    }
+
     if (pss_insertPlaylistImmediate($playlist)) {
-        pss_logEntry("{$league} {$label} detected; inserted playlist {$playlist}");
+        pss_logEntry("{$league} {$label} detected; inserted {$sequence} using playlist {$playlist}");
     } else {
-        pss_logEntry("{$league} {$label} detected but FPP rejected playlist {$playlist}");
+        pss_logEntry("{$league} {$label} detected but FPP rejected generated playlist {$playlist}");
     }
 }
 
@@ -576,7 +828,7 @@ function pss_updateTeamStatus($reparseSettings = true) {
             $completed = pss_pluginSetting("{$league}LastCompletedEventID", '');
             if ($completed !== $eventID) {
                 if ($status['myScore'] > $status['oppoScore']) {
-                    pss_playConfiguredPlaylist($league, 'WinPlaylist', 'Win');
+                    pss_playConfiguredSequence($league, 'WinSequence', 'Win');
                 }
                 pss_setPluginSetting("{$league}LastCompletedEventID", $eventID);
             }

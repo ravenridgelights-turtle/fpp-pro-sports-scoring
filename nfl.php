@@ -24,15 +24,15 @@ function pss_initializePluginDefaults() {
         $defaults["{$league}OppoName"] = '';
         $defaults["{$league}MyScore"] = '0';
         $defaults["{$league}OppoScore"] = '0';
-        $defaults["{$league}WinPlaylist"] = '';
+        $defaults["{$league}WinSequence"] = '';
         $defaults["{$league}LastScoringPlayID"] = '';
         $defaults["{$league}LastCelebratedScore"] = '0';
         $defaults["{$league}LastCompletedEventID"] = '';
         if ($league === 'nfl' || $league === 'ncaa') {
-            $defaults["{$league}TouchdownPlaylist"] = '';
-            $defaults["{$league}FieldgoalPlaylist"] = '';
+            $defaults["{$league}TouchdownSequence"] = '';
+            $defaults["{$league}FieldgoalSequence"] = '';
         } else {
-            $defaults["{$league}ScorePlaylist"] = '';
+            $defaults["{$league}ScoreSequence"] = '';
         }
     }
 
@@ -48,6 +48,7 @@ pss_logEntry('Sports scoring daemon started');
 
 while (true) {
     $pluginSettings = pss_loadPluginSettings();
+    pss_syncAllGeneratedPlaylists();
     if (pss_pluginSetting('ENABLED', 'OFF') !== 'ON') {
         sleep(10);
         continue;

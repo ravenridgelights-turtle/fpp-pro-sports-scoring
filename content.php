@@ -11,7 +11,7 @@ function pss_currentValue($key, $default = '') {
 ?>
 <div class="container-fluid">
     <h2>Pro Sports Scoring Plugin</h2>
-    <p class="text-muted">Insert FPP celebration playlists when your NFL, NCAA Football, NHL, or MLB team scores or wins. FPP returns to the active show after the inserted playlist finishes.</p>
+    <p class="text-muted">Choose FPP sequences for NFL, NCAA Football, NHL, or MLB scoring events. The plugin automatically maintains helper playlists so FPP can interrupt the active show and return to it afterward.</p>
 
     <div class="card mb-3">
         <div class="card-body">
@@ -41,23 +41,23 @@ function pss_currentValue($key, $default = '') {
 
             <?php if ($meta['sport'] === 'football'): ?>
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Touchdown playlist</strong><div class="text-muted small">Saved FPP playlist inserted immediately when your team scores a touchdown.</div></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'TouchdownPlaylist', $league . 'TouchdownPlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Touchdown sequence</strong><div class="text-muted small">The plugin creates a PSS_NFL/NCAA helper playlist automatically and inserts it when your team scores a touchdown.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'TouchdownSequence', $league . 'TouchdownSequence', 0, 0, '', pss_getSequences(), $pluginName, 'pssSequenceChanged', ''); ?></div>
             </div>
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Field goal playlist</strong><div class="text-muted small">Saved FPP playlist inserted immediately for a made field goal.</div></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'FieldgoalPlaylist', $league . 'FieldgoalPlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Field goal sequence</strong><div class="text-muted small">The selected sequence is wrapped in an automatically managed PSS helper playlist.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'FieldgoalSequence', $league . 'FieldgoalSequence', 0, 0, '', pss_getSequences(), $pluginName, 'pssSequenceChanged', ''); ?></div>
             </div>
             <?php else: ?>
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Score playlist</strong><div class="text-muted small">Saved FPP playlist inserted immediately when your team scores.</div></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'ScorePlaylist', $league . 'ScorePlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Score sequence</strong><div class="text-muted small">The selected sequence is wrapped in an automatically managed PSS helper playlist.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'ScoreSequence', $league . 'ScoreSequence', 0, 0, '', pss_getSequences(), $pluginName, 'pssSequenceChanged', ''); ?></div>
             </div>
             <?php endif; ?>
 
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Win playlist</strong><div class="text-muted small">Saved FPP playlist inserted when a completed game is detected as a win.</div></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'WinPlaylist', $league . 'WinPlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Win sequence</strong><div class="text-muted small">The selected sequence is wrapped in an automatically managed PSS helper playlist and inserted after a win.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'WinSequence', $league . 'WinSequence', 0, 0, '', pss_getSequences(), $pluginName, 'pssSequenceChanged', ''); ?></div>
             </div>
         </div>
     </div>
@@ -65,6 +65,14 @@ function pss_currentValue($key, $default = '') {
 </div>
 
 <script>
+function pssSequenceChanged(setting) {
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'syncSequencePlaylist', setting: setting },
+        type: 'post'
+    });
+}
+
 <?php foreach ($leagues as $league): ?>
 function update<?=strtoupper($league)?>Team() {
     $.ajax({
