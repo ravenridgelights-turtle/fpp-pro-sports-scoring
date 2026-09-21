@@ -70,7 +70,7 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
             pss_saveTickerSettings($_POST);
             break;
         case 'testTicker':
-            pss_testTickerOutput();
+            pss_testTickerOutput($_POST);
             break;
         case 'clearTicker':
             pss_clearConfiguredTickerOutput();
@@ -426,6 +426,74 @@ function pss_getOverlayModels() {
     return $result;
 }
 
+function pss_getOverlayCommandModels() {
+    $models = array();
+    $data = pss_httpJson('http://127.0.0.1/api/models?simple=true&all=true');
+    if (is_array($data)) {
+        foreach ($data as $entry) {
+            if (is_string($entry)) {
+                $name = trim($entry);
+            } elseif (is_array($entry) && isset($entry['name'])) {
+                $name = trim((string)$entry['name']);
+            } elseif (is_array($entry) && isset($entry['Name'])) {
+                $name = trim((string)$entry['Name']);
+            } else {
+                $name = '';
+            }
+            if ($name === '' || $name === '--All Models--') {
+                continue;
+            }
+            $models[$name] = $name;
+        }
+    }
+
+    // Fall back to model-overlays.json if the live command API is unavailable.
+    if (empty($models)) {
+        foreach (pss_getOverlayModels() as $name => $info) {
+            $name = trim((string)$name);
+            if ($name !== '') {
+                $models[$name] = $name;
+            }
+        }
+    }
+
+    ksort($models, SORT_NATURAL | SORT_FLAG_CASE);
+    return array_values($models);
+}
+
+function pss_getOverlayFonts() {
+    $fonts = array();
+    $data = pss_httpJson('http://127.0.0.1/api/overlays/fonts');
+    if (is_array($data) && isset($data['fonts']) && is_array($data['fonts'])) {
+        $data = $data['fonts'];
+    }
+    if (is_array($data)) {
+        foreach ($data as $entry) {
+            $font = '';
+            if (is_string($entry)) {
+                $font = trim($entry);
+            } elseif (is_array($entry)) {
+                foreach (array('value', 'name', 'Name', 'font', 'label', 'path') as $key) {
+                    if (isset($entry[$key]) && is_scalar($entry[$key])) {
+                        $font = trim((string)$entry[$key]);
+                        if ($font !== '') break;
+                    }
+                }
+            }
+            if ($font !== '') {
+                $fonts[$font] = $font;
+            }
+        }
+    }
+
+    // The FPP command window on this player has already confirmed this alias.
+    if (empty($fonts)) {
+        $fonts['C059-Bdlta'] = 'C059-Bdlta';
+    }
+    ksort($fonts, SORT_NATURAL | SORT_FLAG_CASE);
+    return array_values($fonts);
+}
+
 function pss_tickerIncludeSetting($league, $slot) {
     return 'TickerInclude' . strtoupper((string)$league) . (((int)$slot === 2) ? '2' : '1');
 }
@@ -559,6 +627,32 @@ function pss_runFppCommand($command, $args) {
         'args' => is_array($args) ? $args : array()
     );
     return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+}
+
+// Pixel Overlay command-window compatible request.  FPP's own Pixel Overlay UI
+// posts only {command,args}; do not add multisync fields or model geometry.
+function pss_runFppCommandExact($command, $args) {
+    $payload = array(
+        'command' => (string)$command,
+        'args' => is_array($args) ? array_values($args) : array()
+    );
+    return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+}
+
+// FPP 10 also exposes commands through /api/command/<command>/<arg...>.
+// Pixel Overlay commands are sent through this route because FPP 10.1.2's
+// generic POST /api/command path can return HTTP 500 for overlay commands on
+// some players even though the same command succeeds from FPP's command UI.
+function pss_runFppCommandPath($command, $args) {
+    $parts = array(rawurlencode((string)$command));
+    if (is_array($args)) {
+        foreach ($args as $arg) {
+            $parts[] = rawurlencode((string)$arg);
+        }
+    }
+
+    $url = 'http://127.0.0.1/api/command/' . implode('/', $parts);
+    return pss_httpRequest($url, 'GET', null, 'text/plain, application/json');
 }
 
 function pss_legacyOverlayTickerPaths() {
@@ -864,7 +958,7 @@ function pss_startLegacyOverlayTicker($model, $text, $color, $fontSize, $directi
     pss_stopLegacyOverlayTicker();
 
     // The direct model-data buffer only drives output while the model is enabled.
-    $stateResponse = pss_runFppCommand('Overlay Model State', array($model, 'Enabled', '0', '100'));
+    $stateResponse = pss_runFppCommandPath('Overlay Model State', array($model, 'Enabled', '0', '100'));
     if (!is_array($stateResponse) || !$stateResponse['ok']) {
         $status = is_array($stateResponse) && isset($stateResponse['status']) ? $stateResponse['status'] : 0;
         pss_logEntry("Could not enable Pixel Overlay model {$model} for shared-memory ticker fallback (HTTP {$status})");
@@ -922,20 +1016,17 @@ function pss_clearOverlayModel($model) {
         return false;
     }
 
-    // A direct shared-memory fallback process writes continuously, so stop it before
-    // clearing/disabling the model or it would immediately paint the text back.
+    // Stop any helper left behind by older plugin builds, then issue only the
+    // same Overlay Model Clear command available in FPP's command window.
     pss_stopLegacyOverlayTicker();
-
-    $response = pss_runFppCommand('Overlay Model Clear', array($model));
+    $response = pss_runFppCommandExact('Overlay Model Clear', array($model));
     if (!$response['ok']) {
-        pss_logEntry("FPP rejected Overlay Model Clear for {$model} with HTTP {$response['status']}");
+        $detail = pss_overlayCommandErrorText($response);
+        pss_logEntry(
+            "FPP rejected Overlay Model Clear for {$model} with HTTP {$response['status']}"
+            . ($detail !== '' ? " response={$detail}" : '')
+        );
         return false;
-    }
-
-    // Restore normal sequence output after a ticker has owned the overlay.
-    $stateResponse = pss_runFppCommand('Overlay Model State', array($model, 'Disabled', '0', '100'));
-    if (!$stateResponse['ok']) {
-        pss_logEntry("FPP rejected Overlay Model State/Disabled for {$model} with HTTP {$stateResponse['status']}");
     }
     return true;
 }
@@ -977,23 +1068,83 @@ function pss_overlayCommandErrorText($response) {
     return preg_replace('/\s+/', ' ', $body);
 }
 
+function pss_runExactOverlayTextCommand($model, $autoEnable, $color, $font, $fontSize, $antiAlias, $position, $speed, $duration, $text) {
+    $model = trim((string)$model);
+    if ($model === '') {
+        return false;
+    }
+
+    $allowedAutoEnable = array('False', 'Enabled', 'Transparent', 'Transparent RGB');
+    if (!in_array($autoEnable, $allowedAutoEnable, true)) {
+        $autoEnable = 'Enabled';
+    }
+    $color = pss_normalizeColor($color, '#FFFFFF');
+    $font = trim((string)$font);
+    if ($font === '') {
+        $font = 'C059-Bdlta';
+    }
+    $fontSize = pss_clampInt($fontSize, 4, 100, 20);
+    $antiAlias = $antiAlias ? 'true' : 'false';
+    $allowedPositions = array('Center', 'Right to Left', 'Left to Right', 'Bottom to Top', 'Top to Bottom');
+    if (!in_array($position, $allowedPositions, true)) {
+        $position = 'Right to Left';
+    }
+    $speed = pss_clampInt($speed, 0, 200, 10);
+    $duration = pss_clampInt($duration, -1, 2000, 0);
+    $text = trim((string)$text);
+    if ($text === '') {
+        $text = 'PRO SPORTS SCORING';
+    }
+    if (strlen($text) > 1200) {
+        $text = substr($text, 0, 1200);
+    }
+
+    // EXACT FPP Overlay Model Effect -> Text argument order. Nothing else is
+    // appended: no width, height, orientation, channel count, or model geometry.
+    $args = array(
+        $model,
+        $autoEnable,
+        'Text',
+        $color,
+        $font,
+        (string)$fontSize,
+        $antiAlias,
+        $position,
+        (string)$speed,
+        (string)$duration,
+        $text
+    );
+
+    $response = pss_runFppCommandExact('Overlay Model Effect', $args);
+    if (!$response['ok']) {
+        $detail = pss_overlayCommandErrorText($response);
+        pss_logEntry(
+            "FPP Overlay Model Effect/Text rejected for {$model} HTTP {$response['status']}"
+            . ($detail !== '' ? " response={$detail}" : '')
+            . " autoEnable={$autoEnable} color={$color} font={$font} fontSize={$fontSize}"
+            . " antiAlias={$antiAlias} position={$position} speed={$speed} duration={$duration}"
+            . " textLength=" . strlen($text)
+        );
+        return false;
+    }
+
+    pss_logEntry(
+        "FPP Overlay Model Effect/Text started for {$model}"
+        . " font={$font} fontSize={$fontSize} position={$position} speed={$speed}"
+        . " duration={$duration} textLength=" . strlen($text)
+    );
+    return true;
+}
+
 function pss_sendOverlayTickerText($text, $force = false) {
     static $lastSignature = '';
     static $lastModel = '';
-    static $lastDelivery = '';
-    static $preferMemoryMap = false; // retained name: now means prefer direct shared-memory fallback
 
     if (pss_pluginSetting('TickerEnabled', 'OFF') !== 'ON' || pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
-        if ($lastModel !== '' || pss_legacyOverlayTickerIsRunning()) {
-            $clearModel = ($lastModel !== '') ? $lastModel : trim(pss_pluginSetting('TickerOverlayModel', ''));
-            if ($clearModel !== '') {
-                pss_clearOverlayModel($clearModel);
-            } else {
-                pss_stopLegacyOverlayTicker();
-            }
+        if ($lastModel !== '') {
+            pss_clearOverlayModel($lastModel);
             $lastModel = '';
             $lastSignature = '';
-            $lastDelivery = '';
         }
         return false;
     }
@@ -1003,17 +1154,15 @@ function pss_sendOverlayTickerText($text, $force = false) {
         return false;
     }
 
-    $color = pss_normalizeColor(pss_pluginSetting('TickerTextColor', '#FFFFFF'));
-    $requestedFont = trim(pss_pluginSetting('TickerFont', 'C059-Bdlta'));
-    $font = pss_resolveOverlayFont($requestedFont);
-
-    // FPP 10's Text effect advertises FontSize 4-100 and Scroll Speed 0-200.
-    $fontSize = pss_clampInt(pss_pluginSetting('TickerFontSize', '16'), 4, 100, 16);
-    $direction = pss_pluginSetting('TickerDirection', 'Right to Left');
-    if ($direction !== 'Left to Right' && $direction !== 'Right to Left') {
-        $direction = 'Right to Left';
-    }
-    $speed = pss_clampInt(pss_pluginSetting('TickerScrollSpeed', '10'), 0, 200, 10);
+    $autoEnable = pss_pluginSetting('TickerOverlayAutoEnable', 'Enabled');
+    $color = pss_pluginSetting('TickerTextColor', '#FFFFFF');
+    // Pass the font exactly as FPP returned/stored it. No font rewriting.
+    $font = trim(pss_pluginSetting('TickerFont', 'C059-Bdlta'));
+    $fontSize = pss_pluginSetting('TickerFontSize', '20');
+    $antiAlias = (pss_pluginSetting('TickerFontAntiAlias', 'OFF') === 'ON');
+    $position = pss_pluginSetting('TickerDirection', 'Right to Left');
+    $speed = pss_pluginSetting('TickerScrollSpeed', '10');
+    $duration = pss_pluginSetting('TickerDuration', '0');
 
     $text = trim((string)$text);
     if ($text === '') {
@@ -1023,72 +1172,27 @@ function pss_sendOverlayTickerText($text, $force = false) {
         $text = substr($text, 0, 1200);
     }
 
-    $signature = md5(implode('|', array($model, $color, $font, $fontSize, $direction, $speed, $text)));
+    $signature = md5(implode('|', array(
+        $model, $autoEnable, $color, $font, $fontSize,
+        $antiAlias ? 'true' : 'false', $position, $speed, $duration, $text
+    )));
     if (!$force && $signature === $lastSignature) {
-        if ($lastDelivery === 'modern') {
-            return true;
-        }
-        if ($lastDelivery === 'memorymap' && pss_legacyOverlayTickerIsRunning()) {
-            return true;
-        }
-        // The helper died or the daemon restarted. Fall through and recreate it.
+        return true;
     }
 
     if ($lastModel !== '' && $lastModel !== $model) {
         pss_clearOverlayModel($lastModel);
     }
 
-    // FPP 10 native command:
-    // Models, AutoEnable, Effect,
-    // Color, Font, FontSize, FontAntiAlias, Position, Speed, Duration, Text
-    //
-    // FPP 10.1.2 on the affected player accepts this command but returns HTTP
-    // 500 "Could not start effect: Text" inside the overlay-effect engine. Once
-    // that has happened in this daemon, skip repeating the known-bad call and
-    // use the direct FPP shared-model buffer fallback for later ticker refreshes.
-    $response = null;
-    if (!$preferMemoryMap) {
-        pss_stopLegacyOverlayTicker();
-        $modernArgs = array(
-            $model,
-            'Enabled',
-            'Text',
-            $color,
-            $font,
-            (string)$fontSize,
-            'false',
-            $direction,
-            (string)$speed,
-            '0',
-            $text
-        );
-        $response = pss_runFppCommand('Overlay Model Effect', $modernArgs);
-    }
-
-    if ($preferMemoryMap || !is_array($response) || !$response['ok']) {
-        if (is_array($response) && !$response['ok']) {
-            $detail = pss_overlayCommandErrorText($response);
-            pss_logEntry(
-                "FPP 10 Overlay Model Effect rejected sports ticker for {$model}"
-                . " HTTP {$response['status']}"
-                . ($detail !== '' ? " response={$detail}" : '')
-                . " font={$font}; switching to shared-memory ticker fallback"
-            );
-        }
-
-        if (!pss_startLegacyOverlayTicker($model, $text, $color, $fontSize, $direction, $speed)) {
-            $lastDelivery = '';
-            return false;
-        }
-
-        $preferMemoryMap = true;
-        $lastDelivery = 'memorymap'; // internal compatibility label; delivery is direct shared memory
-    } else {
-        $lastDelivery = 'modern';
-    }
-
-    if ($requestedFont !== $font && $lastDelivery === 'modern') {
-        pss_logEntry("Pixel ticker font '{$requestedFont}' resolved to '{$font}'");
+    // Do not fall back to MemoryMap/shared memory. The selected FPP model has
+    // already been proven to support the native Text command; use only that path.
+    pss_stopLegacyOverlayTicker();
+    $ok = pss_runExactOverlayTextCommand(
+        $model, $autoEnable, $color, $font, $fontSize,
+        $antiAlias, $position, $speed, $duration, $text
+    );
+    if (!$ok) {
+        return false;
     }
 
     $lastModel = $model;
@@ -1117,7 +1221,12 @@ function pss_saveTickerSettings($post) {
     if (!in_array($style, array('compact', 'normal', 'detailed'), true)) $style = 'normal';
 
     $direction = isset($post['TickerDirection']) ? trim((string)$post['TickerDirection']) : 'Right to Left';
-    if ($direction !== 'Left to Right' && $direction !== 'Right to Left') $direction = 'Right to Left';
+    $allowedPositions = array('Center', 'Right to Left', 'Left to Right', 'Bottom to Top', 'Top to Bottom');
+    if (!in_array($direction, $allowedPositions, true)) $direction = 'Right to Left';
+
+    $autoEnable = isset($post['TickerOverlayAutoEnable']) ? trim((string)$post['TickerOverlayAutoEnable']) : 'Enabled';
+    $allowedAutoEnable = array('False', 'Enabled', 'Transparent', 'Transparent RGB');
+    if (!in_array($autoEnable, $allowedAutoEnable, true)) $autoEnable = 'Enabled';
 
     $values = array(
         'TickerEnabled' => (isset($post['TickerEnabled']) && (string)$post['TickerEnabled'] === 'ON') ? 'ON' : 'OFF',
@@ -1128,13 +1237,14 @@ function pss_saveTickerSettings($post) {
         'TickerSpacing' => (string)pss_clampInt(isset($post['TickerSpacing']) ? $post['TickerSpacing'] : 4, 1, 12, 4),
         'TickerOverlayEnabled' => (isset($post['TickerOverlayEnabled']) && (string)$post['TickerOverlayEnabled'] === 'ON') ? 'ON' : 'OFF',
         'TickerOverlayModel' => isset($post['TickerOverlayModel']) ? trim((string)$post['TickerOverlayModel']) : '',
-        'TickerWidth' => (string)pss_clampInt(isset($post['TickerWidth']) ? $post['TickerWidth'] : 128, 1, 4096, 128),
-        'TickerHeight' => (string)pss_clampInt(isset($post['TickerHeight']) ? $post['TickerHeight'] : 32, 1, 4096, 32),
+        'TickerOverlayAutoEnable' => $autoEnable,
         'TickerFont' => isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'C059-Bdlta',
-        'TickerFontSize' => (string)pss_clampInt(isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 16, 6, 128, 16),
+        'TickerFontSize' => (string)pss_clampInt(isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 20, 4, 100, 20),
+        'TickerFontAntiAlias' => (isset($post['TickerFontAntiAlias']) && (string)$post['TickerFontAntiAlias'] === 'ON') ? 'ON' : 'OFF',
         'TickerTextColor' => pss_normalizeColor(isset($post['TickerTextColor']) ? $post['TickerTextColor'] : '#FFFFFF'),
         'TickerDirection' => $direction,
-        'TickerScrollSpeed' => (string)pss_clampInt(isset($post['TickerScrollSpeed']) ? $post['TickerScrollSpeed'] : 10, 1, 100, 10)
+        'TickerScrollSpeed' => (string)pss_clampInt(isset($post['TickerScrollSpeed']) ? $post['TickerScrollSpeed'] : 10, 0, 200, 10),
+        'TickerDuration' => (string)pss_clampInt(isset($post['TickerDuration']) ? $post['TickerDuration'] : 0, -1, 2000, 0)
     );
 
     global $leagues;
@@ -1172,28 +1282,45 @@ function pss_saveTickerSettings($post) {
 
     pss_jsonResponse(true, $message, array(
         'tickerText' => pss_buildTickerText(false),
+        'overlayTickerText' => pss_buildTickerText(true),
         'tickerItems' => pss_buildTickerItems(false),
         'tickerSpacing' => pss_tickerSpacing(),
         'tickerWebFontSize' => pss_clampInt(pss_pluginSetting('TickerWebFontSize', '18'), 12, 48, 18)
     ));
 }
 
-function pss_testTickerOutput() {
-    if (pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
-        pss_jsonResponse(false, 'Enable Pixel Overlay output and save the ticker settings first.');
+function pss_testTickerOutput($post = array()) {
+    if (!isset($post['TickerOverlayEnabled']) || (string)$post['TickerOverlayEnabled'] !== 'ON') {
+        pss_jsonResponse(false, 'Enable Pixel Overlay output first.');
     }
-    $model = trim(pss_pluginSetting('TickerOverlayModel', ''));
+
+    $model = isset($post['TickerOverlayModel']) ? trim((string)$post['TickerOverlayModel']) : '';
     if ($model === '') {
-        pss_jsonResponse(false, 'Select a Pixel Overlay Model and save the ticker settings first.');
+        pss_jsonResponse(false, 'Select a Pixel Overlay Model first.');
     }
 
-    $text = pss_buildTickerText(true);
-    if ($text === 'PRO SPORTS SCORING | NO SELECTED TEAMS') {
-        $text = 'PRO SPORTS SCORING | PIXEL OVERLAY TEST | ' . date('g:i A');
+    $autoEnable = isset($post['TickerOverlayAutoEnable']) ? trim((string)$post['TickerOverlayAutoEnable']) : 'Enabled';
+    $color = isset($post['TickerTextColor']) ? (string)$post['TickerTextColor'] : '#FFFFFF';
+    $font = isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'C059-Bdlta';
+    $fontSize = isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 20;
+    $antiAlias = isset($post['TickerFontAntiAlias']) && (string)$post['TickerFontAntiAlias'] === 'ON';
+    $position = isset($post['TickerDirection']) ? trim((string)$post['TickerDirection']) : 'Right to Left';
+    $speed = isset($post['TickerScrollSpeed']) ? $post['TickerScrollSpeed'] : 10;
+    $duration = isset($post['TickerDuration']) ? $post['TickerDuration'] : 0;
+    $text = isset($post['TickerCommandText']) ? trim((string)$post['TickerCommandText']) : pss_buildTickerText(true);
+    if ($text === '') {
+        $text = pss_buildTickerText(true);
     }
 
-    $ok = pss_sendOverlayTickerText($text, true);
-    pss_jsonResponse($ok, $ok ? 'Test ticker sent to ' . $model . '.' : 'FPP rejected the test ticker. Check the plugin log.');
+    pss_stopLegacyOverlayTicker();
+    $ok = pss_runExactOverlayTextCommand(
+        $model, $autoEnable, $color, $font, $fontSize,
+        $antiAlias, $position, $speed, $duration, $text
+    );
+    pss_jsonResponse(
+        $ok,
+        $ok ? 'Exact FPP Overlay Model Effect/Text command sent to ' . $model . '.' : 'FPP rejected the exact Text command. Check the plugin log.'
+    );
 }
 
 function pss_manualTrigger($post) {

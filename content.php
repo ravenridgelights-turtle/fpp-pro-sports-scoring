@@ -4,7 +4,8 @@ include_once __DIR__ . '/functions.inc.php';
 $pluginName = basename(dirname(__FILE__));
 $pluginSettings = pss_loadPluginSettings();
 $pssSequenceOptions = pss_getSequences();
-$pssOverlayModels = pss_getOverlayModels();
+$pssOverlayModels = pss_getOverlayCommandModels();
+$pssOverlayFonts = pss_getOverlayFonts();
 
 function pss_currentValue($key, $default = '') {
     global $pluginSettings;
@@ -189,45 +190,101 @@ function pss_currentValue($key, $default = '') {
 
                 <hr>
                 <h5>Pixel Overlay Output</h5>
-                <p class="text-muted small">Uses FPP 10's built-in Overlay Model Effect → Text command. The actual output area is the Pixel Overlay Model you select; width and height below are for preview/validation and font-size planning.</p>
+                <p class="text-muted small">This section mirrors FPP's <strong>Run FPP Command → Overlay Model Effect → Text</strong> command. Only the fields shown below are sent to FPP. Model width/height are not sent; FPP/xLights owns the selected model's geometry.</p>
 
                 <div class="row mb-3 align-items-center">
-                    <div class="col-md-4"><strong>Enable Pixel Overlay ticker</strong></div>
+                    <div class="col-md-4"><strong>Enable Pixel Overlay ticker</strong><div class="text-muted small">Plugin control only; this checkbox is not an Overlay Model Effect argument.</div></div>
                     <div class="col-md-8"><label><input type="checkbox" name="TickerOverlayEnabled" value="ON" <?=pss_currentValue('TickerOverlayEnabled', 'OFF') === 'ON' ? 'checked' : ''?>> Send ticker to a Pixel Overlay Model</label></div>
                 </div>
 
-                <div class="row mb-3">
-                    <div class="col-md-4"><strong>Pixel Overlay Model</strong><div class="text-muted small">Create/upload the model in FPP first. If dimensions are known, selecting the model fills them below.</div></div>
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Command</strong></div>
+                    <div class="col-md-8"><input class="form-control" type="text" value="Overlay Model Effect" readonly></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Models</strong><div class="text-muted small">Loaded from FPP's command model list. No dimensions or other model metadata are sent.</div></div>
                     <div class="col-md-8">
                         <?php $tickerModel = pss_currentValue('TickerOverlayModel', ''); ?>
-                        <select class="form-control" id="pss-ticker-model" name="TickerOverlayModel" onchange="pssTickerModelChanged()">
+                        <select class="form-control" id="pss-ticker-model" name="TickerOverlayModel">
                             <option value="">-- Select model --</option>
-                            <?php if ($tickerModel !== '' && !isset($pssOverlayModels[$tickerModel])): ?>
-                            <option value="<?=htmlspecialchars($tickerModel, ENT_QUOTES)?>" selected><?=htmlspecialchars($tickerModel)?> — saved model not currently found</option>
+                            <?php if ($tickerModel !== '' && !in_array($tickerModel, $pssOverlayModels, true)): ?>
+                            <option value="<?=htmlspecialchars($tickerModel, ENT_QUOTES)?>" selected><?=htmlspecialchars($tickerModel)?> — saved model not currently returned by FPP</option>
                             <?php endif; ?>
-                            <?php foreach ($pssOverlayModels as $overlayModel):
-                                $dims = ($overlayModel['width'] > 0 && $overlayModel['height'] > 0) ? ' — ' . $overlayModel['width'] . '×' . $overlayModel['height'] : '';
-                            ?>
-                            <option value="<?=htmlspecialchars($overlayModel['name'], ENT_QUOTES)?>" data-width="<?=intval($overlayModel['width'])?>" data-height="<?=intval($overlayModel['height'])?>" <?=$tickerModel === $overlayModel['name'] ? 'selected' : ''?>><?=htmlspecialchars($overlayModel['name'] . $dims)?></option>
+                            <?php foreach ($pssOverlayModels as $overlayModel): ?>
+                            <option value="<?=htmlspecialchars($overlayModel, ENT_QUOTES)?>" <?=$tickerModel === $overlayModel ? 'selected' : ''?>><?=htmlspecialchars($overlayModel)?></option>
                             <?php endforeach; ?>
                         </select>
-                        <?php if (empty($pssOverlayModels)): ?><div class="text-warning small mt-1">No Pixel Overlay Models were found in FPP's model-overlays.json.</div><?php endif; ?>
+                        <?php if (empty($pssOverlayModels)): ?><div class="text-warning small mt-1">FPP did not return any Pixel Overlay Models from its command model API.</div><?php endif; ?>
                     </div>
                 </div>
 
-                <div class="row mb-3">
-                    <div class="col-md-4"><strong>Ticker area</strong><div class="text-muted small">Informational dimensions; the selected FPP model controls the real output geometry.</div></div>
-                    <div class="col-md-2"><label>Width (px)<input id="pss-ticker-width" class="form-control" type="number" min="1" max="4096" name="TickerWidth" value="<?=htmlspecialchars(pss_currentValue('TickerWidth', '128'))?>"></label></div>
-                    <div class="col-md-2"><label>Height (px)<input id="pss-ticker-height" class="form-control" type="number" min="1" max="4096" name="TickerHeight" value="<?=htmlspecialchars(pss_currentValue('TickerHeight', '32'))?>"></label></div>
-                    <div class="col-md-2"><label>Font size<input class="form-control" type="number" min="6" max="128" name="TickerFontSize" value="<?=htmlspecialchars(pss_currentValue('TickerFontSize', '16'))?>"></label></div>
-                    <div class="col-md-2"><label>Text color<input class="form-control" type="color" name="TickerTextColor" value="<?=htmlspecialchars(pss_currentValue('TickerTextColor', '#FFFFFF'))?>"></label></div>
+                <?php $tickerAutoEnable = pss_currentValue('TickerOverlayAutoEnable', 'Enabled'); ?>
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Auto Enable/Disable</strong></div>
+                    <div class="col-md-8"><select class="form-control" name="TickerOverlayAutoEnable">
+                        <?php foreach (array('False','Enabled','Transparent','Transparent RGB') as $v): ?>
+                        <option value="<?=htmlspecialchars($v, ENT_QUOTES)?>" <?=$tickerAutoEnable === $v ? 'selected' : ''?>><?=htmlspecialchars($v)?></option>
+                        <?php endforeach; ?>
+                    </select></div>
                 </div>
 
-                <div class="row mb-3">
-                    <div class="col-md-4"><strong>Scroll settings</strong></div>
-                    <div class="col-md-3"><label>Font<input class="form-control" type="text" name="TickerFont" value="<?=htmlspecialchars(pss_currentValue('TickerFont', 'Helvetica'))?>"></label></div>
-                    <div class="col-md-3"><label>Direction<select class="form-control" name="TickerDirection"><?php $tickerDirection = pss_currentValue('TickerDirection', 'Right to Left'); ?><option value="Right to Left" <?=$tickerDirection === 'Right to Left' ? 'selected' : ''?>>Right to Left</option><option value="Left to Right" <?=$tickerDirection === 'Left to Right' ? 'selected' : ''?>>Left to Right</option></select></label></div>
-                    <div class="col-md-2"><label>Speed<input class="form-control" type="number" min="1" max="100" name="TickerScrollSpeed" value="<?=htmlspecialchars(pss_currentValue('TickerScrollSpeed', '10'))?>"></label></div>
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Effect</strong></div>
+                    <div class="col-md-8"><input class="form-control" type="text" value="Text" readonly></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Color</strong></div>
+                    <div class="col-md-8"><input class="form-control" style="max-width:110px" type="color" name="TickerTextColor" value="<?=htmlspecialchars(pss_currentValue('TickerTextColor', '#FFFFFF'))?>"></div>
+                </div>
+
+                <?php $tickerFont = pss_currentValue('TickerFont', 'C059-Bdlta'); ?>
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Font</strong><div class="text-muted small">Loaded from FPP's overlay font API.</div></div>
+                    <div class="col-md-8"><select class="form-control" name="TickerFont">
+                        <?php if ($tickerFont !== '' && !in_array($tickerFont, $pssOverlayFonts, true)): ?>
+                        <option value="<?=htmlspecialchars($tickerFont, ENT_QUOTES)?>" selected><?=htmlspecialchars($tickerFont)?> — saved font</option>
+                        <?php endif; ?>
+                        <?php foreach ($pssOverlayFonts as $fontName): ?>
+                        <option value="<?=htmlspecialchars($fontName, ENT_QUOTES)?>" <?=$tickerFont === $fontName ? 'selected' : ''?>><?=htmlspecialchars($fontName)?></option>
+                        <?php endforeach; ?>
+                    </select></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>FontSize</strong></div>
+                    <div class="col-md-8"><input class="form-control" type="number" min="4" max="100" name="TickerFontSize" value="<?=htmlspecialchars(pss_currentValue('TickerFontSize', '20'))?>"></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Anti-Aliased</strong></div>
+                    <div class="col-md-8"><label><input type="checkbox" name="TickerFontAntiAlias" value="ON" <?=pss_currentValue('TickerFontAntiAlias', 'OFF') === 'ON' ? 'checked' : ''?>> Enable anti-aliasing</label></div>
+                </div>
+
+                <?php $tickerDirection = pss_currentValue('TickerDirection', 'Right to Left'); ?>
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Position</strong></div>
+                    <div class="col-md-8"><select class="form-control" name="TickerDirection">
+                        <?php foreach (array('Center','Right to Left','Left to Right','Bottom to Top','Top to Bottom') as $v): ?>
+                        <option value="<?=htmlspecialchars($v, ENT_QUOTES)?>" <?=$tickerDirection === $v ? 'selected' : ''?>><?=htmlspecialchars($v)?></option>
+                        <?php endforeach; ?>
+                    </select></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Scroll Speed</strong></div>
+                    <div class="col-md-8"><input class="form-control" type="number" min="0" max="200" name="TickerScrollSpeed" value="<?=htmlspecialchars(pss_currentValue('TickerScrollSpeed', '10'))?>"></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Duration</strong></div>
+                    <div class="col-md-8"><input class="form-control" type="number" min="-1" max="2000" name="TickerDuration" value="<?=htmlspecialchars(pss_currentValue('TickerDuration', '0'))?>"></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Text</strong><div class="text-muted small">Automatically generated from the current sports ticker preview. This exact string is sent as FPP's Text argument.</div></div>
+                    <div class="col-md-8"><input id="pss-overlay-command-text" class="form-control" type="text" name="TickerCommandText" value="<?=htmlspecialchars(pss_buildTickerText(true), ENT_QUOTES)?>" readonly></div>
                 </div>
 
                 <div class="pss-ticker-actions">
@@ -465,6 +522,10 @@ function pssSaveTickerSettings(event) {
         if (response && response.tickerText) {
             pssRenderTickerPreview(response.tickerItems || [], response.tickerText, response.tickerSpacing || 4, response.tickerWebFontSize || 18);
         }
+        if (response && response.overlayTickerText) {
+            var commandText = document.getElementById('pss-overlay-command-text');
+            if (commandText) commandText.value = response.overlayTickerText;
+        }
     }).fail(function () {
         pssTickerMessage('Unable to save ticker settings. Check the plugin log.', true);
     });
@@ -475,7 +536,7 @@ function pssTestTicker() {
     pssTickerMessage('Sending test ticker…', false);
     $.ajax({
         url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
-        data: { action: 'testTicker' },
+        data: pssTickerFormData('testTicker'),
         type: 'post',
         dataType: 'json'
     }).done(function (response) {
@@ -497,16 +558,6 @@ function pssClearTicker() {
     }).fail(function () {
         pssTickerMessage('Unable to clear ticker. Check the plugin log.', true);
     });
-}
-
-function pssTickerModelChanged() {
-    var select = document.getElementById('pss-ticker-model');
-    if (!select || select.selectedIndex < 0) return;
-    var option = select.options[select.selectedIndex];
-    var width = parseInt(option.getAttribute('data-width') || '0', 10);
-    var height = parseInt(option.getAttribute('data-height') || '0', 10);
-    if (width > 0) document.getElementById('pss-ticker-width').value = width;
-    if (height > 0) document.getElementById('pss-ticker-height').value = height;
 }
 
 <?php foreach ($leagues as $league): ?>
