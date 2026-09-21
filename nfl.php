@@ -74,8 +74,42 @@ function pss_initializePluginDefaults() {
     }
 }
 
+
+function pss_launchHighlightCacheWorker() {
+    $stamp = '/tmp/fpp-nfl-highlight-cache-launch.stamp';
+    $now = time();
+
+    // Check every ~20 seconds without tying highlight discovery to the main
+    // score-poll sleep interval. The worker itself also takes a nonblocking lock.
+    $last = is_file($stamp) ? (int)@filemtime($stamp) : 0;
+    if ($last > 0 && ($now - $last) < 20) {
+        return;
+    }
+    @touch($stamp);
+
+    $php = is_file('/usr/bin/php') ? '/usr/bin/php' : 'php';
+    $worker = __DIR__ . '/highlight-cache.php';
+    if (!is_file($worker)) {
+        return;
+    }
+
+    $command = escapeshellcmd($php) . ' ' . escapeshellarg($worker) . ' >/dev/null 2>&1 &';
+    @exec($command);
+}
+
+function pss_sleepWithHighlightCache($seconds) {
+    $remaining = max(1, (int)$seconds);
+    while ($remaining > 0) {
+        pss_launchHighlightCacheWorker();
+        $chunk = min(20, $remaining);
+        sleep($chunk);
+        $remaining -= $chunk;
+    }
+}
+
 pss_initializePluginDefaults();
 pss_logEntry('Sports scoring daemon started');
+pss_launchHighlightCacheWorker();
 
 while (true) {
     $pluginSettings = pss_loadPluginSettings();
@@ -87,7 +121,7 @@ while (true) {
     try {
         $sleepTime = pss_updateTeamStatus(false);
         pss_updateTickerOutput(false);
-        sleep(max(5, (int)$sleepTime));
+        pss_sleepWithHighlightCache(max(5, (int)$sleepTime));
     } catch (Throwable $e) {
         pss_logEntry('Daemon error: ' . $e->getMessage());
         sleep(30);
