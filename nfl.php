@@ -10,7 +10,6 @@ function pss_initializePluginDefaults() {
     $defaults = array(
         'ENABLED' => 'OFF',
         'logLevel' => '4',
-        'HighlightQuality' => 'low',
         'TickerEnabled' => 'OFF',
         'TickerKioskEnabled' => 'ON',
         'TickerStyle' => 'normal',
@@ -75,46 +74,8 @@ function pss_initializePluginDefaults() {
     }
 }
 
-
-function pss_launchHighlightCacheWorker() {
-    $stamp = '/tmp/fpp-nfl-highlight-cache-launch.stamp';
-    $now = time();
-
-    // Pi-safe cadence. ESPN clips are not published instantly anyway, and a
-    // 45-second cache check avoids constant PHP/cURL churn on low-power hardware.
-    $last = is_file($stamp) ? (int)@filemtime($stamp) : 0;
-    if ($last > 0 && ($now - $last) < 45) {
-        return;
-    }
-    @touch($stamp);
-
-    $php = is_file('/usr/bin/php') ? '/usr/bin/php' : 'php';
-    $worker = __DIR__ . '/highlight-cache.php';
-    if (!is_file($worker)) {
-        return;
-    }
-
-    // Run cache work below FPP's normal workload priority. ionice may not exist on
-    // every image, so use it only when available.
-    $nice = is_executable('/usr/bin/nice') ? '/usr/bin/nice -n 15 ' : '';
-    $ionice = is_executable('/usr/bin/ionice') ? '/usr/bin/ionice -c3 ' : '';
-    $command = $nice . $ionice . escapeshellcmd($php) . ' ' . escapeshellarg($worker) . ' >/dev/null 2>&1 &';
-    @exec($command);
-}
-
-function pss_sleepWithHighlightCache($seconds) {
-    $remaining = max(1, (int)$seconds);
-    while ($remaining > 0) {
-        pss_launchHighlightCacheWorker();
-        $chunk = min(45, $remaining);
-        sleep($chunk);
-        $remaining -= $chunk;
-    }
-}
-
 pss_initializePluginDefaults();
 pss_logEntry('Sports scoring daemon started');
-pss_launchHighlightCacheWorker();
 
 while (true) {
     $pluginSettings = pss_loadPluginSettings();
@@ -126,7 +87,7 @@ while (true) {
     try {
         $sleepTime = pss_updateTeamStatus(false);
         pss_updateTickerOutput(false);
-        pss_sleepWithHighlightCache(max(5, (int)$sleepTime));
+        sleep(max(5, (int)$sleepTime));
     } catch (Throwable $e) {
         pss_logEntry('Daemon error: ' . $e->getMessage());
         sleep(30);

@@ -3,9 +3,7 @@ $pssKioskMode = isset($_GET['kiosk']) && (string)$_GET['kiosk'] === '1';
 $pssDataMode = isset($_GET['data']) && (string)$_GET['data'] === '1';
 $pssHighlightMode = isset($_GET['highlights']) && (string)$_GET['highlights'] === '1';
 $pssHighlightMediaMode = isset($_GET['highlightmedia']) && (string)$_GET['highlightmedia'] === '1';
-$pssHighlightCachedMediaMode = isset($_GET['highlightcachemedia']) && (string)$_GET['highlightcachemedia'] === '1';
-$pssHighlightCacheRequestMode = isset($_GET['highlightcacherequest']) && (string)$_GET['highlightcacherequest'] === '1';
-if ($pssDataMode || $pssHighlightMode || $pssHighlightMediaMode || $pssHighlightCachedMediaMode || $pssHighlightCacheRequestMode) {
+if ($pssDataMode || $pssHighlightMode || $pssHighlightMediaMode) {
     $skipJSsettings = 1;
 }
 
@@ -261,60 +259,6 @@ function pss_collectHighlightMediaCandidates($node, &$candidates, $path = '', $d
     }
 }
 
-function pss_highlightQualityPreference() {
-    $quality = strtolower(trim((string)pss_statusValue('HighlightQuality', 'low')));
-    return in_array($quality, array('low', 'medium', 'best'), true) ? $quality : 'low';
-}
-
-function pss_highlightSourceQualityScore($source, $quality) {
-    $type = isset($source['type']) ? strtolower((string)$source['type']) : '';
-    $path = isset($source['path']) ? strtolower((string)$source['path']) : '';
-    $url = isset($source['url']) ? strtolower((string)$source['url']) : '';
-    $text = $path . ' ' . $url;
-
-    // Legacy FPP browsers still prefer progressive MP4. HLS is retained as a
-    // last-resort browser fallback, not as the primary cache source.
-    $score = ($type === 'mp4') ? 0 : 1000;
-
-    $isMobile = (strpos($text, 'mobile') !== false);
-    $isMezzanine = (strpos($text, 'mezzanine') !== false);
-    $isHd = (strpos($text, '.hd') !== false || strpos($text, '/hd') !== false || strpos($text, '720') !== false);
-    $isFull = (strpos($text, '.full') !== false || strpos($text, 'full.') !== false);
-    $has1080 = (strpos($text, '1080') !== false);
-    $has540 = (strpos($text, '540') !== false);
-    $has480 = (strpos($text, '480') !== false);
-    $has360 = (strpos($text, '360') !== false);
-    $has240 = (strpos($text, '240') !== false);
-
-    if ($quality === 'best') {
-        if ($isMezzanine || $has1080) return $score + 0;
-        if ($isHd || strpos($text, '720') !== false) return $score + 2;
-        if ($has540 || $isFull) return $score + 5;
-        if ($has480) return $score + 7;
-        if ($has360 || $isMobile) return $score + 12;
-        if ($has240) return $score + 18;
-        return $score + 8;
-    }
-
-    if ($quality === 'medium') {
-        if ($has480 || $has540 || $isFull) return $score + 0;
-        if ($has360 || $isMobile) return $score + 3;
-        if ($isHd || strpos($text, '720') !== false) return $score + 8;
-        if ($has240) return $score + 10;
-        if ($isMezzanine || $has1080) return $score + 15;
-        return $score + 5;
-    }
-
-    // Data Saver: aggressively prefer ESPN's mobile/low rendition when supplied.
-    if ($has240) return $score + 0;
-    if ($has360 || $isMobile) return $score + 1;
-    if ($has480) return $score + 5;
-    if ($has540 || $isFull) return $score + 8;
-    if ($isHd || strpos($text, '720') !== false) return $score + 16;
-    if ($isMezzanine || $has1080) return $score + 24;
-    return $score + 6;
-}
-
 function pss_highlightMediaSources($video) {
     $candidates = array();
 
@@ -363,13 +307,12 @@ function pss_highlightMediaSources($video) {
         );
     }
 
-    $quality = pss_highlightQualityPreference();
-    usort($sources, function ($a, $b) use ($quality) {
-        $rankA = pss_highlightSourceQualityScore($a, $quality);
-        $rankB = pss_highlightSourceQualityScore($b, $quality);
-        if ($rankA === $rankB) {
-            return strcmp(isset($a['path']) ? (string)$a['path'] : '', isset($b['path']) ? (string)$b['path'] : '');
-        }
+    usort($sources, function ($a, $b) {
+        // Progressive MP4 must win on legacy FPP browsers. HLS is a fallback for
+        // Safari/iOS and any browser that reports native HLS support.
+        $rankA = ($a['type'] === 'mp4') ? 0 : 1;
+        $rankB = ($b['type'] === 'mp4') ? 0 : 1;
+        if ($rankA === $rankB) return 0;
         return ($rankA < $rankB) ? -1 : 1;
     });
 
@@ -444,8 +387,6 @@ function pss_normalizeHighlightVideo($video, $index = 0) {
         'mediaUrl' => $mediaUrl,
         'mediaType' => (!empty($mediaSources) ? $mediaSources[0]['type'] : ''),
         'mediaSources' => $mediaSources,
-        'qualityPreference' => pss_highlightQualityPreference(),
-        'selectedSourcePath' => (!empty($mediaSources) && isset($mediaSources[0]['path'])) ? $mediaSources[0]['path'] : '',
         'webUrl' => $webUrl,
         'playable' => ($mediaUrl !== ''),
         '_sortTime' => (int)$sortTime,
@@ -512,242 +453,6 @@ function pss_fetchEspnHighlights($league, $eventID, $limit = 6) {
 }
 
 
-
-function pss_highlightCacheDir() {
-    return '/home/fpp/media/cache/fpp-nfl-highlights';
-}
-
-function pss_highlightSafePart($value) {
-    return preg_replace('/[^A-Za-z0-9_-]/', '_', (string)$value);
-}
-
-function pss_highlightCachedFilePath($league, $slot, $eventID, $clipID) {
-    $league = pss_highlightSafePart(strtolower((string)$league));
-    $slot = ((int)$slot === 2) ? 2 : 1;
-    $eventID = pss_highlightSafePart($eventID);
-    $clipID = pss_highlightSafePart($clipID);
-    $quality = pss_highlightSafePart(pss_highlightQualityPreference());
-    if ($league === '' || $eventID === '' || $clipID === '' || $quality === '') return '';
-    return pss_highlightCacheDir() . '/' . $league . '-' . $slot . '-' . $eventID . '-' . $quality . '-' . $clipID . '.mp4';
-}
-
-function pss_highlightCacheRequestPath() {
-    // The web UI may run as a different user than the root-owned sports daemon.
-    // Keep the tiny queue-control file in /tmp so both sides can safely access it.
-    // Video files themselves remain in the normal FPP media cache directory.
-    return '/tmp/fpp-nfl-highlight-priority-request.json';
-}
-
-function pss_highlightCachePartPath($league, $slot, $eventID, $clipID) {
-    $file = pss_highlightCachedFilePath($league, $slot, $eventID, $clipID);
-    return $file !== '' ? $file . '.part' : '';
-}
-
-function pss_highlightReadPriorityRequest() {
-    $path = pss_highlightCacheRequestPath();
-    if (!is_file($path)) return array();
-    $raw = @file_get_contents($path);
-    if ($raw === false || $raw === '') return array();
-    $data = json_decode($raw, true);
-    return is_array($data) ? $data : array();
-}
-
-function pss_highlightLaunchCacheWorkerNow() {
-    $worker = __DIR__ . '/highlight-cache.php';
-    if (!is_file($worker)) return;
-
-    $php = is_file('/usr/bin/php') ? '/usr/bin/php' : 'php';
-    $nice = is_executable('/usr/bin/nice') ? '/usr/bin/nice -n 15 ' : '';
-    $ionice = is_executable('/usr/bin/ionice') ? '/usr/bin/ionice -c3 ' : '';
-    $command = $nice . $ionice . escapeshellcmd($php) . ' ' . escapeshellarg($worker) . ' >/dev/null 2>&1 &';
-    @exec($command);
-}
-
-function pss_requestHighlightCache($league, $slot, $clipID) {
-    $league = strtolower(trim((string)$league));
-    $slot = ((int)$slot === 2) ? 2 : 1;
-    $clipID = trim((string)$clipID);
-    $supported = array('nfl', 'ncaa', 'nhl', 'mlb');
-
-    if (!in_array($league, $supported, true)
-        || $clipID === ''
-        || !preg_match('/^[A-Za-z0-9_-]+$/', $clipID)) {
-        return array('ok' => false, 'message' => 'Invalid highlight cache request.');
-    }
-
-    $prefix = pss_teamPrefix($league, $slot);
-    $teamID = pss_statusValue($prefix . 'TeamID');
-    $eventID = pss_statusValue($prefix . 'TeamNextEventID');
-    if ($teamID === '' || $eventID === '') {
-        return array('ok' => false, 'message' => 'No selected event for this team slot.');
-    }
-
-    $items = pss_fetchEspnHighlights($league, $eventID, 6);
-    $matched = null;
-    foreach ($items as $item) {
-        if (isset($item['id']) && (string)$item['id'] === $clipID) {
-            $matched = $item;
-            break;
-        }
-    }
-    if (!is_array($matched)) {
-        return array('ok' => false, 'message' => 'Highlight is no longer available for this event.');
-    }
-
-    $upstream = isset($matched['mediaUrl']) ? trim((string)$matched['mediaUrl']) : '';
-    if ($upstream === '' || !preg_match('/^https:\/\/[^ ]+\.mp4(?:\?|$)/i', $upstream)) {
-        return array('ok' => false, 'message' => 'This highlight has no cacheable MP4 source.');
-    }
-
-    // Do not create/chown the video cache from the web request. The background
-    // worker owns that directory and will create it with the daemon's permissions.
-    $target = pss_highlightCachedFilePath($league, $slot, $eventID, $clipID);
-    if ($target !== '' && is_file($target) && filesize($target) > 1024) {
-        @touch($target);
-        return array('ok' => true, 'state' => 'cached', 'message' => 'Highlight is already cached.');
-    }
-
-    // One priority request on purpose: the most recently selected uncached clip wins.
-    // This prevents a user from building a large download queue on a Pi Zero.
-    $request = array(
-        'league' => $league,
-        'slot' => $slot,
-        'eventID' => (string)$eventID,
-        'clipID' => $clipID,
-        'requestedAt' => time()
-    );
-    $path = pss_highlightCacheRequestPath();
-    $tmp = $path . '.' . getmypid() . '.tmp';
-    $payload = json_encode($request);
-
-    if ($payload === false || @file_put_contents($tmp, $payload, LOCK_EX) === false) {
-        @unlink($tmp);
-        return array(
-            'ok' => false,
-            'message' => 'Unable to write highlight cache queue file.',
-            'queuePath' => $path
-        );
-    }
-
-    @chmod($tmp, 0666);
-    if (!@rename($tmp, $path)) {
-        @unlink($tmp);
-        return array(
-            'ok' => false,
-            'message' => 'Unable to publish highlight cache queue file.',
-            'queuePath' => $path
-        );
-    }
-    @chmod($path, 0666);
-
-    // Do not spawn the video worker from the web/PHP request. The normal sports
-    // daemon will pick this request up on its next low-priority cache pass.
-    return array(
-        'ok' => true,
-        'state' => 'queued',
-        'message' => 'Highlight queued for background caching.',
-        'queuePath' => $path
-    );
-}
-
-function pss_highlightCachedMediaUrl($league, $slot, $clipID) {
-    return 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlightcachemedia=1&league='
-        . rawurlencode((string)$league)
-        . '&slot=' . (int)$slot
-        . '&clip=' . rawurlencode((string)$clipID);
-}
-
-function pss_streamCachedHighlightMedia($league, $slot, $clipID) {
-    $league = strtolower(trim((string)$league));
-    $slot = ((int)$slot === 2) ? 2 : 1;
-    $clipID = trim((string)$clipID);
-
-    $supportedHighlightLeagues = array('nfl', 'ncaa', 'nhl', 'mlb');
-    if (!in_array($league, $supportedHighlightLeagues, true)
-        || $clipID === ''
-        || !preg_match('/^[A-Za-z0-9_-]+$/', $clipID)) {
-        http_response_code(400);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo 'Invalid cached highlight request.';
-        exit;
-    }
-
-    $prefix = pss_teamPrefix($league, $slot);
-    $eventID = pss_statusValue($prefix . 'TeamNextEventID');
-    $file = pss_highlightCachedFilePath($league, $slot, $eventID, $clipID);
-    if ($file === '' || !is_file($file) || filesize($file) <= 0) {
-        http_response_code(404);
-        header('Content-Type: text/plain; charset=utf-8');
-        echo 'Cached highlight is not available.';
-        exit;
-    }
-
-    while (ob_get_level() > 0) {
-        @ob_end_clean();
-    }
-    @set_time_limit(0);
-    @ignore_user_abort(true);
-
-    @touch($file);
-    $size = filesize($file);
-    $start = 0;
-    $end = $size - 1;
-    $status = 200;
-
-    $range = isset($_SERVER['HTTP_RANGE']) ? trim((string)$_SERVER['HTTP_RANGE']) : '';
-    if ($range !== '' && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $m)) {
-        if ($m[1] === '' && $m[2] !== '') {
-            $suffix = min($size, max(0, (int)$m[2]));
-            $start = max(0, $size - $suffix);
-        } else {
-            $start = ($m[1] !== '') ? max(0, (int)$m[1]) : 0;
-            if ($m[2] !== '') {
-                $end = min($end, max($start, (int)$m[2]));
-            }
-        }
-        if ($start > $end || $start >= $size) {
-            http_response_code(416);
-            header('Content-Range: bytes */' . $size);
-            exit;
-        }
-        $status = 206;
-    }
-
-    $length = $end - $start + 1;
-    http_response_code($status);
-    header('Content-Type: video/mp4');
-    header('Content-Disposition: inline');
-    header('Accept-Ranges: bytes');
-    header('Content-Length: ' . $length);
-    header('Cache-Control: private, max-age=3600');
-    header('X-Content-Type-Options: nosniff');
-    if ($status === 206) {
-        header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
-    }
-
-    $fh = @fopen($file, 'rb');
-    if (!$fh) {
-        http_response_code(500);
-        exit;
-    }
-    if ($start > 0) {
-        @fseek($fh, $start);
-    }
-
-    $remaining = $length;
-    $chunkSize = 262144;
-    while ($remaining > 0 && !feof($fh) && !connection_aborted()) {
-        $read = min($chunkSize, $remaining);
-        $buffer = fread($fh, $read);
-        if ($buffer === false || $buffer === '') break;
-        echo $buffer;
-        $remaining -= strlen($buffer);
-        @flush();
-    }
-    fclose($fh);
-    exit;
-}
-
 function pss_highlightProxyUrl($league, $slot, $clipID, $sourceIndex = 0) {
     return 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlightmedia=1&league='
         . rawurlencode((string)$league)
@@ -757,54 +462,16 @@ function pss_highlightProxyUrl($league, $slot, $clipID, $sourceIndex = 0) {
 }
 
 function pss_prepareHighlightItemsForBrowser($items, $league, $slot) {
-    $prefix = pss_teamPrefix($league, $slot);
-    $eventID = pss_statusValue($prefix . 'TeamNextEventID');
-
     foreach ($items as &$item) {
         $upstreamSources = isset($item['mediaSources']) && is_array($item['mediaSources'])
             ? $item['mediaSources']
             : array();
 
-        // Keep upstream URLs visible in diagnostics.
+        // Keep upstream URLs visible in diagnostics, but hand the browser only
+        // same-origin proxy URLs. This avoids legacy-browser/CSP/hotlink issues.
         $item['upstreamMediaUrl'] = isset($item['mediaUrl']) ? $item['mediaUrl'] : '';
         $item['upstreamMediaSources'] = $upstreamSources;
-        $item['cached'] = false;
-        $item['cachedBytes'] = 0;
-        $item['cacheState'] = 'waiting';
 
-        $cachedFile = pss_highlightCachedFilePath($league, $slot, $eventID, $item['id']);
-        if ($cachedFile !== '' && is_file($cachedFile) && filesize($cachedFile) > 0) {
-            $cachedUrl = pss_highlightCachedMediaUrl($league, $slot, $item['id']);
-            $item['mediaSources'] = array(array(
-                'url' => $cachedUrl,
-                'type' => 'mp4',
-                'path' => 'fpp.cache'
-            ));
-            $item['mediaUrl'] = $cachedUrl;
-            $item['mediaType'] = 'mp4';
-            $item['playable'] = true;
-            $item['cached'] = true;
-            $item['cachedBytes'] = (int)filesize($cachedFile);
-            $item['cacheState'] = 'cached';
-            continue;
-        }
-
-        $partFile = pss_highlightCachePartPath($league, $slot, $eventID, $item['id']);
-        if ($partFile !== '' && is_file($partFile)) {
-            $item['cacheState'] = 'caching';
-        } else {
-            $priority = pss_highlightReadPriorityRequest();
-            if (isset($priority['league'], $priority['slot'], $priority['eventID'], $priority['clipID'])
-                && (string)$priority['league'] === (string)$league
-                && (int)$priority['slot'] === (int)$slot
-                && (string)$priority['eventID'] === (string)$eventID
-                && (string)$priority['clipID'] === (string)$item['id']) {
-                $item['cacheState'] = 'queued';
-            }
-        }
-
-        // Cache miss: keep the same-origin proxy URL only as a diagnostic/fallback
-        // source. The safe-cache UI will not fetch it until the server cache is ready.
         $proxied = array();
         foreach ($upstreamSources as $sourceIndex => $source) {
             if (!is_array($source) || empty($source['url'])) continue;
@@ -1060,25 +727,6 @@ function pss_statusSnapshotData() {
 }
 
 
-
-
-if ($pssHighlightCacheRequestMode) {
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store');
-    $league = isset($_GET['league']) ? strtolower(trim((string)$_GET['league'])) : '';
-    $slot = (isset($_GET['slot']) && (int)$_GET['slot'] === 2) ? 2 : 1;
-    $clipID = isset($_GET['clip']) ? trim((string)$_GET['clip']) : '';
-    echo json_encode(pss_requestHighlightCache($league, $slot, $clipID));
-    exit;
-}
-
-if ($pssHighlightCachedMediaMode) {
-    $league = isset($_GET['league']) ? strtolower(trim((string)$_GET['league'])) : '';
-    $slot = (isset($_GET['slot']) && (int)$_GET['slot'] === 2) ? 2 : 1;
-    $clipID = isset($_GET['clip']) ? trim((string)$_GET['clip']) : '';
-    pss_streamCachedHighlightMedia($league, $slot, $clipID);
-}
-
 if ($pssHighlightMediaMode) {
     $league = isset($_GET['league']) ? strtolower(trim((string)$_GET['league'])) : '';
     $slot = (isset($_GET['slot']) && (int)$_GET['slot'] === 2) ? 2 : 1;
@@ -1118,7 +766,6 @@ if ($pssHighlightMode) {
         'league' => $league,
         'slot' => $slot,
         'eventID' => $eventID,
-        'qualityPreference' => pss_highlightQualityPreference(),
         'generatedAt' => date(DATE_ATOM),
         'items' => $items
     ));
@@ -2254,6 +1901,8 @@ function pssKioskFullscreen() {
     if (!panels.length || typeof fetch !== 'function') return;
 
     var activeVideo = null;
+    var highlightBlobCache = {};
+    var highlightBlobPending = {};
 
     function playedStorageKey(eventID) {
         return 'pss-highlight-played-' + String(eventID || 'none');
@@ -2364,6 +2013,12 @@ function pssKioskFullscreen() {
         return true;
     }
 
+    function highlightCacheKey(panel, item, source) {
+        return String(panel.getAttribute('data-event-id') || 'none') + ':' +
+            String(item && item.id ? item.id : 'none') + ':' +
+            String(source && source.url ? source.url : '');
+    }
+
     function formatBytes(bytes) {
         bytes = Math.max(0, parseInt(bytes || 0, 10));
         if (!bytes) return '';
@@ -2372,56 +2027,78 @@ function pssKioskFullscreen() {
         return bytes + ' B';
     }
 
-    function disposeHighlightMedia(panel) {
-        if (!panel) return;
-        var oldVideos = panel.querySelectorAll('video.pss-highlight-video');
-        for (var i = 0; i < oldVideos.length; i++) {
-            try { oldVideos[i].pause(); } catch (e) {}
-            try {
-                oldVideos[i].removeAttribute('src');
-                while (oldVideos[i].firstChild) {
-                    oldVideos[i].removeChild(oldVideos[i].firstChild);
-                }
-                oldVideos[i].load();
-            } catch (e) {}
+    function prefetchHighlight(panel, item, source, onProgress) {
+        if (!source || !source.url) return Promise.reject(new Error('No media source'));
+        var key = highlightCacheKey(panel, item, source);
+
+        if (highlightBlobCache[key]) {
+            return Promise.resolve(highlightBlobCache[key]);
         }
-    }
+        if (highlightBlobPending[key]) {
+            return highlightBlobPending[key];
+        }
 
-    function requestHighlightCache(panel, item) {
-        if (!panel || !item || item.cached || !item.id) return;
-        var league = panel.getAttribute('data-league') || '';
-        var slot = panel.getAttribute('data-slot') || '1';
-        var requestKey = league + ':' + slot + ':' + String(item.id);
-
-        if (panel._pssRequestedCacheKey === requestKey) return;
-        panel._pssRequestedCacheKey = requestKey;
-
-        setStatus(panel, 'Queueing selected highlight on FPP…');
-        var url = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlightcacherequest=1&league=' +
-            encodeURIComponent(league) + '&slot=' + encodeURIComponent(slot) +
-            '&clip=' + encodeURIComponent(String(item.id)) + '&_=' + Date.now();
-
-        fetch(url, { cache: 'no-store' })
+        var request = fetch(source.url, { cache: 'force-cache' })
             .then(function (response) {
                 if (!response.ok) throw new Error('HTTP ' + response.status);
-                return response.json();
-            })
-            .then(function (data) {
-                if (!data || !data.ok) {
-                    panel._pssRequestedCacheKey = '';
-                    setStatus(panel, data && data.message ? data.message : 'Unable to queue highlight');
-                    return;
+
+                var total = parseInt(response.headers.get('Content-Length') || '0', 10);
+                var contentType = response.headers.get('Content-Type') || 'video/mp4';
+
+                // Streaming reader gives us real buffering progress when the browser
+                // supports it. Older browsers fall back to response.blob().
+                if (response.body && typeof response.body.getReader === 'function') {
+                    var reader = response.body.getReader();
+                    var chunks = [];
+                    var received = 0;
+
+                    function pump() {
+                        return reader.read().then(function (result) {
+                            if (result.done) {
+                                var blob = new Blob(chunks, { type: contentType });
+                                var cached = {
+                                    url: URL.createObjectURL(blob),
+                                    bytes: received,
+                                    total: total || received
+                                };
+                                highlightBlobCache[key] = cached;
+                                return cached;
+                            }
+
+                            chunks.push(result.value);
+                            received += result.value.byteLength || result.value.length || 0;
+                            if (typeof onProgress === 'function') {
+                                onProgress(received, total);
+                            }
+                            return pump();
+                        });
+                    }
+                    return pump();
                 }
-                setStatus(panel, data.state === 'cached'
-                    ? 'Preloaded on FPP · ready to play'
-                    : 'Queued next for safe background caching…');
-                // Refresh metadata soon instead of waiting the full 20 seconds.
-                window.setTimeout(function () { refreshPanel(panel); }, 1500);
+
+                return response.blob().then(function (blob) {
+                    var cached = {
+                        url: URL.createObjectURL(blob),
+                        bytes: blob.size || 0,
+                        total: blob.size || total || 0
+                    };
+                    highlightBlobCache[key] = cached;
+                    if (typeof onProgress === 'function') {
+                        onProgress(cached.bytes, cached.total);
+                    }
+                    return cached;
+                });
             })
-            .catch(function () {
-                panel._pssRequestedCacheKey = '';
-                setStatus(panel, 'Unable to queue highlight cache request');
+            .then(function (cached) {
+                delete highlightBlobPending[key];
+                return cached;
+            }, function (error) {
+                delete highlightBlobPending[key];
+                throw error;
             });
+
+        highlightBlobPending[key] = request;
+        return request;
     }
 
     function loadHighlight(panel, item, autoPlay, isNew) {
@@ -2429,9 +2106,6 @@ function pssKioskFullscreen() {
         var body = panel.querySelector('[data-highlight-body="1"]');
         if (!body) return;
 
-        // Important on Pi Zero: changing clips must immediately stop the previous
-        // video request before the next UI is created.
-        disposeHighlightMedia(panel);
         while (body.firstChild) body.removeChild(body.firstChild);
 
         var stage = document.createElement('div');
@@ -2446,7 +2120,7 @@ function pssKioskFullscreen() {
             video = document.createElement('video');
             video.className = 'pss-highlight-video';
             video.controls = true;
-            video.preload = item.cached ? 'metadata' : 'none';
+            video.preload = 'auto';
             video.autoplay = false;
             video.playsInline = true;
             if (item.thumbnail) video.poster = item.thumbnail;
@@ -2456,14 +2130,11 @@ function pssKioskFullscreen() {
             if (!videoSources.length) {
                 video = null;
             } else {
-                if (item.cached) {
-                    // Already on the FPP disk: use the local same-origin file.
-                    setVideoSource(video, videoSources, 0);
-                } else {
-                    // Deliberately do not touch ESPN/the live proxy from the browser.
-                    // The background worker will cache this clip at low priority.
-                    video.removeAttribute('src');
-                }
+                // Do not point <video> at the proxy yet. Force one continuous full
+                // background fetch first, then play from a local browser Blob URL.
+                // This is more aggressive than preload="auto" and avoids repeated
+                // small range requests through a low-powered FPP box.
+                video.removeAttribute('src');
                 video.addEventListener('play', function () {
                     stopOtherVideos(video);
                     markPlayed(panel.getAttribute('data-event-id') || '', item.id);
@@ -2481,7 +2152,14 @@ function pssKioskFullscreen() {
                     setStatus(panel, 'Played once · Replay available');
                 });
                 video.addEventListener('error', function () {
-                    setStatus(panel, 'Cached video playback unavailable · use ESPN link');
+                    if (!video._pssStreamingFallback && videoSources.length) {
+                        video._pssStreamingFallback = true;
+                        if (setVideoSource(video, videoSources, 0)) {
+                            setStatus(panel, 'Buffered copy failed · trying streaming fallback…');
+                            return;
+                        }
+                    }
+                    setStatus(panel, 'Video playback unavailable · use ESPN link');
                 });
                 media.appendChild(video);
             }
@@ -2522,10 +2200,8 @@ function pssKioskFullscreen() {
         var replay = document.createElement('button');
         replay.type = 'button';
         replay.className = 'pss-highlight-button';
-        replay.textContent = item.cached
-            ? (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play')
-            : 'Caching…';
-        replay.disabled = !video || !item.cached;
+        replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
+        replay.disabled = !!video;
         replay.addEventListener('click', function () {
             if (!video) return;
             stopOtherVideos(video);
@@ -2562,14 +2238,10 @@ function pssKioskFullscreen() {
                 historyButton.type = 'button';
                 historyButton.className = 'pss-highlight-history-button';
                 historyButton.setAttribute('data-highlight-id', String(items[i].id));
-                historyButton.textContent = (items[i].cached ? 'Play: ' : 'Cache: ') +
-                    String(items[i].headline || 'Earlier highlight');
+                historyButton.textContent = 'Replay: ' + String(items[i].headline || 'Earlier highlight');
                 historyButton.addEventListener('click', function () {
                     var selected = findItem(panel, this.getAttribute('data-highlight-id'));
-                    if (selected) {
-                        loadHighlight(panel, selected, false, false);
-                        if (!selected.cached) requestHighlightCache(panel, selected);
-                    }
+                    if (selected) loadHighlight(panel, selected, false, false);
                 });
                 history.appendChild(historyButton);
             }
@@ -2579,29 +2251,41 @@ function pssKioskFullscreen() {
         panel._pssCurrentHighlightID = String(item.id || '');
         showNewBadge(panel, !!isNew);
 
-        panel._pssRenderedCached = !!item.cached;
-        panel._pssRenderedCacheState = String(item.cacheState || (item.cached ? 'cached' : 'waiting'));
-
-        if (video && videoSources.length && item.cached) {
-            replay.disabled = false;
-            replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-            var cachedLabel = item.cachedBytes ? (' · ' + formatBytes(item.cachedBytes)) : '';
-            setStatus(panel, 'Preloaded on FPP' + cachedLabel + ' · ready to play');
-        } else if (video && videoSources.length) {
-            // Browser never downloads uncached media. Show the real queue state.
+        if (video && videoSources.length) {
+            replay.textContent = 'Buffering…';
             replay.disabled = true;
-            replay.textContent = 'Caching…';
-            if (item.cacheState === 'caching') {
-                setStatus(panel, 'Caching on FPP at low priority…');
-            } else if (item.cacheState === 'queued') {
-                setStatus(panel, 'Queued next for background caching…');
-            } else {
-                setStatus(panel, isNew
-                    ? 'New highlight · waiting for background cache…'
-                    : 'Waiting for background cache…');
-            }
-        }
+            setStatus(panel, 'Starting full background buffer…');
 
+            prefetchHighlight(panel, item, videoSources[0], function (received, total) {
+                if (total > 0) {
+                    var percent = Math.max(0, Math.min(100, Math.round((received / total) * 100)));
+                    setStatus(panel, 'Buffering ' + percent + '% · ' + formatBytes(received) + ' / ' + formatBytes(total));
+                } else {
+                    setStatus(panel, 'Buffering · ' + formatBytes(received));
+                }
+            }).then(function (cached) {
+                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
+                video._pssStreamingFallback = false;
+                video.src = cached.url;
+                try { video.load(); } catch (e) {}
+                replay.disabled = false;
+                replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
+                setStatus(panel, 'Buffered ' + formatBytes(cached.bytes) + ' · ready to play');
+            }).catch(function () {
+                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
+                // If full-prefetch fails, retain the proven streaming proxy path.
+                video._pssStreamingFallback = true;
+                if (setVideoSource(video, videoSources, 0)) {
+                    replay.disabled = false;
+                    replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
+                    setStatus(panel, 'Fast buffer unavailable · streaming fallback ready');
+                } else {
+                    replay.disabled = true;
+                    replay.textContent = 'Unavailable';
+                    setStatus(panel, 'Video playback unavailable · use ESPN link');
+                }
+            });
+        }
 
         if (!video) {
             setStatus(panel, isNew ? 'New highlight · ESPN link available' : 'Watch on ESPN');
@@ -2648,27 +2332,10 @@ function pssKioskFullscreen() {
         panel._pssHighlightInitialized = true;
         panel._pssNewestHighlightID = newestID;
 
-        // If the clip currently on screen changed from cache-miss to cached, rebuild
-        // just that clip so Play becomes available without reloading the page.
-        if (panel._pssCurrentHighlightID) {
-            var currentItem = findItem(panel, panel._pssCurrentHighlightID);
-            var currentState = currentItem
-                ? String(currentItem.cacheState || (currentItem.cached ? 'cached' : 'waiting'))
-                : '';
-            if (currentItem && (
-                !!currentItem.cached !== !!panel._pssRenderedCached ||
-                currentState !== String(panel._pssRenderedCacheState || '')
-            )) {
-                loadHighlight(panel, currentItem, false, false);
-                return;
-            }
-        }
-
-        // On initial load or when a new clip arrives, render it immediately.
-        // The browser does not download uncached media; the server cache worker owns that job.
+        // On initial load or when a new clip arrives, render the newest clip and let
+        // the browser preload it in the background. Playback is always user-initiated.
         if (firstLoad || newArrival) {
             loadHighlight(panel, newest, false, newArrival);
-            if (!newest.cached) requestHighlightCache(panel, newest);
             return;
         }
 
