@@ -2,7 +2,8 @@
 $pssKioskMode = isset($_GET['kiosk']) && (string)$_GET['kiosk'] === '1';
 $pssDataMode = isset($_GET['data']) && (string)$_GET['data'] === '1';
 $pssHighlightMode = isset($_GET['highlights']) && (string)$_GET['highlights'] === '1';
-if ($pssDataMode || $pssHighlightMode) {
+$pssHighlightMediaMode = isset($_GET['highlightmedia']) && (string)$_GET['highlightmedia'] === '1';
+if ($pssDataMode || $pssHighlightMode || $pssHighlightMediaMode) {
     $skipJSsettings = 1;
 }
 
@@ -449,6 +450,209 @@ function pss_fetchEspnHighlights($league, $eventID, $limit = 6) {
     return $items;
 }
 
+
+function pss_highlightProxyUrl($league, $slot, $clipID, $sourceIndex = 0) {
+    return 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlightmedia=1&league='
+        . rawurlencode((string)$league)
+        . '&slot=' . (int)$slot
+        . '&clip=' . rawurlencode((string)$clipID)
+        . '&source=' . max(0, (int)$sourceIndex);
+}
+
+function pss_prepareHighlightItemsForBrowser($items, $league, $slot) {
+    foreach ($items as &$item) {
+        $upstreamSources = isset($item['mediaSources']) && is_array($item['mediaSources'])
+            ? $item['mediaSources']
+            : array();
+
+        // Keep upstream URLs visible in diagnostics, but hand the browser only
+        // same-origin proxy URLs. This avoids legacy-browser/CSP/hotlink issues.
+        $item['upstreamMediaUrl'] = isset($item['mediaUrl']) ? $item['mediaUrl'] : '';
+        $item['upstreamMediaSources'] = $upstreamSources;
+
+        $proxied = array();
+        foreach ($upstreamSources as $sourceIndex => $source) {
+            if (!is_array($source) || empty($source['url'])) continue;
+            $proxied[] = array(
+                'url' => pss_highlightProxyUrl($league, $slot, $item['id'], $sourceIndex),
+                'type' => isset($source['type']) ? (string)$source['type'] : '',
+                'path' => isset($source['path']) ? (string)$source['path'] : ''
+            );
+        }
+
+        $item['mediaSources'] = $proxied;
+        $item['mediaUrl'] = !empty($proxied) ? $proxied[0]['url'] : '';
+        $item['mediaType'] = !empty($proxied) && isset($proxied[0]['type']) ? $proxied[0]['type'] : '';
+        $item['playable'] = !empty($proxied);
+    }
+    unset($item);
+    return $items;
+}
+
+function pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex) {
+    $league = strtolower(trim((string)$league));
+    $slot = ((int)$slot === 2) ? 2 : 1;
+    $clipID = trim((string)$clipID);
+    $sourceIndex = max(0, (int)$sourceIndex);
+
+    if ($league !== 'nfl' || $clipID === '' || !preg_match('/^[A-Za-z0-9_-]+$/', $clipID)) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Invalid highlight request.';
+        exit;
+    }
+
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamID = pss_statusValue($prefix . 'TeamID');
+    $eventID = pss_statusValue($prefix . 'TeamNextEventID');
+    if ($teamID === '' || $eventID === '') {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'No active event is selected for this team slot.';
+        exit;
+    }
+
+    $items = pss_fetchEspnHighlights($league, $eventID, 10);
+    $matched = null;
+    foreach ($items as $item) {
+        if (isset($item['id']) && (string)$item['id'] === $clipID) {
+            $matched = $item;
+            break;
+        }
+    }
+
+    if (!is_array($matched)) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Highlight clip is no longer available for the selected event.';
+        exit;
+    }
+
+    $sources = isset($matched['mediaSources']) && is_array($matched['mediaSources'])
+        ? $matched['mediaSources']
+        : array();
+    if (!isset($sources[$sourceIndex]) || !is_array($sources[$sourceIndex])) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Requested highlight source is unavailable.';
+        exit;
+    }
+
+    $url = isset($sources[$sourceIndex]['url']) ? pss_highlightAllowedMediaUrl($sources[$sourceIndex]['url']) : '';
+    if ($url === '' || !function_exists('curl_init')) {
+        http_response_code(502);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Unable to prepare ESPN media.';
+        exit;
+    }
+
+    // Let the FPP box fetch ESPN and stream it back from the same origin as the
+    // scoreboard. Forward byte-range requests so browser seeking/preload works.
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+
+    $requestHeaders = array(
+        'Accept: video/mp4,video/*;q=0.9,*/*;q=0.5',
+        'Accept-Encoding: identity',
+        'Referer: https://www.espn.com/'
+    );
+
+    $range = isset($_SERVER['HTTP_RANGE']) ? trim((string)$_SERVER['HTTP_RANGE']) : '';
+    if ($range !== '' && preg_match('/^bytes=\d*-\d*(?:,\d*-\d*)*$/', $range)) {
+        $requestHeaders[] = 'Range: ' . $range;
+    }
+
+    $sentHeaders = false;
+    $upstreamStatus = 200;
+    $safeHeaders = array();
+
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 0);
+    curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36 Chrome/120 Safari/537.36');
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $requestHeaders);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
+    curl_setopt($ch, CURLOPT_HEADER, false);
+    curl_setopt($ch, CURLOPT_FAILONERROR, false);
+
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($curl, $headerLine) use (&$upstreamStatus, &$safeHeaders) {
+        $length = strlen($headerLine);
+        $line = trim($headerLine);
+        if ($line === '') return $length;
+
+        if (preg_match('#^HTTP/\S+\s+(\d{3})#i', $line, $m)) {
+            $upstreamStatus = (int)$m[1];
+            $safeHeaders = array();
+            return $length;
+        }
+
+        $parts = explode(':', $line, 2);
+        if (count($parts) !== 2) return $length;
+        $name = strtolower(trim($parts[0]));
+        $value = trim($parts[1]);
+
+        $allowed = array(
+            'content-type',
+            'content-length',
+            'content-range',
+            'accept-ranges',
+            'etag',
+            'last-modified',
+            'cache-control'
+        );
+        if (in_array($name, $allowed, true)) {
+            $safeHeaders[$name] = $value;
+        }
+        return $length;
+    });
+
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($curl, $chunk) use (&$sentHeaders, &$upstreamStatus, &$safeHeaders) {
+        if (!$sentHeaders) {
+            $sentHeaders = true;
+            http_response_code($upstreamStatus >= 200 ? $upstreamStatus : 200);
+            header('X-Content-Type-Options: nosniff');
+            header('Content-Disposition: inline');
+            header('Cache-Control: private, max-age=300');
+
+            foreach ($safeHeaders as $name => $value) {
+                if ($name === 'cache-control') continue;
+                header($name . ': ' . $value);
+            }
+            if (!isset($safeHeaders['content-type'])) {
+                header('Content-Type: video/mp4');
+            }
+        }
+
+        echo $chunk;
+        @flush();
+        return strlen($chunk);
+    });
+
+    $ok = curl_exec($ch);
+    $curlError = curl_error($ch);
+    $curlCode = curl_errno($ch);
+    $finalStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if (!$sentHeaders) {
+        if ($ok === false || $curlCode !== 0 || $finalStatus < 200 || $finalStatus >= 400) {
+            http_response_code(502);
+            header('Content-Type: text/plain; charset=utf-8');
+            echo 'ESPN media request failed'
+                . ($finalStatus ? ' (HTTP ' . $finalStatus . ')' : '')
+                . ($curlError !== '' ? ': ' . $curlError : '.');
+        } else {
+            http_response_code($finalStatus > 0 ? $finalStatus : 200);
+            header('Content-Type: video/mp4');
+        }
+    }
+    exit;
+}
+
 function pss_statusSnapshotData() {
     global $leagues;
 
@@ -499,6 +703,15 @@ function pss_statusSnapshotData() {
     );
 }
 
+
+if ($pssHighlightMediaMode) {
+    $league = isset($_GET['league']) ? strtolower(trim((string)$_GET['league'])) : '';
+    $slot = (isset($_GET['slot']) && (int)$_GET['slot'] === 2) ? 2 : 1;
+    $clipID = isset($_GET['clip']) ? trim((string)$_GET['clip']) : '';
+    $sourceIndex = isset($_GET['source']) ? max(0, (int)$_GET['source']) : 0;
+    pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex);
+}
+
 if ($pssHighlightMode) {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -520,6 +733,7 @@ if ($pssHighlightMode) {
     }
 
     $items = pss_fetchEspnHighlights($league, $eventID, 6);
+    $items = pss_prepareHighlightItemsForBrowser($items, $league, $slot);
     echo json_encode(array(
         'ok' => true,
         'league' => $league,
