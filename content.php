@@ -7,6 +7,7 @@ $pssSequenceOptions = pss_getSequences();
 $pssOverlayModels = pss_getOverlayCommandModels();
 $pssOverlayGeometry = pss_getOverlayModels();
 $pssOverlayFonts = pss_getOverlayFonts();
+$pssTeamPalettes = pss_syncTeamPalettes(true);
 
 function pss_currentValue($key, $default = '') {
     global $pluginSettings;
@@ -101,6 +102,54 @@ function pss_currentValue($key, $default = '') {
     border-radius: 6px;
     overflow-wrap: anywhere;
 }
+.pss-team-palette-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 10px;
+}
+.pss-team-palette-card {
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: rgba(255,255,255,.025);
+}
+.pss-team-palette-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.pss-team-palette-name {
+    font-weight: 700;
+}
+.pss-team-palette-league {
+    opacity: .65;
+    font-size: .82em;
+    white-space: nowrap;
+}
+.pss-team-palette-swatches {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+.pss-team-palette-swatch {
+    min-height: 34px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,.22);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 3px;
+    font-size: .72em;
+    font-family: monospace;
+    text-shadow: 0 1px 2px #000, 0 0 2px #000;
+    color: #fff;
+}
+.pss-team-palette-empty {
+    color: rgba(255,255,255,.55);
+    padding: 8px 0;
+}
 @media (max-width: 900px) {
     .pss-ticker-team-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
 }
@@ -136,6 +185,15 @@ function pss_currentValue($key, $default = '') {
                 <div class="col-md-5"><strong>Log level</strong><div class="text-muted small">Info logs scoring actions. Debug also logs ESPN polling.</div></div>
                 <div class="col-md-7"><?php PrintSettingSelect('logLevel', 'logLevel', 0, 0, '4', array('Info' => '4', 'Debug' => '5'), $pluginName, '', ''); ?></div>
             </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h4 class="card-title">Sports Team Effect Palettes</h4>
+            <p class="text-muted small mb-2">Automatically managed from the teams selected below. ESPN supplies the first two team colors; the plugin adds a contrasting third accent so FPP/WLED effects can use up to three colors. If an effect only uses two colors, Color 3 is simply ignored.</p>
+            <p class="text-muted small">These are plugin-managed named palettes stored as FPP/WLED-compatible <strong>* Colors Only</strong> + Color 1/2/3 values. Only currently selected teams are kept; unselecting a team removes its palette automatically unless that same team is still selected in another slot. FPP's built-in WLED palette list is left untouched so FPP updates cannot overwrite or break this plugin data.</p>
+            <div id="pss-team-palette-grid" class="pss-team-palette-grid"></div>
         </div>
     </div>
 
@@ -435,6 +493,56 @@ function pss_currentValue($key, $default = '') {
 </div>
 
 <script>
+var pssTeamPalettes = <?=json_encode(array_values($pssTeamPalettes), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>;
+
+function pssRenderTeamPalettes(palettes) {
+    var root = document.getElementById('pss-team-palette-grid');
+    if (!root) return;
+    while (root.firstChild) root.removeChild(root.firstChild);
+
+    palettes = Array.isArray(palettes) ? palettes : [];
+    if (!palettes.length) {
+        var empty = document.createElement('div');
+        empty.className = 'pss-team-palette-empty';
+        empty.textContent = 'No team palettes yet. Select a team below and its colors will be created automatically.';
+        root.appendChild(empty);
+        return;
+    }
+
+    palettes.forEach(function(palette) {
+        var card = document.createElement('div');
+        card.className = 'pss-team-palette-card';
+
+        var head = document.createElement('div');
+        head.className = 'pss-team-palette-head';
+        var name = document.createElement('span');
+        name.className = 'pss-team-palette-name';
+        name.textContent = String(palette.name || 'Team');
+        var league = document.createElement('span');
+        league.className = 'pss-team-palette-league';
+        league.textContent = String(palette.league || '');
+        head.appendChild(name);
+        head.appendChild(league);
+        card.appendChild(head);
+
+        var swatches = document.createElement('div');
+        swatches.className = 'pss-team-palette-swatches';
+        var colors = Array.isArray(palette.colors) ? palette.colors.slice(0, 3) : [];
+        while (colors.length < 3) colors.push('#000000');
+        colors.forEach(function(color, index) {
+            var swatch = document.createElement('div');
+            swatch.className = 'pss-team-palette-swatch';
+            var safeColor = /^#[0-9A-Fa-f]{6}$/.test(String(color || '')) ? String(color) : '#000000';
+            swatch.style.backgroundColor = safeColor;
+            swatch.title = 'Color ' + (index + 1) + ': ' + safeColor.toUpperCase();
+            swatch.textContent = safeColor.toUpperCase();
+            swatches.appendChild(swatch);
+        });
+        card.appendChild(swatches);
+        root.appendChild(card);
+    });
+}
+
 function pssTeamSelectionChanged(league, slot, selectElement) {
     var teamID = selectElement ? selectElement.value : '';
     $.ajax({
@@ -445,7 +553,12 @@ function pssTeamSelectionChanged(league, slot, selectElement) {
             slot: slot,
             teamID: teamID
         },
-        type: 'post'
+        type: 'post',
+        dataType: 'json'
+    }).done(function(response) {
+        if (response && response.teamPalettes) {
+            pssRenderTeamPalettes(response.teamPalettes);
+        }
     });
 }
 
@@ -641,6 +754,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var modelSelect = document.getElementById('pss-ticker-model');
     if (modelSelect) modelSelect.addEventListener('change', pssUpdateOverlayGeometry);
     pssUpdateOverlayGeometry();
+    pssRenderTeamPalettes(pssTeamPalettes);
 });
 
 <?php foreach ($leagues as $league): ?>

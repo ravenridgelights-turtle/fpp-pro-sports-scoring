@@ -53,7 +53,11 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
                 // on the same team the user just selected on FPP 7-10.
                 pss_updateTeam($info['sport'], $league, $slot, $teamID);
                 pss_updateTickerOutput(true);
+                pss_jsonResponse(true, 'Team selection updated.', array(
+                    'teamPalettes' => array_values(pss_syncTeamPalettes(false))
+                ));
             }
+            pss_jsonResponse(false, 'Invalid league.');
             break;
         case 'syncSequencePlaylist':
             if (isset($_POST['setting'])) {
@@ -342,6 +346,200 @@ function pss_normalizeColor($value, $default = '#FFFFFF') {
         return '#' . $value;
     }
     return $default;
+}
+
+function pss_normalizeTeamColor($value, $default = '') {
+    $value = strtoupper(trim((string)$value));
+    if ($value === '') {
+        return $default;
+    }
+    if ($value[0] !== '#') {
+        $value = '#' . $value;
+    }
+    return preg_match('/^#[0-9A-F]{6}$/', $value) ? $value : $default;
+}
+
+function pss_colorRgb($color) {
+    $color = pss_normalizeTeamColor($color, '#000000');
+    return array(
+        hexdec(substr($color, 1, 2)),
+        hexdec(substr($color, 3, 2)),
+        hexdec(substr($color, 5, 2))
+    );
+}
+
+function pss_colorDistance($a, $b) {
+    $aa = pss_colorRgb($a);
+    $bb = pss_colorRgb($b);
+    $dr = $aa[0] - $bb[0];
+    $dg = $aa[1] - $bb[1];
+    $db = $aa[2] - $bb[2];
+    return sqrt(($dr * $dr) + ($dg * $dg) + ($db * $db));
+}
+
+function pss_teamPaletteThirdColor($primary, $secondary) {
+    // ESPN normally gives a primary and alternate team color.  WLED/FPP can
+    // expose three segment colors, so choose a neutral third accent that is as
+    // visually distinct as possible from both official colors.  Include gray so
+    // black/white teams still get three distinct colors.  An effect that only
+    // consumes Color 1/2 simply ignores Color 3.
+    $candidates = array('#FFFFFF', '#000000', '#808080');
+    $best = '#808080';
+    $bestScore = -1;
+    foreach ($candidates as $candidate) {
+        if (strcasecmp($candidate, $primary) === 0 || strcasecmp($candidate, $secondary) === 0) {
+            continue;
+        }
+        $score = min(pss_colorDistance($candidate, $primary), pss_colorDistance($candidate, $secondary));
+        if ($score > $bestScore) {
+            $bestScore = $score;
+            $best = $candidate;
+        }
+    }
+    return $best;
+}
+
+function pss_teamPaletteColorsFromEspn($teamData) {
+    $primary = pss_normalizeTeamColor(isset($teamData['color']) ? $teamData['color'] : '', '#FFFFFF');
+    $secondary = pss_normalizeTeamColor(isset($teamData['alternateColor']) ? $teamData['alternateColor'] : '', '');
+
+    if ($secondary === '' || strcasecmp($secondary, $primary) === 0) {
+        $secondary = (pss_colorDistance($primary, '#000000') >= pss_colorDistance($primary, '#FFFFFF'))
+            ? '#000000' : '#FFFFFF';
+    }
+
+    $third = pss_teamPaletteThirdColor($primary, $secondary);
+    return array($primary, $secondary, $third);
+}
+
+function pss_teamPaletteRegistryPath() {
+    global $settings, $pluginName;
+    $configDir = isset($settings['configDirectory']) ? rtrim((string)$settings['configDirectory'], '/') : '/home/fpp/media/config';
+    return $configDir . '/plugin.' . $pluginName . '.team-palettes.json';
+}
+
+function pss_storeTeamPaletteSettings($league, $slot, $teamInfo) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $colors = isset($teamInfo['paletteColors']) && is_array($teamInfo['paletteColors'])
+        ? $teamInfo['paletteColors'] : array('#FFFFFF', '#000000', '#FFFFFF');
+
+    pss_setPluginSetting("{$prefix}TeamPaletteName", isset($teamInfo['name']) ? (string)$teamInfo['name'] : '');
+    pss_setPluginSetting("{$prefix}TeamColor1", isset($colors[0]) ? pss_normalizeTeamColor($colors[0], '#FFFFFF') : '#FFFFFF');
+    pss_setPluginSetting("{$prefix}TeamColor2", isset($colors[1]) ? pss_normalizeTeamColor($colors[1], '#000000') : '#000000');
+    pss_setPluginSetting("{$prefix}TeamColor3", isset($colors[2]) ? pss_normalizeTeamColor($colors[2], '#FFFFFF') : '#FFFFFF');
+}
+
+function pss_buildSelectedTeamPalettes($refreshMissing = false) {
+    global $leagues;
+    $palettes = array();
+
+    foreach ($leagues as $league) {
+        $leagueInfo = pss_leagueInfo($league);
+        if ($leagueInfo['sport'] === '') {
+            continue;
+        }
+
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            $teamID = trim(pss_pluginSetting("{$prefix}TeamID", ''));
+            if ($teamID === '') {
+                continue;
+            }
+
+            $name = trim(pss_pluginSetting("{$prefix}TeamPaletteName", pss_pluginSetting("{$prefix}TeamName", '')));
+            $c1 = pss_normalizeTeamColor(pss_pluginSetting("{$prefix}TeamColor1", ''), '');
+            $c2 = pss_normalizeTeamColor(pss_pluginSetting("{$prefix}TeamColor2", ''), '');
+            $c3 = pss_normalizeTeamColor(pss_pluginSetting("{$prefix}TeamColor3", ''), '');
+
+            if ($refreshMissing && ($name === '' || $c1 === '' || $c2 === '' || $c3 === '')) {
+                $teamInfo = pss_getTeamInfo($leagueInfo['sport'], $league, $teamID);
+                if ($teamInfo['valid']) {
+                    pss_storeTeamPaletteSettings($league, $slot, $teamInfo);
+                    $name = trim((string)$teamInfo['name']);
+                    $colors = $teamInfo['paletteColors'];
+                    $c1 = $colors[0];
+                    $c2 = $colors[1];
+                    $c3 = $colors[2];
+                }
+            }
+
+            // Never keep a stale palette under a newly selected TeamID.  If ESPN
+            // is temporarily unavailable, the palette appears on the next sync
+            // after the team metadata/colors can be refreshed.
+            if ($name === '' || $c1 === '' || $c2 === '' || $c3 === '') {
+                continue;
+            }
+
+            $key = strtolower((string)$league) . ':' . (string)$teamID;
+            $palettes[$key] = array(
+                'id' => $key,
+                'name' => $name,
+                'league' => strtoupper((string)$league),
+                'teamID' => (string)$teamID,
+                'palette' => '* Colors Only',
+                'colors' => array($c1, $c2, $c3)
+            );
+        }
+    }
+
+    uasort($palettes, function ($a, $b) {
+        return strnatcasecmp((string)$a['name'], (string)$b['name']);
+    });
+    return $palettes;
+}
+
+function pss_readTeamPaletteRegistry() {
+    $path = pss_teamPaletteRegistryPath();
+    if (!is_file($path)) {
+        return array();
+    }
+    $raw = @file_get_contents($path);
+    $data = ($raw !== false) ? json_decode($raw, true) : null;
+    if (!is_array($data) || !isset($data['palettes']) || !is_array($data['palettes'])) {
+        return array();
+    }
+    return $data['palettes'];
+}
+
+function pss_syncTeamPalettes($refreshMissing = false) {
+    global $pluginName;
+    $path = pss_teamPaletteRegistryPath();
+    $palettes = pss_buildSelectedTeamPalettes($refreshMissing);
+
+    if (empty($palettes)) {
+        if (is_file($path)) {
+            @unlink($path);
+            pss_logEntry('Removed sports team palette registry because no teams are selected');
+        }
+        return array();
+    }
+
+    $payload = array(
+        'version' => 1,
+        'managedBy' => (string)$pluginName,
+        'paletteMode' => '* Colors Only',
+        'palettes' => $palettes
+    );
+    $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        pss_logEntry('Could not encode sports team palette registry');
+        return $palettes;
+    }
+    $json .= "\n";
+
+    $oldJson = is_file($path) ? @file_get_contents($path) : false;
+    if ($oldJson !== $json) {
+        $tmp = $path . '.tmp.' . getmypid();
+        if (@file_put_contents($tmp, $json, LOCK_EX) !== false && @rename($tmp, $path)) {
+            @chmod($path, 0664);
+            pss_logEntry('Synced ' . count($palettes) . ' selected sports team palette' . (count($palettes) === 1 ? '' : 's'));
+        } else {
+            @unlink($tmp);
+            pss_logEntry('Could not write sports team palette registry ' . $path);
+        }
+    }
+
+    return $palettes;
 }
 
 function pss_overlayModelDimensions($model) {
@@ -1725,7 +1923,8 @@ function pss_getTeamInfo($sport, $league, $team) {
         'name' => '',
         'nextEventID' => '',
         'nextEventDate' => '',
-        'nextEventStatus' => ''
+        'nextEventStatus' => '',
+        'paletteColors' => array('#FFFFFF', '#000000', '#FFFFFF')
     );
     if ($team === '') {
         return $info;
@@ -1743,6 +1942,7 @@ function pss_getTeamInfo($sport, $league, $team) {
     $info['logo'] = pss_extractTeamLogo($teamData);
     $info['abbreviation'] = isset($teamData['abbreviation']) ? (string)$teamData['abbreviation'] : '';
     $info['name'] = isset($teamData['displayName']) ? (string)$teamData['displayName'] : '';
+    $info['paletteColors'] = pss_teamPaletteColorsFromEspn($teamData);
 
     if (isset($teamData['nextEvent'][0]) && is_array($teamData['nextEvent'][0])) {
         $event = $teamData['nextEvent'][0];
@@ -1903,12 +2103,19 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     $pluginSettings = pss_loadPluginSettings();
     $prefix = pss_teamPrefix($league, $slot);
 
+    $previousTeamID = trim(pss_pluginSetting("{$prefix}TeamID", ''));
     if ($selectedTeamID !== null) {
         // Team-select callbacks can arrive before FPP's own async setting save
         // is visible to PHP. Persist and use the value from the browser so the
         // team metadata and generated playlist name cannot lag one selection.
         $teamID = trim((string)$selectedTeamID);
         pss_setPluginSetting("{$prefix}TeamID", $teamID);
+        if ($teamID !== $previousTeamID) {
+            // Clear metadata from the previous team immediately.  This prevents
+            // a transient ESPN failure from keeping the old team's palette under
+            // the new TeamID.
+            pss_clearLeagueState($league, false, $slot);
+        }
     } else {
         $teamID = pss_pluginSetting("{$prefix}TeamID", '');
     }
@@ -1916,19 +2123,22 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     if ($teamID === '') {
         pss_clearLeagueState($league, true, $slot);
         pss_syncGeneratedPlaylistsForLeague($league);
+        pss_syncTeamPalettes(false);
         pss_logEntry(pss_teamLogLabel($league, $slot) . ' cleared');
         return '';
     }
 
     $teamInfo = pss_getTeamInfo($sport, $league, $teamID);
     if (!$teamInfo['valid']) {
-        pss_logEntry(pss_teamLogLabel($league, $slot) . ' update failed; keeping existing state');
+        pss_syncTeamPalettes(false);
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' update failed; palette will retry on the next sync');
         return pss_pluginSetting("{$prefix}TeamLogo", '');
     }
 
     pss_setPluginSetting("{$prefix}TeamLogo", $teamInfo['logo']);
     pss_setPluginSetting("{$prefix}TeamAbbreviation", $teamInfo['abbreviation']);
     pss_setPluginSetting("{$prefix}TeamName", $teamInfo['name']);
+    pss_storeTeamPaletteSettings($league, $slot, $teamInfo);
     pss_setPluginSetting("{$prefix}TeamNextEventID", $teamInfo['nextEventID']);
     pss_setPluginSetting("{$prefix}Start", $teamInfo['nextEventDate']);
     pss_setPluginSetting("{$prefix}GameStatus", $teamInfo['nextEventStatus']);
@@ -1942,6 +2152,7 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     }
 
     pss_syncGeneratedPlaylistsForLeague($league);
+    pss_syncTeamPalettes(false);
     pss_logEntry(pss_teamLogLabel($league, $slot) . " updated to {$teamInfo['name']}");
     return $teamInfo['logo'];
 }
@@ -1949,7 +2160,8 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
 function pss_clearLeagueState($league, $clearTeam = false, $slot = 1) {
     $prefix = pss_teamPrefix($league, $slot);
     $keys = array(
-        'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamNextEventID' => '',
+        'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamPaletteName' => '',
+        'TeamColor1' => '', 'TeamColor2' => '', 'TeamColor3' => '', 'TeamNextEventID' => '',
         'Start' => '', 'GameStatus' => '', 'OppoID' => '', 'OppoName' => '', 'OppoAbbreviation' => '',
         'OppoLogo' => '', 'GameDetail' => '', 'MyScore' => '0', 'OppoScore' => '0',
         'LastScoringPlayID' => '', 'LastCelebratedScore' => '0',
@@ -2094,8 +2306,17 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
 
 function pss_updateTeamStatus($reparseSettings = true) {
     global $pluginSettings, $leagues;
+    static $teamPalettesSynced = false;
     if ($reparseSettings) {
         $pluginSettings = pss_loadPluginSettings();
+    }
+
+    // Build/backfill the palette registry once when the scoring daemon starts.
+    // This makes upgrades/installations self-healing for already-selected teams
+    // without polling ESPN for colors on every scoring loop.
+    if (!$teamPalettesSynced) {
+        pss_syncTeamPalettes(true);
+        $teamPalettesSynced = true;
     }
 
     $sleepTimes = array(600);
