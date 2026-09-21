@@ -17,6 +17,17 @@ function pss_currentValue($key, $default = '') {
     global $pluginSettings;
     return isset($pluginSettings[$key]) ? urldecode((string)$pluginSettings[$key]) : $default;
 }
+function pss_scheduleGameDisplay($startRaw) {
+    $startRaw = trim((string)$startRaw);
+    if ($startRaw === '') return 'Game time not available yet';
+    try {
+        $dt = new DateTime($startRaw);
+        $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
+        return $dt->format('D M j, Y g:i A');
+    } catch (Exception $e) {
+        return $startRaw;
+    }
+}
 ?>
 <style>
 .pss-config-grid-head {
@@ -320,6 +331,53 @@ function pss_currentValue($key, $default = '') {
                 <button type="button" class="btn btn-secondary" onclick="pssStopTeamEffect();">Stop Effect</button>
             </div>
             <div id="pss-team-effect-message" class="pss-team-effect-message text-muted small"></div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h4 class="card-title">Game Schedule Helper</h4>
+            <p class="text-muted small mb-2">Optionally add each selected team's next ESPN game to FPP's scheduler. Choose the same .fseq / <strong>Run WLED Effect</strong> choices used by the score and win controls. The plugin writes only its own <strong>PSS_SPORTS_GAME_*</strong> helper playlists/schedule rows and leaves your other FPP schedules untouched.</p>
+            <p class="text-muted small mb-2">Scheduled WLED effects use that team's <strong>WLED celebration model</strong> and managed team palette. A live score/TD/FG helper temporarily stops the game-time WLED overlay, plays the celebration over it, then restores the game overlay. Win celebrations stop the game overlay and do not restart it. FPP needs a fixed schedule end, so an 8-hour safety window is created and removed early when ESPN reports the game final.</p>
+            <p class="text-muted small mb-3"><strong>Priority only reorders schedules created by this plugin.</strong> If two or three games overlap, click <strong>Make Priority</strong> on the team you want FPP to consider first. Your manually-created FPP schedule rows keep their existing position.</p>
+            <div class="table-responsive">
+                <table class="table table-sm table-striped">
+                    <thead><tr><th>Team</th><th style="width:140px;">Add to schedule</th><th>During-game sequence / effect</th><th style="width:150px;">Priority</th><th>Next game</th></tr></thead>
+                    <tbody>
+                    <?php $pssScheduleRowCount = 0; foreach ($leagues as $scheduleLeague): foreach (array(1,2) as $scheduleSlot):
+                        $schedulePrefix = pss_teamPrefix($scheduleLeague, $scheduleSlot);
+                        $scheduleTeamID = pss_currentValue($schedulePrefix . 'TeamID', '');
+                        if ($scheduleTeamID === '') continue;
+                        $pssScheduleRowCount++;
+                        $scheduleTeamName = pss_currentValue($schedulePrefix . 'TeamName', strtoupper($scheduleLeague) . ' Team ' . $scheduleSlot);
+                        $scheduleEnabled = pss_currentValue($schedulePrefix . 'ScheduleEnabled', 'OFF') === 'ON';
+                        $schedulePriorityRank = pss_gameSchedulePriorityRank($scheduleLeague, $scheduleSlot);
+                    ?>
+                    <tr>
+                        <td><strong><?=htmlspecialchars($scheduleTeamName)?></strong><div class="text-muted small"><?=htmlspecialchars(strtoupper($scheduleLeague))?> · Team <?=$scheduleSlot?></div></td>
+                        <td><label class="mb-0"><input type="checkbox" <?=$scheduleEnabled ? 'checked' : ''?> onchange="pssGameScheduleEnabledChanged('<?=htmlspecialchars($scheduleLeague, ENT_QUOTES)?>', <?=$scheduleSlot?>, this)"> Enabled</label></td>
+                        <td><?php PrintSettingSelect($schedulePrefix . 'ScheduleSelection', $schedulePrefix . 'ScheduleSelection', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssGameScheduleSelectionChanged', ''); ?></td>
+                        <td>
+                            <?php if ($schedulePriorityRank === 1): ?>
+                                <button type="button" class="btn btn-warning btn-sm" disabled title="This is the highest-priority Pro Sports Scoring schedule"><i class="fas fa-star"></i> Priority #1</button>
+                            <?php else: ?>
+                                <button type="button" class="btn btn-outline-warning btn-sm" onclick="pssGameSchedulePriority('<?=htmlspecialchars($scheduleLeague, ENT_QUOTES)?>', <?=$scheduleSlot?>, this)" title="Move this team above the other plugin-created game schedules"><i class="far fa-star"></i> Make Priority</button>
+                                <?php if ($schedulePriorityRank > 1): ?><div class="text-muted small mt-1">Current #<?=$schedulePriorityRank?></div><?php endif; ?>
+                            <?php endif; ?>
+                        </td>
+                        <td><span class="small"><?=htmlspecialchars(pss_scheduleGameDisplay(pss_currentValue($schedulePrefix . 'Start', '')))?></span></td>
+                    </tr>
+                    <?php endforeach; endforeach; ?>
+                    <?php if ($pssScheduleRowCount === 0): ?>
+                    <tr><td colspan="5" class="text-muted">Select a team below first. Its schedule helper row will appear here after the page refreshes.</td></tr>
+                    <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex flex-wrap align-items-center" style="gap:8px;">
+                <a class="btn btn-secondary btn-sm" href="/scheduler.php" target="_blank" rel="noopener">Open FPP Scheduler</a>
+                <span id="pss-game-schedule-message" class="text-muted small"></span>
+            </div>
         </div>
     </div>
 
@@ -863,6 +921,71 @@ $(function() {
     pssTeamEffectPresetChanged();
     pssRenderTeamEffectColors();
 });
+
+function pssGameScheduleEnabledChanged(league, slot, checkbox) {
+    var message = $('#pss-game-schedule-message');
+    message.removeClass('text-danger text-success').addClass('text-muted').text('Updating FPP schedule...');
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'saveGameScheduleEnabled', league: league, slot: slot, enabled: checkbox.checked ? 'ON' : 'OFF' },
+        type: 'post', dataType: 'json',
+        success: function(response) {
+            var ok = response && response.ok;
+            message.removeClass('text-muted text-danger text-success').addClass(ok ? 'text-success' : 'text-danger').text(response && response.message ? response.message : (ok ? 'Schedule updated.' : 'Schedule update failed.'));
+        },
+        error: function() {
+            message.removeClass('text-muted text-success').addClass('text-danger').text('Could not update FPP schedule.');
+        }
+    });
+}
+
+function pssGameScheduleSelectionChanged(setting) {
+    var message = $('#pss-game-schedule-message');
+    message.removeClass('text-danger text-success').addClass('text-muted').text('Rebuilding game schedule helper...');
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'syncGameScheduleSetting', setting: setting },
+        type: 'post',
+        success: function() {
+            message.removeClass('text-muted text-danger').addClass('text-success').text('Game schedule helper rebuilt.');
+        },
+        error: function() {
+            message.removeClass('text-muted text-success').addClass('text-danger').text('Could not rebuild game schedule helper.');
+        }
+    });
+}
+
+function pssGameSchedulePriority(league, slot, button) {
+    var message = $('#pss-game-schedule-message');
+    var oldHtml = button ? button.innerHTML : '';
+    if (button) {
+        button.disabled = true;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Moving...';
+    }
+    message.removeClass('text-danger text-success').addClass('text-muted').text('Moving team to the top of Pro Sports Scoring schedules...');
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'promoteGameSchedulePriority', league: league, slot: slot },
+        type: 'post', dataType: 'json',
+        success: function(response) {
+            var ok = response && response.ok;
+            message.removeClass('text-muted text-danger text-success').addClass(ok ? 'text-success' : 'text-danger').text(response && response.message ? response.message : (ok ? 'Schedule priority updated.' : 'Schedule priority update failed.'));
+            if (ok) {
+                window.setTimeout(function() { window.location.reload(); }, 500);
+            } else if (button) {
+                button.disabled = false;
+                button.innerHTML = oldHtml;
+            }
+        },
+        error: function() {
+            if (button) {
+                button.disabled = false;
+                button.innerHTML = oldHtml;
+            }
+            message.removeClass('text-muted text-success').addClass('text-danger').text('Could not update game schedule priority.');
+        }
+    });
+}
 
 function pssSequenceChanged(setting) {
     $.ajax({

@@ -75,6 +75,17 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
         case 'saveWledCelebrationDuration':
             pss_saveWledCelebrationDuration($_POST);
             break;
+        case 'saveGameScheduleEnabled':
+            pss_saveGameScheduleEnabled($_POST);
+            break;
+        case 'syncGameScheduleSetting':
+            if (isset($_POST['setting'])) {
+                pss_syncGameScheduleSetting((string)$_POST['setting']);
+            }
+            break;
+        case 'promoteGameSchedulePriority':
+            pss_promoteGameSchedulePriority($_POST);
+            break;
         case 'manualTrigger':
             pss_manualTrigger($_POST);
             break;
@@ -443,7 +454,7 @@ function pss_getSequences() {
     global $pluginSettings;
     if (is_array($pluginSettings)) {
         foreach ($pluginSettings as $settingKey => $settingValue) {
-            if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence)$/', (string)$settingKey)) {
+            if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence|ScheduleSelection)$/', (string)$settingKey)) {
                 continue;
             }
             $selectedEffect = pss_wledEffectFromSelection(urldecode((string)$settingValue));
@@ -1967,6 +1978,7 @@ function pss_syncWledCelebrationSetting($setting) {
     }
     $pluginSettings = pss_loadPluginSettings();
     pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    pss_syncGameSchedules(true);
     return true;
 }
 
@@ -1984,6 +1996,468 @@ function pss_saveWledCelebrationDuration($post) {
     $pluginSettings = pss_loadPluginSettings();
     pss_syncGeneratedPlaylistsForLeague($matches[1]);
     pss_jsonResponse(true, 'WLED celebration duration saved.', array('value' => $duration));
+}
+
+function pss_teamGameScheduleEnabled($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return pss_pluginSetting("{$prefix}ScheduleEnabled", 'OFF') === 'ON';
+}
+
+function pss_teamGameScheduleSelection($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return trim(pss_pluginSetting("{$prefix}ScheduleSelection", ''));
+}
+
+function pss_gameSchedulePriorityKey($league, $slot = 1) {
+    $league = strtolower(trim((string)$league));
+    if (!in_array($league, array('nfl', 'ncaa', 'nhl', 'mlb'), true)) return '';
+    return $league . ':' . (((int)$slot === 2) ? '2' : '1');
+}
+
+function pss_gameSchedulePriorityOrder() {
+    $raw = trim(pss_pluginSetting('GameSchedulePriorityOrder', ''));
+    if ($raw === '') return array();
+    $parts = preg_split('/\s*,\s*/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+    $result = array();
+    $seen = array();
+    foreach ($parts as $part) {
+        $part = strtolower(trim((string)$part));
+        if (!preg_match('/^(nfl|ncaa|nhl|mlb):([12])$/', $part)) continue;
+        if (isset($seen[$part])) continue;
+        $seen[$part] = true;
+        $result[] = $part;
+    }
+    return $result;
+}
+
+function pss_gameSchedulePriorityRank($league, $slot = 1) {
+    $key = pss_gameSchedulePriorityKey($league, $slot);
+    if ($key === '') return 0;
+    $order = pss_gameSchedulePriorityOrder();
+    $index = array_search($key, $order, true);
+    return ($index === false) ? 0 : ($index + 1);
+}
+
+function pss_pruneGameSchedulePriorityOrder() {
+    global $leagues;
+    $order = pss_gameSchedulePriorityOrder();
+    $valid = array();
+    foreach ($leagues as $league) {
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            if (trim(pss_pluginSetting("{$prefix}TeamID", '')) === '') continue;
+            $valid[pss_gameSchedulePriorityKey($league, $slot)] = true;
+        }
+    }
+    $clean = array();
+    foreach ($order as $key) {
+        if (isset($valid[$key])) $clean[] = $key;
+    }
+    $newRaw = implode(',', $clean);
+    $oldRaw = implode(',', $order);
+    if ($newRaw !== $oldRaw) pss_setPluginSetting('GameSchedulePriorityOrder', $newRaw);
+    return $clean;
+}
+
+function pss_promoteGameSchedulePriority($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    $key = pss_gameSchedulePriorityKey($league, $slot);
+    if ($key === '') pss_jsonResponse(false, 'Invalid team for schedule priority.');
+
+    $prefix = pss_teamPrefix($league, $slot);
+    if (trim(pss_pluginSetting("{$prefix}TeamID", '')) === '') {
+        pss_jsonResponse(false, 'Select a team before setting schedule priority.');
+    }
+
+    $order = pss_gameSchedulePriorityOrder();
+    $order = array_values(array_filter($order, function($item) use ($key) { return $item !== $key; }));
+    array_unshift($order, $key);
+    pss_setPluginSetting('GameSchedulePriorityOrder', implode(',', $order));
+    $pluginSettings = pss_loadPluginSettings();
+    pss_pruneGameSchedulePriorityOrder();
+    $pluginSettings = pss_loadPluginSettings();
+    $ok = pss_syncGameSchedules(true);
+    $teamName = trim(pss_pluginSetting("{$prefix}TeamName", ''));
+    if ($teamName === '') $teamName = strtoupper($league) . ' team ' . $slot;
+    pss_jsonResponse($ok, $ok ? $teamName . ' moved to the top of Pro Sports Scoring schedules.' : 'Could not update the FPP schedule priority.');
+}
+
+function pss_gameScheduleSafetySeconds() {
+    // FPP needs a concrete end time.  Eight hours is intentionally a generous
+    // safety ceiling for delayed/overtime games.  The daemon removes the entry
+    // and stops a scheduled WLED overlay as soon as ESPN reports the game post.
+    return 8 * 60 * 60;
+}
+
+function pss_gameSchedulePlaylistPrefix() {
+    return 'PSS_SPORTS_GAME_';
+}
+
+function pss_generatedGameSchedulePlaylistName($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamPart = trim(pss_pluginSetting("{$prefix}TeamAbbreviation", ''));
+    if ($teamPart === '') $teamPart = trim(pss_pluginSetting("{$prefix}TeamID", ''));
+    if ($teamPart === '') return '';
+    $slotPart = ((int)$slot === 2) ? '_S2' : '';
+    return pss_gameSchedulePlaylistPrefix()
+        . pss_safePlaylistPart($league, 'LEAGUE')
+        . $slotPart . '_'
+        . pss_safePlaylistPart($teamPart, 'TEAM');
+}
+
+function pss_gameScheduleWindow($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $startRaw = trim(pss_pluginSetting("{$prefix}Start", ''));
+    if ($startRaw === '') return null;
+    try {
+        $start = new DateTime($startRaw);
+        $start->setTimezone(new DateTimeZone(date_default_timezone_get()));
+    } catch (Exception $e) {
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' schedule helper has invalid game start: ' . $startRaw);
+        return null;
+    }
+    $end = clone $start;
+    $end->modify('+' . pss_gameScheduleSafetySeconds() . ' seconds');
+
+    // If ESPN still says the game is live beyond the safety ceiling, keep the
+    // schedule alive for another two hours instead of dropping a live overlay.
+    if (pss_pluginSetting("{$prefix}GameStatus", '') === 'in' && time() >= $end->getTimestamp()) {
+        $end = new DateTime('now', new DateTimeZone(date_default_timezone_get()));
+        $end->modify('+2 hours');
+    }
+    return array('start' => $start, 'end' => $end);
+}
+
+function pss_gameScheduleWindowIsActive($league, $slot = 1) {
+    if (!pss_teamGameScheduleEnabled($league, $slot)) return false;
+    $prefix = pss_teamPrefix($league, $slot);
+    if (pss_pluginSetting("{$prefix}GameStatus", '') === 'post') return false;
+    $window = pss_gameScheduleWindow($league, $slot);
+    if (!is_array($window)) return false;
+    $now = time();
+    return $now >= $window['start']->getTimestamp() && $now < $window['end']->getTimestamp();
+}
+
+function pss_gameScheduleWledStartArgs($league, $slot = 1, $requireActiveWindow = false) {
+    if (!pss_teamGameScheduleEnabled($league, $slot)) return array();
+    if ($requireActiveWindow && !pss_gameScheduleWindowIsActive($league, $slot)) return array();
+    $selection = pss_teamGameScheduleSelection($league, $slot);
+    $effectName = pss_wledEffectFromSelection($selection);
+    if ($effectName === '') return array();
+    $model = pss_teamWledModel($league, $slot);
+    $palette = pss_teamPaletteForSlot($league, $slot);
+    if ($model === '' || !is_array($palette)) return array();
+    return pss_buildWledEffectArgs($effectName, $model, $palette);
+}
+
+function pss_stopScheduledGameOverlay($league, $slot = 1) {
+    $selection = pss_teamGameScheduleSelection($league, $slot);
+    if (pss_wledEffectFromSelection($selection) === '') return false;
+    $model = pss_teamWledModel($league, $slot);
+    if ($model === '') return false;
+    $response = pss_runFppCommand('Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'));
+    if (!$response['ok']) {
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' could not stop scheduled WLED overlay on ' . $model . ' HTTP ' . $response['status']);
+        return false;
+    }
+    return true;
+}
+
+function pss_scheduleOverlaySuspendResumeEntries($league, $slot = 1, $celebrationSuffix = '') {
+    // A win ends the game, so never restart the game-long overlay after the win
+    // celebration.  Score/TD/FG helpers suspend it and restore it afterward.
+    if ($celebrationSuffix === 'WinSequence') return array('before' => array(), 'after' => array());
+    $startArgs = pss_gameScheduleWledStartArgs($league, $slot, true);
+    if (empty($startArgs)) return array('before' => array(), 'after' => array());
+    $model = isset($startArgs[0]) ? (string)$startArgs[0] : '';
+    if ($model === '') return array('before' => array(), 'after' => array());
+    return array(
+        'before' => array(pss_playlistCommandEntry(
+            'Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'),
+            'Suspend game-time WLED overlay for sports celebration'
+        )),
+        'after' => array(pss_playlistCommandEntry(
+            'Overlay Model Effect', $startArgs,
+            'Resume game-time WLED overlay after sports celebration'
+        ))
+    );
+}
+
+function pss_scheduleFilePath() {
+    global $settings;
+    if (isset($settings['scheduleJsonFile']) && trim((string)$settings['scheduleJsonFile']) !== '') {
+        return (string)$settings['scheduleJsonFile'];
+    }
+    $configDir = isset($settings['configDirectory']) ? rtrim((string)$settings['configDirectory'], '/') : '/home/fpp/media/config';
+    return $configDir . '/schedule.json';
+}
+
+function pss_isManagedGameScheduleEntry($entry) {
+    return is_array($entry)
+        && isset($entry['playlist'])
+        && strpos((string)$entry['playlist'], pss_gameSchedulePlaylistPrefix()) === 0;
+}
+
+function pss_reloadFppSchedule() {
+    global $settings;
+    if (!function_exists('exec')) {
+        pss_logEntry('Schedule helper wrote schedule.json but PHP exec() is disabled; FPP schedule reload was not requested');
+        return false;
+    }
+    $root = isset($settings['fppDir']) ? rtrim((string)$settings['fppDir'], '/') : '/opt/fpp';
+    $candidates = array($root . '/src/fpp', '/opt/fpp/src/fpp', '/usr/bin/fpp');
+    foreach ($candidates as $bin) {
+        if (!is_file($bin) || !is_executable($bin)) continue;
+        $output = array();
+        $rc = 0;
+        @exec(escapeshellarg($bin) . ' -R 2>&1', $output, $rc);
+        if ($rc === 0) return true;
+    }
+    pss_logEntry('Schedule helper could not find/execute the FPP schedule reload utility');
+    return false;
+}
+
+function pss_writeManagedGamePlaylist($playlistName, $league, $slot, $selection) {
+    global $settings;
+    $playlistName = trim((string)$playlistName);
+    $selection = trim((string)$selection);
+    if ($playlistName === '' || $selection === '') return false;
+
+    $mainPlaylist = array();
+    $duration = 0.0;
+    $wledEffect = pss_wledEffectFromSelection($selection);
+    if ($wledEffect !== '') {
+        $startArgs = pss_gameScheduleWledStartArgs($league, $slot, false);
+        if (empty($startArgs)) {
+            pss_logEntry('Cannot build ' . $playlistName . '; scheduled WLED effect needs a WLED celebration model and team palette');
+            return false;
+        }
+        $model = (string)$startArgs[0];
+        $palette = pss_teamPaletteForSlot($league, $slot);
+        $teamName = is_array($palette) && isset($palette['name']) ? (string)$palette['name'] : pss_teamLogLabel($league, $slot);
+        $mainPlaylist[] = pss_playlistCommandEntry(
+            'Overlay Model Effect', $startArgs,
+            'Start game-time ' . $wledEffect . ' using ' . $teamName . ' colors'
+        );
+        // Leave a one-minute margin so the explicit Stop Effects item normally
+        // runs before the schedule safety end even after short inserted plays.
+        $duration = max(60, pss_gameScheduleSafetySeconds() - 60);
+        $mainPlaylist[] = array(
+            'type' => 'pause', 'enabled' => 1, 'playOnce' => 0,
+            'duration' => $duration,
+            'note' => 'Hold game-time WLED overlay until game end/safety timeout',
+            'displayMode' => 'argsOnly'
+        );
+        $mainPlaylist[] = pss_playlistCommandEntry(
+            'Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'),
+            'Stop game-time WLED overlay'
+        );
+    } else {
+        $filename = basename($selection);
+        $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
+        if ($filename === '' || !is_file($sequenceDirectory . '/' . $filename)) {
+            pss_logEntry('Cannot build ' . $playlistName . '; scheduled sequence not found: ' . $filename);
+            return false;
+        }
+        $duration = pss_sequenceDuration($filename);
+        $mainPlaylist[] = array(
+            'type' => 'sequence', 'enabled' => 1, 'playOnce' => 0,
+            'sequenceName' => $filename, 'displayMode' => 'argsOnly',
+            'timecode' => 'Default', 'duration' => $duration
+        );
+    }
+
+    $data = array(
+        'name' => $playlistName,
+        'version' => 4,
+        'repeat' => 0,
+        'loopCount' => 0,
+        'desc' => pss_generatedPlaylistMarker(),
+        'random' => 0,
+        'globalPauseBetweenSequencesMS' => 0,
+        'empty' => false,
+        'leadIn' => array(),
+        'mainPlaylist' => $mainPlaylist,
+        'leadOut' => array(),
+        'playlistInfo' => array(
+            'leadIn_duration' => 0, 'leadIn_items' => 0,
+            'mainPlaylist_duration' => $duration,
+            'mainPlaylist_items' => count($mainPlaylist),
+            'leadOut_duration' => 0, 'leadOut_items' => 0,
+            'total_duration' => $duration, 'total_items' => count($mainPlaylist)
+        )
+    );
+
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory) || !is_writable($playlistDirectory)) return false;
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) return false;
+    $json .= "\n";
+    $path = $playlistDirectory . '/' . $playlistName . '.json';
+    $existing = is_file($path) ? @file_get_contents($path) : false;
+    if ($existing === $json) return true;
+    $tmp = $path . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false || !@rename($tmp, $path)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($path, 0664);
+    pss_logEntry('Generated game schedule helper playlist ' . $playlistName);
+    return true;
+}
+
+function pss_cleanupManagedGamePlaylists($keepNames) {
+    global $settings;
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory)) return;
+    $files = glob($playlistDirectory . '/' . pss_gameSchedulePlaylistPrefix() . '*.json');
+    if (!is_array($files)) return;
+    $keep = array_fill_keys($keepNames, true);
+    foreach ($files as $path) {
+        $name = pathinfo($path, PATHINFO_FILENAME);
+        if (isset($keep[$name])) continue;
+        if (pss_isManagedGeneratedPlaylist($path) && @unlink($path)) {
+            pss_logEntry('Removed stale game schedule helper playlist ' . $name);
+        }
+    }
+}
+
+function pss_syncGameSchedules($logChanges = true) {
+    global $pluginSettings, $leagues;
+    $path = pss_scheduleFilePath();
+    $existing = array();
+    if (is_file($path)) {
+        $raw = @file_get_contents($path);
+        $decoded = ($raw !== false) ? json_decode($raw, true) : null;
+        if (is_array($decoded)) $existing = $decoded;
+    }
+
+    $userEntries = array();
+    foreach ($existing as $entry) {
+        if (!pss_isManagedGameScheduleEntry($entry)) $userEntries[] = $entry;
+    }
+
+    $managedEntries = array();
+    $keepPlaylists = array();
+    foreach ($leagues as $league) {
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            if (!pss_teamGameScheduleEnabled($league, $slot)) continue;
+            if (trim(pss_pluginSetting("{$prefix}TeamID", '')) === '') continue;
+            $selection = pss_teamGameScheduleSelection($league, $slot);
+            if ($selection === '') continue;
+            if (pss_pluginSetting("{$prefix}GameStatus", '') === 'post') continue;
+            if (trim(pss_pluginSetting("{$prefix}TeamNextEventID", '')) === '') continue;
+            $window = pss_gameScheduleWindow($league, $slot);
+            if (!is_array($window)) continue;
+            if ($window['end']->getTimestamp() <= time() && pss_pluginSetting("{$prefix}GameStatus", '') !== 'in') continue;
+
+            $playlist = pss_generatedGameSchedulePlaylistName($league, $slot);
+            if ($playlist === '' || !pss_writeManagedGamePlaylist($playlist, $league, $slot, $selection)) continue;
+            $keepPlaylists[] = $playlist;
+
+            $isWled = pss_wledEffectFromSelection($selection) !== '';
+            $managedEntries[] = array(
+                '_pssPriorityKey' => pss_gameSchedulePriorityKey($league, $slot),
+                '_pssDefaultOrder' => count($managedEntries),
+                'enabled' => 1,
+                'sequence' => 0,
+                'playlist' => $playlist,
+                'day' => 7,
+                'startTime' => $window['start']->format('H:i:s'),
+                'startTimeOffset' => 0,
+                'endTime' => $window['end']->format('H:i:s'),
+                'endTimeOffset' => 0,
+                // Normal sequences repeat for the game window.  A WLED helper
+                // stays inside one long playlist pause so inserted scoring
+                // playlists can return to it without constantly restarting FX.
+                'repeat' => $isWled ? 0 : 1,
+                'startDate' => $window['start']->format('Y-m-d'),
+                'startDateOffset' => 0,
+                // FPP represents a cross-midnight time span with the same anchor
+                // date and an endTime earlier than startTime.
+                'endDate' => $window['start']->format('Y-m-d'),
+                'endDateOffset' => 0,
+                'stopType' => 1
+            );
+        }
+    }
+
+    // FPP schedule priority follows the schedule-row ordering.  Keep every
+    // non-plugin schedule exactly where it was relative to other user entries,
+    // then order only PSS_SPORTS_GAME_* rows using the user's Priority buttons.
+    // Clicking Priority moves that team to rank #1 while preserving the prior
+    // order of the remaining plugin-created game schedules.
+    $priorityOrder = pss_pruneGameSchedulePriorityOrder();
+    $priorityMap = array();
+    foreach ($priorityOrder as $idx => $key) $priorityMap[$key] = $idx;
+    usort($managedEntries, function($a, $b) use ($priorityMap) {
+        $ak = isset($a['_pssPriorityKey']) ? (string)$a['_pssPriorityKey'] : '';
+        $bk = isset($b['_pssPriorityKey']) ? (string)$b['_pssPriorityKey'] : '';
+        $ai = isset($priorityMap[$ak]) ? $priorityMap[$ak] : 1000 + (isset($a['_pssDefaultOrder']) ? (int)$a['_pssDefaultOrder'] : 0);
+        $bi = isset($priorityMap[$bk]) ? $priorityMap[$bk] : 1000 + (isset($b['_pssDefaultOrder']) ? (int)$b['_pssDefaultOrder'] : 0);
+        if ($ai === $bi) return 0;
+        return ($ai < $bi) ? -1 : 1;
+    });
+    foreach ($managedEntries as &$managedEntry) {
+        unset($managedEntry['_pssPriorityKey'], $managedEntry['_pssDefaultOrder']);
+    }
+    unset($managedEntry);
+
+    $newSchedule = array_merge($userEntries, $managedEntries);
+    $oldJson = json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    $newJson = json_encode($newSchedule, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    $changed = ($oldJson !== $newJson);
+    if ($changed) {
+        $dir = dirname($path);
+        if (!is_dir($dir) || !is_writable($dir)) {
+            pss_logEntry('Schedule helper cannot write FPP schedule directory: ' . $dir);
+            return false;
+        }
+        $tmp = $path . '.pss.' . getmypid();
+        if (@file_put_contents($tmp, $newJson, LOCK_EX) === false || !@rename($tmp, $path)) {
+            @unlink($tmp);
+            pss_logEntry('Schedule helper could not update ' . $path);
+            return false;
+        }
+        @chmod($path, 0664);
+        pss_reloadFppSchedule();
+        if ($logChanges) pss_logEntry('Updated FPP game schedule helper entries: ' . count($managedEntries));
+    }
+    pss_cleanupManagedGamePlaylists($keepPlaylists);
+    return true;
+}
+
+function pss_saveGameScheduleEnabled($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    $enabled = (isset($post['enabled']) && (string)$post['enabled'] === 'ON') ? 'ON' : 'OFF';
+    if (!in_array($league, array('nfl','ncaa','nhl','mlb'), true)) {
+        pss_jsonResponse(false, 'Invalid league for schedule helper.');
+    }
+    if ($enabled === 'OFF') pss_stopScheduledGameOverlay($league, $slot);
+    $prefix = pss_teamPrefix($league, $slot);
+    pss_setPluginSetting("{$prefix}ScheduleEnabled", $enabled);
+    $pluginSettings = pss_loadPluginSettings();
+    $ok = pss_syncGameSchedules(true);
+    pss_jsonResponse($ok, $ok ? 'Game schedule helper updated.' : 'Game schedule helper could not update the FPP schedule.');
+}
+
+function pss_syncGameScheduleSetting($setting) {
+    global $pluginSettings;
+    $setting = trim((string)$setting);
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?ScheduleSelection$/', $setting, $matches)) return false;
+    $league = $matches[1];
+    $slot = !empty($matches[2]) ? 2 : 1;
+    // If the game overlay is active, stop the old effect before FPP reloads the
+    // newly generated scheduled helper.  This prevents an orphaned old effect.
+    pss_stopScheduledGameOverlay($league, $slot);
+    $pluginSettings = pss_loadPluginSettings();
+    pss_syncGameSchedules(true);
+    return true;
 }
 
 function pss_generatedPlaylistMarker() {
@@ -2062,7 +2536,7 @@ function pss_sequenceDuration($sequenceName) {
     return round(($frames * $stepMs) / 1000, 3);
 }
 
-function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds = 0) {
+function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '') {
     $duration = pss_sequenceDuration($sequenceName);
     $delaySeconds = pss_clampInt($delaySeconds, 0, 300, 0);
 
@@ -2078,6 +2552,9 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
         );
     }
 
+    $overlayWrap = ($league !== '') ? pss_scheduleOverlaySuspendResumeEntries($league, $slot, $celebrationSuffix) : array('before' => array(), 'after' => array());
+    foreach ($overlayWrap['before'] as $entry) $mainPlaylist[] = $entry;
+
     $mainPlaylist[] = array(
         'type' => 'sequence',
         'enabled' => 1,
@@ -2087,6 +2564,7 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
         'timecode' => 'Default',
         'duration' => $duration
     );
+    foreach ($overlayWrap['after'] as $entry) $mainPlaylist[] = $entry;
 
     $totalDuration = $duration + $delaySeconds;
     $itemCount = count($mainPlaylist);
@@ -2116,7 +2594,7 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
     );
 }
 
-function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds = 0) {
+function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '') {
     global $settings;
 
     $playlistName = trim((string)$playlistName);
@@ -2137,7 +2615,7 @@ function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds 
         return false;
     }
 
-    $data = pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds);
+    $data = pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds, $league, $slot, $celebrationSuffix);
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     if ($json === false) {
         pss_logEntry("Unable to encode generated playlist {$playlistName}");
@@ -2385,7 +2863,7 @@ function pss_playlistCommandEntry($command, $args, $note = '') {
     return $entry;
 }
 
-function pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds = 0) {
+function pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds = 0, $celebrationSuffix = '') {
     $model = pss_teamWledModel($league, $slot);
     $effectDuration = pss_teamWledDuration($league, $slot);
     $palette = pss_teamPaletteForSlot($league, $slot);
@@ -2409,6 +2887,9 @@ function pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectNam
         );
     }
 
+    $overlayWrap = pss_scheduleOverlaySuspendResumeEntries($league, $slot, $celebrationSuffix);
+    foreach ($overlayWrap['before'] as $entry) $mainPlaylist[] = $entry;
+
     $teamName = isset($palette['name']) ? (string)$palette['name'] : strtoupper((string)$league);
     $mainPlaylist[] = pss_playlistCommandEntry(
         'Overlay Model Effect', $startArgs,
@@ -2424,6 +2905,7 @@ function pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectNam
         'Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'),
         'Stop Pro Sports Scoring WLED celebration effect'
     );
+    foreach ($overlayWrap['after'] as $entry) $mainPlaylist[] = $entry;
 
     $totalDuration = $delaySeconds + $effectDuration;
     return array(
@@ -2451,7 +2933,7 @@ function pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectNam
     );
 }
 
-function pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $effectName, $delaySeconds = 0) {
+function pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $effectName, $delaySeconds = 0, $celebrationSuffix = '') {
     global $settings;
     $playlistName = trim((string)$playlistName);
     $effectName = trim((string)$effectName);
@@ -2472,7 +2954,7 @@ function pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $effectNa
         return false;
     }
 
-    $data = pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds);
+    $data = pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds, $celebrationSuffix);
     if (!is_array($data)) {
         pss_logEntry('Cannot build ' . $playlistName . '; FPP did not provide an argument definition for ' . $effectName);
         return false;
@@ -2564,8 +3046,8 @@ function pss_syncGeneratedPlaylistsForLeague($league) {
             $delaySeconds = pss_teamCelebrationDelay($league, $slot);
             $wledEffect = pss_wledEffectFromSelection($sequence);
             $written = ($wledEffect !== '')
-                ? pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $wledEffect, $delaySeconds)
-                : pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds);
+                ? pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $wledEffect, $delaySeconds, $suffix)
+                : pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds, $league, $slot, $suffix);
             if ($written) {
                 $keepNames[] = $playlistName;
             }
@@ -2813,6 +3295,7 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
         $teamID = trim((string)$selectedTeamID);
         pss_setPluginSetting("{$prefix}TeamID", $teamID);
         if ($teamID !== $previousTeamID) {
+            if ($previousTeamID !== '') pss_stopScheduledGameOverlay($league, $slot);
             // Clear metadata from the previous team immediately.  This prevents
             // a transient ESPN failure from keeping the old team's palette under
             // the new TeamID.
@@ -2826,6 +3309,7 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
         pss_clearLeagueState($league, true, $slot);
         pss_syncGeneratedPlaylistsForLeague($league);
         pss_syncTeamPalettes(false);
+        pss_syncGameSchedules(true);
         pss_logEntry(pss_teamLogLabel($league, $slot) . ' cleared');
         return '';
     }
@@ -2855,6 +3339,7 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
 
     pss_syncGeneratedPlaylistsForLeague($league);
     pss_syncTeamPalettes(false);
+    pss_syncGameSchedules(true);
     pss_logEntry(pss_teamLogLabel($league, $slot) . " updated to {$teamInfo['name']}");
     return $teamInfo['logo'];
 }
@@ -2993,8 +3478,14 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
     $delaySeconds = pss_teamCelebrationDelay($league, $slot);
     $wledEffect = pss_wledEffectFromSelection($selection);
 
+    // A win ends the game-time presentation.  Do this here as well as in the
+    // ESPN post-state path so the Manual Win test button has identical behavior.
+    if ($suffix === 'WinSequence') {
+        pss_stopScheduledGameOverlay($league, $slot);
+    }
+
     if ($wledEffect !== '') {
-        if ($playlist === '' || !pss_writeGeneratedWledPlaylist($playlist, $league, $slot, $wledEffect, $delaySeconds)) {
+        if ($playlist === '' || !pss_writeGeneratedWledPlaylist($playlist, $league, $slot, $wledEffect, $delaySeconds, $suffix)) {
             pss_logEntry("{$logLabel} {$label} detected but WLED helper playlist could not be prepared for {$wledEffect}");
             return false;
         }
@@ -3009,7 +3500,7 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
     }
 
     // Existing FSEQ behavior is intentionally unchanged.
-    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $selection, $delaySeconds)) {
+    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $selection, $delaySeconds, $league, $slot, $suffix)) {
         pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$selection}");
         return false;
     }
@@ -3086,6 +3577,9 @@ function pss_updateTeamStatus($reparseSettings = true) {
                     $snapshotEventID = pss_pluginSetting("{$prefix}GameSnapshotEventID", '');
                     pss_logEntry("{$logLabel} next event changed from {$oldEventID} to {$eventID}");
                 } else {
+                    // If fppd/plugin restarted after the final, make sure a
+                    // game-time WLED effect cannot remain orphaned.
+                    pss_stopScheduledGameOverlay($league, $slot);
                     if ($snapshotEventID !== $eventID || pss_pluginSetting("{$prefix}OppoID", '') === '') {
                         $repair = pss_getGameStatus($sport, $league, $eventID, $teamID);
                         if ($repair['valid']) {
@@ -3153,6 +3647,9 @@ function pss_updateTeamStatus($reparseSettings = true) {
             } elseif ($status['state'] === 'pre') {
                 $teamSleep = 30;
             } elseif ($status['state'] === 'post') {
+                // End a game-long WLED overlay before the win celebration.  The
+                // win helper intentionally does not resume a game overlay.
+                pss_stopScheduledGameOverlay($league, $slot);
                 $completed = pss_pluginSetting("{$prefix}LastCompletedEventID", '');
                 if ($completed !== $eventID) {
                     if ($status['myScore'] > $status['oppoScore']) {
@@ -3168,6 +3665,9 @@ function pss_updateTeamStatus($reparseSettings = true) {
         }
     }
 
+    // Keep FPP's schedule.json aligned with ESPN event rollover/status.  This
+    // write is atomic and reloads FPP only when the managed entries changed.
+    pss_syncGameSchedules(false);
     return min($sleepTimes);
 }
 
