@@ -399,8 +399,10 @@ function pss_fetchEspnHighlights($league, $eventID, $limit = 6) {
     $eventID = trim((string)$eventID);
     $limit = max(1, min(10, (int)$limit));
 
-    // Phase 1 is intentionally NFL-only while we validate ESPN's live clip behavior.
-    if ($league !== 'nfl' || $eventID === '' || !preg_match('/^[A-Za-z0-9_-]+$/', $eventID)) {
+    $supportedHighlightLeagues = array('nfl', 'ncaa', 'nhl', 'mlb');
+    if (!in_array($league, $supportedHighlightLeagues, true)
+        || $eventID === ''
+        || !preg_match('/^[A-Za-z0-9_-]+$/', $eventID)) {
         return array();
     }
 
@@ -495,7 +497,10 @@ function pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex) {
     $clipID = trim((string)$clipID);
     $sourceIndex = max(0, (int)$sourceIndex);
 
-    if ($league !== 'nfl' || $clipID === '' || !preg_match('/^[A-Za-z0-9_-]+$/', $clipID)) {
+    $supportedHighlightLeagues = array('nfl', 'ncaa', 'nhl', 'mlb');
+    if (!in_array($league, $supportedHighlightLeagues, true)
+        || $clipID === ''
+        || !preg_match('/^[A-Za-z0-9_-]+$/', $clipID)) {
         http_response_code(400);
         header('Content-Type: text/plain; charset=utf-8');
         echo 'Invalid highlight request.';
@@ -718,9 +723,13 @@ if ($pssHighlightMode) {
 
     $league = isset($_GET['league']) ? strtolower(trim((string)$_GET['league'])) : '';
     $slot = (isset($_GET['slot']) && (int)$_GET['slot'] === 2) ? 2 : 1;
-    if ($league !== 'nfl') {
+    $supportedHighlightLeagues = array('nfl', 'ncaa', 'nhl', 'mlb');
+    if (!in_array($league, $supportedHighlightLeagues, true)) {
         http_response_code(400);
-        echo json_encode(array('ok' => false, 'message' => 'Highlight testing is currently enabled for NFL only.'));
+        echo json_encode(array(
+            'ok' => false,
+            'message' => 'Highlights are supported for NFL, NCAA Football, NHL, and MLB.'
+        ));
         exit;
     }
 
@@ -1486,10 +1495,10 @@ body {
                     <span class="pss-meta-value" data-pss-field="matchup"><?=htmlspecialchars($oppoAbbr . ' vs ' . $myAbbr)?></span>
                 </div>
             </div>
-            <?php if ($league === 'nfl' && $eventID !== ''): ?>
+            <?php if (in_array($league, array('nfl', 'ncaa', 'nhl', 'mlb'), true) && $eventID !== ''): ?>
             <div class="pss-highlights"
                  data-pss-highlights="1"
-                 data-league="nfl"
+                 data-league="<?=htmlspecialchars($league, ENT_QUOTES)?>"
                  data-slot="<?=intval($slot)?>"
                  data-event-id="<?=htmlspecialchars($eventID, ENT_QUOTES)?>">
                 <div class="pss-highlights-head">
