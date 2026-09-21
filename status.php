@@ -573,6 +573,7 @@ function pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex) {
     $sentHeaders = false;
     $upstreamStatus = 200;
     $safeHeaders = array();
+    $proxyOutputBuffer = '';
 
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
@@ -583,6 +584,12 @@ function pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex) {
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
     curl_setopt($ch, CURLOPT_HEADER, false);
     curl_setopt($ch, CURLOPT_FAILONERROR, false);
+    if (defined('CURLOPT_BUFFERSIZE')) {
+        @curl_setopt($ch, CURLOPT_BUFFERSIZE, 262144);
+    }
+    if (defined('CURLOPT_TCP_NODELAY')) {
+        @curl_setopt($ch, CURLOPT_TCP_NODELAY, true);
+    }
 
     curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($curl, $headerLine) use (&$upstreamStatus, &$safeHeaders) {
         $length = strlen($headerLine);
@@ -615,7 +622,7 @@ function pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex) {
         return $length;
     });
 
-    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($curl, $chunk) use (&$sentHeaders, &$upstreamStatus, &$safeHeaders) {
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($curl, $chunk) use (&$sentHeaders, &$upstreamStatus, &$safeHeaders, &$proxyOutputBuffer) {
         if (!$sentHeaders) {
             $sentHeaders = true;
             http_response_code($upstreamStatus >= 200 ? $upstreamStatus : 200);
@@ -632,12 +639,23 @@ function pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex) {
             }
         }
 
-        echo $chunk;
-        @flush();
+        // Pi Zero optimization: avoid a PHP/web-server flush for every tiny cURL
+        // callback. Send larger blocks instead to reduce CPU overhead while relaying.
+        $proxyOutputBuffer .= $chunk;
+        if (strlen($proxyOutputBuffer) >= 131072) {
+            echo $proxyOutputBuffer;
+            $proxyOutputBuffer = '';
+            @flush();
+        }
         return strlen($chunk);
     });
 
     $ok = curl_exec($ch);
+    if ($proxyOutputBuffer !== '') {
+        echo $proxyOutputBuffer;
+        $proxyOutputBuffer = '';
+        @flush();
+    }
     $curlError = curl_error($ch);
     $curlCode = curl_errno($ch);
     $finalStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -1883,6 +1901,8 @@ function pssKioskFullscreen() {
     if (!panels.length || typeof fetch !== 'function') return;
 
     var activeVideo = null;
+    var highlightBlobCache = {};
+    var highlightBlobPending = {};
 
     function playedStorageKey(eventID) {
         return 'pss-highlight-played-' + String(eventID || 'none');
@@ -1993,6 +2013,94 @@ function pssKioskFullscreen() {
         return true;
     }
 
+    function highlightCacheKey(panel, item, source) {
+        return String(panel.getAttribute('data-event-id') || 'none') + ':' +
+            String(item && item.id ? item.id : 'none') + ':' +
+            String(source && source.url ? source.url : '');
+    }
+
+    function formatBytes(bytes) {
+        bytes = Math.max(0, parseInt(bytes || 0, 10));
+        if (!bytes) return '';
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+        if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+        return bytes + ' B';
+    }
+
+    function prefetchHighlight(panel, item, source, onProgress) {
+        if (!source || !source.url) return Promise.reject(new Error('No media source'));
+        var key = highlightCacheKey(panel, item, source);
+
+        if (highlightBlobCache[key]) {
+            return Promise.resolve(highlightBlobCache[key]);
+        }
+        if (highlightBlobPending[key]) {
+            return highlightBlobPending[key];
+        }
+
+        var request = fetch(source.url, { cache: 'force-cache' })
+            .then(function (response) {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+
+                var total = parseInt(response.headers.get('Content-Length') || '0', 10);
+                var contentType = response.headers.get('Content-Type') || 'video/mp4';
+
+                // Streaming reader gives us real buffering progress when the browser
+                // supports it. Older browsers fall back to response.blob().
+                if (response.body && typeof response.body.getReader === 'function') {
+                    var reader = response.body.getReader();
+                    var chunks = [];
+                    var received = 0;
+
+                    function pump() {
+                        return reader.read().then(function (result) {
+                            if (result.done) {
+                                var blob = new Blob(chunks, { type: contentType });
+                                var cached = {
+                                    url: URL.createObjectURL(blob),
+                                    bytes: received,
+                                    total: total || received
+                                };
+                                highlightBlobCache[key] = cached;
+                                return cached;
+                            }
+
+                            chunks.push(result.value);
+                            received += result.value.byteLength || result.value.length || 0;
+                            if (typeof onProgress === 'function') {
+                                onProgress(received, total);
+                            }
+                            return pump();
+                        });
+                    }
+                    return pump();
+                }
+
+                return response.blob().then(function (blob) {
+                    var cached = {
+                        url: URL.createObjectURL(blob),
+                        bytes: blob.size || 0,
+                        total: blob.size || total || 0
+                    };
+                    highlightBlobCache[key] = cached;
+                    if (typeof onProgress === 'function') {
+                        onProgress(cached.bytes, cached.total);
+                    }
+                    return cached;
+                });
+            })
+            .then(function (cached) {
+                delete highlightBlobPending[key];
+                return cached;
+            }, function (error) {
+                delete highlightBlobPending[key];
+                throw error;
+            });
+
+        highlightBlobPending[key] = request;
+        return request;
+    }
+
     function loadHighlight(panel, item, autoPlay, isNew) {
         if (!item) return;
         var body = panel.querySelector('[data-highlight-body="1"]');
@@ -2022,7 +2130,11 @@ function pssKioskFullscreen() {
             if (!videoSources.length) {
                 video = null;
             } else {
-                setVideoSource(video, videoSources, 0);
+                // Do not point <video> at the proxy yet. Force one continuous full
+                // background fetch first, then play from a local browser Blob URL.
+                // This is more aggressive than preload="auto" and avoids repeated
+                // small range requests through a low-powered FPP box.
+                video.removeAttribute('src');
                 video.addEventListener('play', function () {
                     stopOtherVideos(video);
                     markPlayed(panel.getAttribute('data-event-id') || '', item.id);
@@ -2031,9 +2143,7 @@ function pssKioskFullscreen() {
                     setStatus(panel, 'Playing highlight');
                 });
                 video.addEventListener('loadedmetadata', function () {
-                    var idx = parseInt(video._pssSourceIndex || 0, 10);
-                    var label = videoSources[idx] && videoSources[idx].type === 'mp4' ? 'MP4' : 'video';
-                    setStatus(panel, 'Loading ' + label + ' highlight in background…');
+                    setStatus(panel, 'Buffered · ready to play');
                 });
                 video.addEventListener('canplay', function () {
                     setStatus(panel, 'Ready · tap ' + (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play'));
@@ -2042,12 +2152,14 @@ function pssKioskFullscreen() {
                     setStatus(panel, 'Played once · Replay available');
                 });
                 video.addEventListener('error', function () {
-                    var nextIndex = (parseInt(video._pssSourceIndex || 0, 10) + 1);
-                    if (nextIndex < videoSources.length && setVideoSource(video, videoSources, nextIndex)) {
-                        setStatus(panel, 'Trying alternate ESPN video source…');
-                        return;
+                    if (!video._pssStreamingFallback && videoSources.length) {
+                        video._pssStreamingFallback = true;
+                        if (setVideoSource(video, videoSources, 0)) {
+                            setStatus(panel, 'Buffered copy failed · trying streaming fallback…');
+                            return;
+                        }
                     }
-                    setStatus(panel, 'Direct playback unavailable · use ESPN link');
+                    setStatus(panel, 'Video playback unavailable · use ESPN link');
                 });
                 media.appendChild(video);
             }
@@ -2089,7 +2201,7 @@ function pssKioskFullscreen() {
         replay.type = 'button';
         replay.className = 'pss-highlight-button';
         replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-        replay.disabled = !video;
+        replay.disabled = !!video;
         replay.addEventListener('click', function () {
             if (!video) return;
             stopOtherVideos(video);
@@ -2139,12 +2251,44 @@ function pssKioskFullscreen() {
         panel._pssCurrentHighlightID = String(item.id || '');
         showNewBadge(panel, !!isNew);
 
-        if (isNew) {
-            setStatus(panel, video ? 'New highlight loading in background…' : 'New highlight · ESPN link available');
-        } else {
-            setStatus(panel, video
-                ? (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay available' : 'Ready · tap Play')
-                : 'Watch on ESPN');
+        if (video && videoSources.length) {
+            replay.textContent = 'Buffering…';
+            replay.disabled = true;
+            setStatus(panel, 'Starting full background buffer…');
+
+            prefetchHighlight(panel, item, videoSources[0], function (received, total) {
+                if (total > 0) {
+                    var percent = Math.max(0, Math.min(100, Math.round((received / total) * 100)));
+                    setStatus(panel, 'Buffering ' + percent + '% · ' + formatBytes(received) + ' / ' + formatBytes(total));
+                } else {
+                    setStatus(panel, 'Buffering · ' + formatBytes(received));
+                }
+            }).then(function (cached) {
+                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
+                video._pssStreamingFallback = false;
+                video.src = cached.url;
+                try { video.load(); } catch (e) {}
+                replay.disabled = false;
+                replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
+                setStatus(panel, 'Buffered ' + formatBytes(cached.bytes) + ' · ready to play');
+            }).catch(function () {
+                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
+                // If full-prefetch fails, retain the proven streaming proxy path.
+                video._pssStreamingFallback = true;
+                if (setVideoSource(video, videoSources, 0)) {
+                    replay.disabled = false;
+                    replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
+                    setStatus(panel, 'Fast buffer unavailable · streaming fallback ready');
+                } else {
+                    replay.disabled = true;
+                    replay.textContent = 'Unavailable';
+                    setStatus(panel, 'Video playback unavailable · use ESPN link');
+                }
+            });
+        }
+
+        if (!video) {
+            setStatus(panel, isNew ? 'New highlight · ESPN link available' : 'Watch on ESPN');
         }
     }
 
