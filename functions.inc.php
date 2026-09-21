@@ -1,716 +1,524 @@
 <?php
 $skipJSsettings = true;
 include_once "/opt/fpp/www/common.php";
-$pluginName = basename(dirname(__FILE__)); 
-$logFile = $settings['logDirectory']."/".$pluginName.".log";
+
+$pluginName = basename(dirname(__FILE__));
 $pluginConfigFile = $settings['configDirectory'] . "/plugin." . $pluginName;
+$logFile = $settings['logDirectory'] . "/plugin-" . $pluginName . ".log";
 $leagues = array('nfl', 'ncaa', 'nhl', 'mlb');
+$pluginSettings = loadPluginSettings();
 
-if (file_exists($pluginConfigFile)) {
-  $pluginSettings = parse_ini_file ($pluginConfigFile);
-} else {	
-	$pluginSettings="";
-	logEntry("No pluginConfigFile");
-}
-
-
-if(isset($_POST['action']) && !empty($_POST['action'])) {
-    $action = $_POST['action'];
-    switch($action) {
-        case 'updateNFLTeam' : updateTeam("football", "nfl");
-			break;
-		case 'updateNCAATeam' : updateTeam("football", "ncaa");
-			break;
-		case 'updateNHLTeam' : updateTeam("hockey", "nhl");
-			break;
-		case 'updateMLBTeam' : updateTeam("baseball", "mlb");
-			break;
-        case 'blah' : blah();
-			break;        
+if (isset($_POST['action']) && !empty($_POST['action'])) {
+    switch ($_POST['action']) {
+        case 'updateNFLTeam':
+            updateTeam('football', 'nfl');
+            break;
+        case 'updateNCAATeam':
+            updateTeam('football', 'ncaa');
+            break;
+        case 'updateNHLTeam':
+            updateTeam('hockey', 'nhl');
+            break;
+        case 'updateMLBTeam':
+            updateTeam('baseball', 'mlb');
+            break;
     }
 }
 
-function getTeams($sport='football', $league='nfl'){
-        if ($sport == 'football' && $league == 'ncaa') {
-                return getNCAATeams();
-        } else {
-                $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/teams";
-
-                $options = array(
-                        'http' => array(
-                                'method'  => 'GET',
-                                'timeout' => 10,
-                                'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
-                        )
-                );
-
-                $context = stream_context_create($options);
-                $result = @file_get_contents($url, false, $context);
-
-                $teamNames = array(
-                        "No team" => ""
-                );
-
-                if ($result === false) {
-                        return $teamNames;
-                }
-
-                $data = json_decode($result, true);
-
-                if (
-                        !is_array($data) ||
-                        !isset($data['sports'][0]['leagues'][0]['teams']) ||
-                        !is_array($data['sports'][0]['leagues'][0]['teams'])
-                ) {
-                        return $teamNames;
-                }
-
-                foreach ($data['sports'][0]['leagues'][0]['teams'] as $teamEntry) {
-                        if (!isset($teamEntry['team'])) {
-                                continue;
-                        }
-
-                        $team = $teamEntry['team'];
-
-                        if (!isset($team['displayName']) || !isset($team['id'])) {
-                                continue;
-                        }
-
-                        $teamNames[$team['displayName']] = $team['id'];
-                }
-
-                return $teamNames;
-        }
+function loadPluginSettings() {
+    global $pluginConfigFile;
+    if (!file_exists($pluginConfigFile)) {
+        return array();
+    }
+    $data = parse_ini_file($pluginConfigFile);
+    return is_array($data) ? $data : array();
 }
+
+function pluginSetting($key, $default = '') {
+    global $pluginSettings;
+    if (!is_array($pluginSettings) || !array_key_exists($key, $pluginSettings)) {
+        return $default;
+    }
+    return urldecode((string)$pluginSettings[$key]);
+}
+
+function setPluginSetting($key, $value) {
+    global $pluginName, $pluginSettings;
+    $value = (string)$value;
+    if (WriteSettingToFile($key, $value, $pluginName)) {
+        if (!is_array($pluginSettings)) {
+            $pluginSettings = array();
+        }
+        $pluginSettings[$key] = $value;
+        return true;
+    }
+    logEntry("Unable to save setting {$key}");
+    return false;
+}
+
+function leagueInfo($league) {
+    switch ($league) {
+        case 'nfl':
+            return array('sport' => 'football', 'espnLeague' => 'nfl');
+        case 'ncaa':
+            return array('sport' => 'football', 'espnLeague' => 'college-football');
+        case 'nhl':
+            return array('sport' => 'hockey', 'espnLeague' => 'nhl');
+        case 'mlb':
+            return array('sport' => 'baseball', 'espnLeague' => 'mlb');
+        default:
+            return array('sport' => '', 'espnLeague' => '');
+    }
+}
+
+function httpJson($url, $method = 'GET', $body = null) {
+    $headers = "User-Agent: Mozilla/5.0 (compatible; FPP-Pro-Sports-Scoring/2.0)\r\nAccept: application/json\r\n";
+    $options = array(
+        'http' => array(
+            'method' => $method,
+            'timeout' => 10,
+            'ignore_errors' => true,
+            'header' => $headers
+        )
+    );
+    if ($body !== null) {
+        $options['http']['header'] .= "Content-Type: application/json\r\n";
+        $options['http']['content'] = json_encode($body);
+    }
+
+    $context = stream_context_create($options);
+    $result = @file_get_contents($url, false, $context);
+    if ($result === false || $result === '') {
+        return null;
+    }
+    $data = json_decode($result, true);
+    return is_array($data) ? $data : null;
+}
+
+function getTeams($sport = 'football', $league = 'nfl') {
+    $espnLeague = ($league === 'ncaa') ? 'college-football' : $league;
+    $suffix = ($league === 'ncaa') ? '?limit=1000' : '';
+    $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$espnLeague}/teams{$suffix}";
+    $data = httpJson($url);
+    $teamNames = array('No team' => '');
+
+    if (!is_array($data) || !isset($data['sports'][0]['leagues'][0]['teams']) || !is_array($data['sports'][0]['leagues'][0]['teams'])) {
+        logEntry("Unable to load {$league} teams from ESPN");
+        return $teamNames;
+    }
 
     foreach ($data['sports'][0]['leagues'][0]['teams'] as $teamEntry) {
-        if (!isset($teamEntry['team'])) {
+        if (!isset($teamEntry['team']) || !is_array($teamEntry['team'])) {
             continue;
         }
-
         $team = $teamEntry['team'];
-
-        if (!isset($team['displayName']) || !isset($team['id'])) {
+        if (!isset($team['displayName'], $team['id'])) {
             continue;
         }
-
-        $teamNames[$team['displayName']] = $team['id'];
+        $teamNames[$team['displayName']] = (string)$team['id'];
     }
 
-    return $teamNames;
-}
-}
-
-function getNCAATeams(){
-        $url = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/teams?limit=1000";
-
-        $options = array(
-                'http' => array(
-                        'method'  => 'GET',
-                        'timeout' => 10,
-                        'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
-                )
-        );
-
-        $context = stream_context_create($options);
-        $result = @file_get_contents($url, false, $context);
-
-        $teamNames = array(
-                "No team" => ""
-        );
-
-        if ($result === false) {
-                return $teamNames;
-        }
-
-        $data = json_decode($result, true);
-
-        if (
-                !is_array($data) ||
-                !isset($data['sports'][0]['leagues'][0]['teams']) ||
-                !is_array($data['sports'][0]['leagues'][0]['teams'])
-        ) {
-                return $teamNames;
-        }
-
-        foreach ($data['sports'][0]['leagues'][0]['teams'] as $teamEntry) {
-                if (!isset($teamEntry['team'])) {
-                        continue;
-                }
-
-                $team = $teamEntry['team'];
-
-                if (!isset($team['displayName']) || !isset($team['id'])) {
-                        continue;
-                }
-
-                $teamNames[$team['displayName']] = $team['id'];
-        }
-
-        ksort($teamNames);
-
-        $noTeam = array("No team" => "");
-        unset($teamNames["No team"]);
-
-        return $noTeam + $teamNames;
+    unset($teamNames['No team']);
+    ksort($teamNames, SORT_NATURAL | SORT_FLAG_CASE);
+    return array('No team' => '') + $teamNames;
 }
 
-function getSequences(){
-	$url = "http://127.0.0.1/api/sequence/";
-	$options = array(
-		'http' => array(
-		'method'  => 'GET',
-		)
-	);
-	$context = stream_context_create( $options );
-	$result = file_get_contents( $url, false, $context );
-	$sequences = json_decode($result, true);
-	$sequenceList["No Sequence"]="";
-	foreach ($sequences as $sequence) {		
-        $sequenceList[$sequence]=$sequence;		
-	}		
-	return $sequenceList;
+function getNCAATeams() {
+    return getTeams('football', 'ncaa');
 }
 
-function getTeamInfo($sport, $league, $team){
-        if ($league == "ncaa") {
-                $league = "college-football";
+function getSequences() {
+    $data = httpJson('http://127.0.0.1/api/sequence/');
+    $sequenceList = array('No Sequence' => '');
+    if (!is_array($data)) {
+        return $sequenceList;
+    }
+    foreach ($data as $sequence) {
+        if (is_string($sequence) && $sequence !== '') {
+            $sequenceList[$sequence] = $sequence;
         }
-
-        $teamInfo = array(
-                "logo" => "",
-                "abbreviation" => "",
-                "name" => "",
-                "nextEventID" => "",
-                "nextEventDate" => 0,
-                "nextEventStatus" => ""
-        );
-
-        if (empty($team)) {
-                return $teamInfo;
-        }
-
-        $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/teams/{$team}";
-
-        $options = array(
-                'http' => array(
-                        'method'  => 'GET',
-                        'timeout' => 10,
-                        'header'  => "User-Agent: FPP-Pro-Sports-Scoring\r\n"
-                )
-        );
-
-        $context = stream_context_create($options);
-        $result = @file_get_contents($url, false, $context);
-
-        if ($result === false) {
-                return $teamInfo;
-        }
-
-        $data = json_decode($result, true);
-
-        if (!is_array($data) || !isset($data['team']) || !is_array($data['team'])) {
-                return $teamInfo;
-        }
-
-        $teamData = $data['team'];
-
-        if (isset($teamData['logos'][0]['href'])) {
-                $teamInfo["logo"] = $teamData['logos'][0]['href'];
-        }
-
-        if (isset($teamData['abbreviation'])) {
-                $teamInfo["abbreviation"] = $teamData['abbreviation'];
-        }
-
-        if (isset($teamData['displayName'])) {
-                $teamInfo["name"] = $teamData['displayName'];
-        }
-
-        if (isset($teamData['nextEvent'][0]) && is_array($teamData['nextEvent'][0])) {
-                $nextEvent = $teamData['nextEvent'][0];
-
-                if (isset($nextEvent['id'])) {
-                        $teamInfo["nextEventID"] = $nextEvent['id'];
-                }
-
-                if (isset($nextEvent['date'])) {
-                        $teamInfo["nextEventDate"] = $nextEvent['date'];
-                }
-
-                if (isset($nextEvent['competitions'][0]['status']['type']['state'])) {
-                        $teamInfo["nextEventStatus"] =
-                                $nextEvent['competitions'][0]['status']['type']['state'];
-                }
-        }
-
-        return $teamInfo;
+    }
+    ksort($sequenceList, SORT_NATURAL | SORT_FLAG_CASE);
+    return array('No Sequence' => '') + array_diff_key($sequenceList, array('No Sequence' => ''));
 }
 
-function updateTeam($sport, $league){
-	logEntry("Updating {$league} Team and logo");
-	global $pluginName;
-	global $pluginSettings;
+function getTeamInfo($sport, $league, $team) {
+    $info = array(
+        'valid' => false,
+        'logo' => '',
+        'abbreviation' => '',
+        'name' => '',
+        'nextEventID' => '',
+        'nextEventDate' => '',
+        'nextEventStatus' => ''
+    );
+    if ($team === '') {
+        return $info;
+    }
 
-	//clear old scores
-	WriteSettingToFile("{$league}MyScore",0,$pluginName);
-	WriteSettingToFile("{$league}OppoScore",0,$pluginName);
+    $espnLeague = ($league === 'ncaa') ? 'college-football' : $league;
+    $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$espnLeague}/teams/" . rawurlencode($team);
+    $data = httpJson($url);
+    if (!is_array($data) || !isset($data['team']) || !is_array($data['team'])) {
+        return $info;
+    }
 
-	//configure variables
-	if (strlen(urldecode($pluginSettings["{$league}TeamID"]))>0){
-		$teamID=urldecode($pluginSettings["{$league}TeamID"]);
-		$teamInfo = getTeamInfo($sport, $league, $teamID);
-		$teamLogo = $teamInfo['logo'];
-		$teamAbbreviation = $teamInfo['abbreviation'];
-		$teamName = $teamInfo['name'];
-		$teamNextEventID = $teamInfo['nextEventID'];
-		$teamNextEventDate = $teamInfo['nextEventDate'];
-        $teamNextEventStatus = $teamInfo['nextEventStatus'];
-	}else{
-		$teamLogo = "";
-		$teamAbbreviation = "";
-		$teamName = "";
-		$teamNextEventID = "";
-		$teamNextEventDate = "";
-        $teamNextEventStatus = "";
-	}
-	WriteSettingToFile("{$league}TeamLogo",$teamLogo,$pluginName);
-	WriteSettingToFile("{$league}TeamAbbreviation",$teamAbbreviation,$pluginName);
-	WriteSettingToFile("{$league}TeamName",$teamName,$pluginName);
-	WriteSettingToFile("{$league}TeamNextEventID",$teamNextEventID,$pluginName);
-	WriteSettingToFile("{$league}Start",$teamNextEventDate,$pluginName);
-	WriteSettingToFile("{$league}GameStatus",$teamNextEventStatus,$pluginName);
+    $teamData = $data['team'];
+    $info['valid'] = true;
+    $info['logo'] = isset($teamData['logos'][0]['href']) ? (string)$teamData['logos'][0]['href'] : '';
+    $info['abbreviation'] = isset($teamData['abbreviation']) ? (string)$teamData['abbreviation'] : '';
+    $info['name'] = isset($teamData['displayName']) ? (string)$teamData['displayName'] : '';
 
-	logEntry("{$league} Logo updated " . $teamLogo);
-	logEntry("{$league} Abbreviation updated " . $teamAbbreviation);
-	logEntry("{$league} Name updated " . $teamName);
-	logEntry("{$league} Next game updated " . $teamNextEventDate);
-	if ($teamNextEventID != '') {
-		updateTeamStatus(true);
-	}
-	return $teamLogo;
-
+    if (isset($teamData['nextEvent'][0]) && is_array($teamData['nextEvent'][0])) {
+        $event = $teamData['nextEvent'][0];
+        $info['nextEventID'] = isset($event['id']) ? (string)$event['id'] : '';
+        $info['nextEventDate'] = isset($event['date']) ? (string)$event['date'] : '';
+        if (isset($event['competitions'][0]['status']['type']['state'])) {
+            $info['nextEventStatus'] = (string)$event['competitions'][0]['status']['type']['state'];
+        }
+    }
+    return $info;
 }
 
 function getGameStatus($sport, $league, $gameID, $teamID) {
-        if ($league == "ncaa") {
-                $league = "college-football";
+    $status = array(
+        'valid' => false,
+        'start' => '',
+        'state' => '',
+        'oppoID' => '',
+        'oppoAbbreviation' => '',
+        'oppoName' => '',
+        'myScore' => 0,
+        'oppoScore' => 0,
+        'scoringPlays' => array()
+    );
+    if ($gameID === '' || $teamID === '') {
+        return $status;
+    }
+
+    $espnLeague = ($league === 'ncaa') ? 'college-football' : $league;
+    $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$espnLeague}/summary?event=" . rawurlencode($gameID);
+    $data = httpJson($url);
+    if (!is_array($data) || !isset($data['header']['competitions'][0]) || !is_array($data['header']['competitions'][0])) {
+        return $status;
+    }
+
+    $competition = $data['header']['competitions'][0];
+    if (!isset($competition['competitors']) || !is_array($competition['competitors'])) {
+        return $status;
+    }
+
+    $myTeam = null;
+    $opponent = null;
+    foreach ($competition['competitors'] as $competitor) {
+        if (!isset($competitor['team']) || !is_array($competitor['team']) || !isset($competitor['team']['id'])) {
+            continue;
+        }
+        if ((string)$competitor['team']['id'] === (string)$teamID) {
+            $myTeam = $competitor;
+        } else {
+            $opponent = $competitor;
+        }
+    }
+    if ($myTeam === null || $opponent === null) {
+        return $status;
+    }
+
+    $status['start'] = isset($competition['date']) ? (string)$competition['date'] : '';
+    $status['state'] = isset($competition['status']['type']['state']) ? (string)$competition['status']['type']['state'] : '';
+    $status['oppoID'] = isset($opponent['team']['id']) ? (string)$opponent['team']['id'] : '';
+    $status['oppoAbbreviation'] = isset($opponent['team']['abbreviation']) ? (string)$opponent['team']['abbreviation'] : '';
+    $status['oppoName'] = isset($opponent['team']['displayName']) ? (string)$opponent['team']['displayName'] : '';
+    $status['myScore'] = isset($myTeam['score']) ? (int)$myTeam['score'] : 0;
+    $status['oppoScore'] = isset($opponent['score']) ? (int)$opponent['score'] : 0;
+    $status['scoringPlays'] = isset($data['scoringPlays']) && is_array($data['scoringPlays']) ? $data['scoringPlays'] : array();
+    $status['valid'] = ($status['state'] !== '');
+    return $status;
+}
+
+function latestScoringPlayID($plays) {
+    if (!is_array($plays) || count($plays) === 0) {
+        return '';
+    }
+    for ($i = count($plays) - 1; $i >= 0; $i--) {
+        if (isset($plays[$i]['id'])) {
+            return (string)$plays[$i]['id'];
+        }
+    }
+    return '';
+}
+
+function updateTeam($sport, $league) {
+    global $pluginSettings;
+    $pluginSettings = loadPluginSettings();
+    $teamID = pluginSetting("{$league}TeamID", '');
+
+    if ($teamID === '') {
+        clearLeagueState($league, true);
+        logEntry(strtoupper($league) . ' team cleared');
+        return '';
+    }
+
+    $teamInfo = getTeamInfo($sport, $league, $teamID);
+    if (!$teamInfo['valid']) {
+        logEntry("{$league} team update failed; keeping existing state");
+        return pluginSetting("{$league}TeamLogo", '');
+    }
+
+    setPluginSetting("{$league}TeamLogo", $teamInfo['logo']);
+    setPluginSetting("{$league}TeamAbbreviation", $teamInfo['abbreviation']);
+    setPluginSetting("{$league}TeamName", $teamInfo['name']);
+    setPluginSetting("{$league}TeamNextEventID", $teamInfo['nextEventID']);
+    setPluginSetting("{$league}Start", $teamInfo['nextEventDate']);
+    setPluginSetting("{$league}GameStatus", $teamInfo['nextEventStatus']);
+    setPluginSetting("{$league}OppoID", '');
+    setPluginSetting("{$league}OppoName", '');
+    setPluginSetting("{$league}OppoAbbreviation", '');
+    setPluginSetting("{$league}MyScore", '0');
+    setPluginSetting("{$league}OppoScore", '0');
+    setPluginSetting("{$league}LastScoringPlayID", '');
+    setPluginSetting("{$league}LastCelebratedScore", '0');
+    setPluginSetting("{$league}LastCompletedEventID", '');
+
+    if ($teamInfo['nextEventID'] !== '') {
+        $game = getGameStatus($sport, $league, $teamInfo['nextEventID'], $teamID);
+        if ($game['valid']) {
+            applyGameSnapshot($league, $game, false);
+            setPluginSetting("{$league}LastScoringPlayID", latestScoringPlayID($game['scoringPlays']));
+            setPluginSetting("{$league}LastCelebratedScore", (string)$game['myScore']);
+        }
+    }
+
+    logEntry("{$league} team updated to {$teamInfo['name']}");
+    return $teamInfo['logo'];
+}
+
+function clearLeagueState($league, $clearTeam = false) {
+    $keys = array(
+        'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamNextEventID' => '',
+        'Start' => '', 'GameStatus' => '', 'OppoID' => '', 'OppoName' => '', 'OppoAbbreviation' => '',
+        'MyScore' => '0', 'OppoScore' => '0', 'LastScoringPlayID' => '', 'LastCelebratedScore' => '0',
+        'LastCompletedEventID' => ''
+    );
+    if ($clearTeam) {
+        $keys['TeamID'] = '';
+    }
+    foreach ($keys as $suffix => $value) {
+        setPluginSetting("{$league}{$suffix}", $value);
+    }
+}
+
+function applyGameSnapshot($league, $status, $updateStatus = true) {
+    setPluginSetting("{$league}Start", $status['start']);
+    setPluginSetting("{$league}OppoID", $status['oppoID']);
+    setPluginSetting("{$league}OppoName", $status['oppoName']);
+    setPluginSetting("{$league}OppoAbbreviation", $status['oppoAbbreviation']);
+    setPluginSetting("{$league}MyScore", (string)$status['myScore']);
+    setPluginSetting("{$league}OppoScore", (string)$status['oppoScore']);
+    if ($updateStatus) {
+        setPluginSetting("{$league}GameStatus", $status['state']);
+    }
+}
+
+function processFootballScoring($league, $teamID, $plays) {
+    $lastID = pluginSetting("{$league}LastScoringPlayID", '');
+    if (!is_array($plays) || count($plays) === 0) {
+        return;
+    }
+
+    if ($lastID === '') {
+        setPluginSetting("{$league}LastScoringPlayID", latestScoringPlayID($plays));
+        return;
+    }
+
+    $seenLast = false;
+    $newPlays = array();
+    foreach ($plays as $play) {
+        $id = isset($play['id']) ? (string)$play['id'] : '';
+        if ($id === $lastID) {
+            $seenLast = true;
+            $newPlays = array();
+            continue;
+        }
+        if ($seenLast) {
+            $newPlays[] = $play;
+        }
+    }
+
+    if (!$seenLast) {
+        setPluginSetting("{$league}LastScoringPlayID", latestScoringPlayID($plays));
+        logEntry("{$league} scoring-play marker was no longer in ESPN response; re-baselined safely");
+        return;
+    }
+
+    foreach ($newPlays as $play) {
+        if (!isset($play['team']['id']) || (string)$play['team']['id'] !== (string)$teamID) {
+            continue;
+        }
+        $typeText = isset($play['type']['text']) ? strtolower((string)$play['type']['text']) : '';
+        $playText = isset($play['text']) ? strtolower((string)$play['text']) : '';
+        $haystack = $typeText . ' ' . $playText;
+
+        if (strpos($haystack, 'touchdown') !== false) {
+            playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown');
+        } elseif (strpos($haystack, 'field goal') !== false && strpos($haystack, 'no good') === false && strpos($haystack, 'miss') === false) {
+            playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal');
+        }
+    }
+
+    setPluginSetting("{$league}LastScoringPlayID", latestScoringPlayID($plays));
+}
+
+function processSimpleScoreIncrease($league, $oldScore, $newScore) {
+    $oldScore = (int)$oldScore;
+    $newScore = (int)$newScore;
+    $lastCelebrated = (int)pluginSetting("{$league}LastCelebratedScore", '0');
+
+    if ($newScore > $oldScore && $newScore > $lastCelebrated) {
+        playConfiguredSequence($league, 'ScoreSequence', 'Score');
+        setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
+    } elseif ($newScore > $lastCelebrated) {
+        setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
+    }
+}
+
+function playConfiguredSequence($league, $suffix, $label) {
+    $sequence = pluginSetting("{$league}{$suffix}", '');
+    if ($sequence === '') {
+        logEntry("{$league} {$label} detected but no sequence is selected");
+        return;
+    }
+    if (insertPlaylistImmediate($sequence)) {
+        logEntry("{$league} {$label} detected; played {$sequence}");
+    } else {
+        logEntry("{$league} {$label} detected but FPP rejected sequence {$sequence}");
+    }
+}
+
+function updateTeamStatus($reparseSettings = true) {
+    global $pluginSettings, $leagues;
+    if ($reparseSettings) {
+        $pluginSettings = loadPluginSettings();
+    }
+
+    $sleepTimes = array('nfl' => 600, 'ncaa' => 600, 'nhl' => 600, 'mlb' => 600);
+    $logLevel = (int)pluginSetting('logLevel', '4');
+
+    foreach ($leagues as $league) {
+        $teamID = pluginSetting("{$league}TeamID", '');
+        if ($teamID === '') {
+            continue;
         }
 
-        $gameStatus = array(
-                "valid" => false,
-                "start" => 0,
-                "state" => "pre",
-                "oppoID" => "",
-                "oppoAbbreviation" => "",
-                "oppoName" => "",
-                "myScore" => 0,
-                "oppoScore" => 0
-        );
+        $info = leagueInfo($league);
+        $sport = $info['sport'];
+        $eventID = pluginSetting("{$league}TeamNextEventID", '');
+        $gameState = pluginSetting("{$league}GameStatus", '');
+        $start = pluginSetting("{$league}Start", '');
 
-        if (empty($gameID) || empty($teamID)) {
-                return $gameStatus;
+        if ($eventID === '') {
+            $newInfo = getTeamInfo($sport, $league, $teamID);
+            if ($newInfo['valid'] && $newInfo['nextEventID'] !== '') {
+                setPluginSetting("{$league}TeamNextEventID", $newInfo['nextEventID']);
+                setPluginSetting("{$league}Start", $newInfo['nextEventDate']);
+                setPluginSetting("{$league}GameStatus", $newInfo['nextEventStatus']);
+                $eventID = $newInfo['nextEventID'];
+                $gameState = $newInfo['nextEventStatus'];
+            } else {
+                continue;
+            }
         }
 
-        $url = "https://site.api.espn.com/apis/site/v2/sports/{$sport}/{$league}/summary?event={$gameID}";
-
-        $options = array(
-                'http' => array(
-                        'method'  => 'GET',
-                        'timeout' => 10,
-                        'header'  => "User-Agent: Mozilla/5.0 (compatible; FPP-Pro-Sports-Scoring/1.0)\r\nAccept: application/json\r\n"
-                )
-        );
-
-        $context = stream_context_create($options);
-        $result = @file_get_contents($url, false, $context);
-
-        if ($result === false) {
-                return $gameStatus;
+        if ($gameState === 'post') {
+            $newInfo = getTeamInfo($sport, $league, $teamID);
+            if ($newInfo['valid'] && $newInfo['nextEventID'] !== '' && $newInfo['nextEventID'] !== $eventID) {
+                setPluginSetting("{$league}TeamNextEventID", $newInfo['nextEventID']);
+                setPluginSetting("{$league}Start", $newInfo['nextEventDate']);
+                setPluginSetting("{$league}GameStatus", $newInfo['nextEventStatus']);
+                setPluginSetting("{$league}MyScore", '0');
+                setPluginSetting("{$league}OppoScore", '0');
+                setPluginSetting("{$league}LastScoringPlayID", '');
+                setPluginSetting("{$league}LastCelebratedScore", '0');
+                setPluginSetting("{$league}LastCompletedEventID", '');
+                logEntry("{$league} next event changed to {$newInfo['nextEventID']}");
+            }
+            continue;
         }
 
-        $data = json_decode($result, true);
-
-        if (!is_array($data)) {
-                return $gameStatus;
-        }
-
-        if (
-                !isset($data['header']['competitions'][0]) ||
-                !is_array($data['header']['competitions'][0])
-        ) {
-                return $gameStatus;
-        }
-
-        $competition = $data['header']['competitions'][0];
-
-        if (isset($competition['date'])) {
-                $gameStatus['start'] = $competition['date'];
-        }
-
-        if (isset($competition['status']['type']['state'])) {
-                $gameStatus['state'] = $competition['status']['type']['state'];
-        }
-
-        if (
-                !isset($competition['competitors']) ||
-                !is_array($competition['competitors'])
-        ) {
-                return $gameStatus;
-        }
-
-        $myTeam = null;
-        $opponent = null;
-
-        foreach ($competition['competitors'] as $competitor) {
-                if (
-                        !isset($competitor['team']['id']) ||
-                        !isset($competitor['team'])
-                ) {
-                        continue;
+        if ($gameState === 'pre' && $start !== '') {
+            try {
+                $gameDate = new DateTime($start);
+                $secondsToGame = $gameDate->getTimestamp() - time();
+                if ($secondsToGame > 1200) {
+                    $sleepTimes[$league] = min(600, max(60, $secondsToGame - 900));
+                    continue;
                 }
+            } catch (Exception $e) {
+                logEntry("{$league} has invalid start time; polling ESPN for correction");
+            }
+        }
 
-                if ((string)$competitor['team']['id'] === (string)$teamID) {
-                        $myTeam = $competitor;
-                } else {
-                        $opponent = $competitor;
+        $status = getGameStatus($sport, $league, $eventID, $teamID);
+        if (!$status['valid']) {
+            logEntry("{$league} ESPN game status request failed; keeping existing game state");
+            $sleepTimes[$league] = 30;
+            continue;
+        }
+
+        if ($logLevel >= 5) {
+            logEntry("{$league} poll: state={$status['state']} score={$status['myScore']}-{$status['oppoScore']}");
+        }
+
+        $oldScore = (int)pluginSetting("{$league}MyScore", '0');
+        if ($status['state'] === 'in') {
+            if ($sport === 'football') {
+                processFootballScoring($league, $teamID, $status['scoringPlays']);
+            } else {
+                processSimpleScoreIncrease($league, $oldScore, $status['myScore']);
+            }
+            $sleepTimes[$league] = 10;
+        } elseif ($status['state'] === 'pre') {
+            $sleepTimes[$league] = 30;
+        } elseif ($status['state'] === 'post') {
+            $completed = pluginSetting("{$league}LastCompletedEventID", '');
+            if ($completed !== $eventID) {
+                if ($status['myScore'] > $status['oppoScore']) {
+                    playConfiguredSequence($league, 'WinSequence', 'Win');
                 }
+                setPluginSetting("{$league}LastCompletedEventID", $eventID);
+            }
+            $sleepTimes[$league] = 600;
         }
 
-        if ($myTeam === null || $opponent === null) {
-                return $gameStatus;
-        }
+        applyGameSnapshot($league, $status, true);
+    }
 
-        if (isset($opponent['team']['id'])) {
-                $gameStatus['oppoID'] = $opponent['team']['id'];
-        }
-
-        if (isset($opponent['team']['abbreviation'])) {
-                $gameStatus['oppoAbbreviation'] = $opponent['team']['abbreviation'];
-        }
-
-        if (isset($opponent['team']['displayName'])) {
-                $gameStatus['oppoName'] = $opponent['team']['displayName'];
-        }
-
-        if (isset($myTeam['score'])) {
-                $gameStatus['myScore'] = (int)$myTeam['score'];
-        }
-
-        if (isset($opponent['score'])) {
-                $gameStatus['oppoScore'] = (int)$opponent['score'];
-        }
-        $gameStatus['valid'] = true;
-        return $gameStatus;
+    return min($sleepTimes);
 }
 
-function updateTeamStatus($reparseSettings=true){
-	//initialize globals
-	global $logFile;	
-	global $pluginConfigFile;
-	global $pluginName;
-	global $pluginSettings; 
-	global $leagues;
+function insertPlaylistImmediate($sequence) {
+    $sequence = trim((string)$sequence);
+    if ($sequence === '') {
+        return false;
+    }
+    if (substr($sequence, -5) !== '.fseq') {
+        $sequence .= '.fseq';
+    }
 
-	//reparse settings file - needs to reread team group id on change
-	if ($reparseSettings) {
-		logEntry("Reparsing config file");
-		if (file_exists($pluginConfigFile)) {
-			$pluginSettings = parse_ini_file ($pluginConfigFile);
-		  } else {	
-			  $pluginSettings="";
-			  logEntry("No pluginConfigFile");
-		  }
-	}
-
-	//setup log level
-	if (strlen(urldecode($pluginSettings['logLevel']))>0){
-		$logLevel=urldecode($pluginSettings['logLevel']);
-	}else{
-		$logLevel=0;
-	}
-	
-	//get active leagues
-	foreach ($leagues as $league) {
-
-		if (strlen(urldecode($pluginSettings["{$league}TeamID"]))>0){
-			${$league . "TeamID"}=urldecode($pluginSettings["{$league}TeamID"]);
-		} else {
-			${$league . "TeamID"}="";
-		}
-
-		//initialize sleep times
-		${$league . "SleepTime"} = 600;
-
-	}
-	$activeLeagues = array();
-	if ($nflTeamID != '') {
-		array_push($activeLeagues, 'nfl');
-	}
-	if ($ncaaTeamID != '') {
-		array_push($activeLeagues, 'ncaa');
-	}
-	if ($nhlTeamID != '') {
-		array_push($activeLeagues, 'nhl');
-	}
-	if ($mlbTeamID != '') {
-		array_push($activeLeagues, 'mlb');
-	}
-
-	//cycle through each league
-	foreach ($activeLeagues as $league) {
-		if ($logLevel >= 5) {
-			logEntry("Parsing league {$league}");	
-		}
- 
-		if (strlen(urldecode($pluginSettings["{$league}GameStatus"]))>1){
-			${$league . "GameStatus"}=urldecode($pluginSettings["{$league}GameStatus"]);
-		} else {
-			${$league . "GameStatus"}="";
-		}
-		if (strlen(urldecode($pluginSettings["{$league}TeamNextEventID"]))>1){
-			${$league . "TeamNextEventID"}=urldecode($pluginSettings["{$league}TeamNextEventID"]);
-		} else {
-			${$league . "TeamNextEventID"}="";
-		}
-		if (strlen(urldecode($pluginSettings["{$league}Start"]))>1){
-			${$league . "Start"}=urldecode($pluginSettings["{$league}Start"]);
-		} else {
-			${$league . "Start"}="";
-		}
-		if (strlen(urldecode($pluginSettings["{$league}MyScore"]))>0){
-			${$league . "MyScore"}=urldecode($pluginSettings["{$league}MyScore"]);
-		} else {
-			${$league . "MyScore"}="0";
-		}
-		if (strlen(urldecode($pluginSettings["{$league}OppoScore"]))>0){
-			${$league . "OppoScore"}=urldecode($pluginSettings["{$league}OppoScore"]);
-		} else {
-			${$league . "OppoScore"}="0";
-		}
-		if (strlen(urldecode($pluginSettings["{$league}OppoID"]))>0){
-			${$league . "OppoID"}=urldecode($pluginSettings["{$league}OppoID"]);
-		} else {
-			${$league . "OppoID"}="";
-		}
-		if (strlen(urldecode($pluginSettings["{$league}WinSequence"]))>1){
-			${$league . "WinSequence"}=urldecode($pluginSettings["{$league}WinSequence"]);
-		} else {
-			${$league . "WinSequence"}="";
-		}
-	
-		if ($league == "nfl" || $league == "ncaa") {
-	
-			if (strlen(urldecode($pluginSettings["{$league}TouchdownSequence"]))>1){
-				${$league . "TouchdownSequence"}=urldecode($pluginSettings["{$league}TouchdownSequence"]);
-			} else {
-				${$league . "TouchdownSequence"}="";
-			}
-			if (strlen(urldecode($pluginSettings["{$league}FieldgoalSequence"]))>1){
-				${$league . "FieldgoalSequence"}=urldecode($pluginSettings["{$league}FieldgoalSequence"]);
-			} else {
-				${$league . "FieldgoalSequence"}="";
-			}
-
-			$sport = "football";
-	
-		} elseif ($league == "nhl" || $league == "mlb") {
-	
-			if (strlen(urldecode($pluginSettings["{$league}ScoreSequence"]))>1){
-				${$league . "ScoreSequence"}=urldecode($pluginSettings["{$league}ScoreSequence"]);
-			} else {
-				${$league . "ScoreSequence"}="";
-			}
-
-			switch ($league) {
-				case 'nhl' : $sport = "hockey";
-					break; 
-				case 'mlb' : $sport = "baseball";
-			}
-	
-		}
-
-		//run game checks based on prior game status
-		switch (${$league . "GameStatus"}) {
-			case "pre":
-				if ($logLevel >= 5) {
-					logEntry("{$league} Game Status is Pre");	
-				}
-				$now = new DateTime();
-				$gameDate = new DateTime(${$league . "Start"});
-				$timeToGame = $gameDate->getTimestamp() - $now->getTimestamp();
-				if ($timeToGame < 1200) {
-					if ($logLevel >= 5) {
-						logEntry("{$league} Game is 20 min or less from gametime");	
-					}
-					${$league . "SleepTime"} = 30;
-					//check game status
-					$status = getGameStatus($sport, $league, ${$league . "TeamNextEventID"}, ${$league . "TeamID"});
-					if ($status['state'] == "in") {
-						logEntry("{$league} game is now playing.");
-						WriteSettingToFile("{$league}GameStatus",$status['state'],$pluginName);
-					}
-				}
-
-				break;
-
-			case "post":
-				if ($logLevel >= 5) {
-					logEntry("{$league} Game Status is Post");	
-				}
-				//check for next game
-				$newInfo = getTeamInfo($sport, $league, ${$league . "TeamID"});
-                                if (
-                                        $newInfo['nextEventID'] != '' &&
-                                        $newInfo['nextEventID'] != ${$league . "TeamNextEventID"}
-                                ) {
-					WriteSettingToFile("{$league}TeamNextEventID",$newInfo['nextEventID'],$pluginName);
-					WriteSettingToFile("{$league}Start",$newInfo['nextEventDate'],$pluginName);
-					WriteSettingToFile("{$league}GameStatus",$newInfo['nextEventStatus'],$pluginName);
-					logEntry("{$league} Next game updated " . $newInfo['nextEventDate']);
-					//clear old scores
-					WriteSettingToFile("{$league}MyScore",0,$pluginName);
-					WriteSettingToFile("{$league}OppoScore",0,$pluginName);
-					updateTeamStatus(true);
-				}
-
-				${$league . "SleepTime"} = 600;
-
-				break;
-
-			default:
-
-				//log polling
-				if ($logLevel >= 5) {
-					logEntry("{$league} Game Status is In or Not Set. Polling ESPN API");	
-				}
-
-				//get game status
-				$status = getGameStatus($sport, $league, ${$league . "TeamNextEventID"}, ${$league . "TeamID"});
-
-				if (!$status['valid']) {
-					logEntry("{$league} ESPN game status request failed. Keeping existing game data.");
-					${$league . "SleepTime"} = 30;
-					continue 2;
-				}
-
-				// set opponent ID
-				if (${$league . "OppoID"} != $status['oppoID']) {
-					if ($logLevel >= 5) {
-						logEntry("{$league} Opponent Updated to " . ${$league . "OppoID"} . " from {$status['oppoID']}");	
-					}
-					WriteSettingToFile("{$league}OppoID",$status['oppoID'],$pluginName);
-					WriteSettingToFile("{$league}OppoName",$status['oppoName'],$pluginName);
-					WriteSettingToFile("{$league}OppoAbbreviation",$status['oppoAbbreviation'],$pluginName);
-				}
-
-				//check score changes
-				if ($sport == "football") {
-
-					if (${$league . "MyScore"} + 6 == $status['myScore']) {
-						//play touchdown sequence if set
-						if (${$league . "TouchdownSequence"} != '') {
-							insertPlaylistImmediate(${$league . "TouchdownSequence"});
-							logEntry("{$league} Touchdown! Playing sequence.");					
-						} else {
-							logEntry("{$league} Touchdown Triggered but no sequence selected");
-						}
-					} elseif (${$league . "MyScore"} + 3 == $status['myScore']) {
-						//play fieldgoal sequence if set
-						if (${$league . "FieldgoalSequence"} != '') {
-							insertPlaylistImmediate(${$league . "FieldgoalSequence"});
-							logEntry("{$league} Fieldgoal! Playing sequence.");					
-						} else {
-							logEntry("{$league} Fieldgoal Triggered but no sequence selected");
-						}
-					}
-
-				} elseif ($sport == "hockey" || $sport == "baseball") {
-					if (${$league . "MyScore"} < $status['myScore']) {
-						//play score sequence if set
-						if (${$league . "ScoreSequence"} != '') {
-							insertPlaylistImmediate(${$league . "ScoreSequence"});
-							logEntry("{$league} Score! Playing sequence.");					
-						} else {
-							logEntry("{$league} Score Triggered but no sequence selected");
-						}
-					}	
-				}
-
-				//update stored scores
-				if (${$league . "MyScore"} != $status['myScore']) {
-					WriteSettingToFile("{$league}MyScore",$status['myScore'],$pluginName);
-					logEntry("Updating {$league} MyScore to " . $status['myScore']);
-				}
-				if (${$league . "OppoScore"} != $status['oppoScore']) {
-					WriteSettingToFile("{$league}OppoScore",$status['oppoScore'],$pluginName);
-					logEntry("Updating {$league} OppoScore to " . $status['oppoScore']);
-				}
-
-				//update sleep timer
-				switch ($status['state']){
-					case "in":
-										
-						${$league . "SleepTime"} = 5;
-						if (${$league . "GameStatus"} != "in") {
-							WriteSettingToFile("{$league}GameStatus",$status['state'],$pluginName);
-							if ($logLevel >= 5) {
-								logEntry("{$league} Game Status updating to in");	
-							}	
-						}
-						break;
-					case "post":
-						if ($logLevel >= 5) {
-							logEntry("{$league} Game Status updating to post");	
-						}
-						if ($status['myScore'] > $status['oppoScore']) {
-							if (${$league . "WinSequence"} != '') {
-								insertPlaylistImmediate(${$league . "WinSequence"});
-								logEntry("Your {$league} team won! Playing sequence.");								
-							} else {
-								logEntry("Your {$league} team won but no sequence selected");
-							}
-						}
-						WriteSettingToFile("{$league}GameStatus",$status['state'],$pluginName);
-						${$league . "SleepTime"} = 600;
-						break;
-					default:
-						if ($logLevel >= 5) {
-							logEntry("{$league} Game Status updating to {$status['state']}");	
-						}
-						WriteSettingToFile("{$league}GameStatus",$status['state'],$pluginName);
-						${$league . "SleepTime"} = 600;					
-				}
-
-		}
-	
-	}
-
-	return min($nflSleepTime, $ncaaSleepTime, $nhlSleepTime, $mlbSleepTime);
-}
-	
-function insertPlaylistImmediate($playlist) {
-  $playlist .= '.fseq';
-  $playlist = rawurlencode($playlist);
-  $url = "http://127.0.0.1/api/command/Insert%20Playlist%20Immediate/" . $playlist . "/0/0";
-  $options = array(
-    'http' => array(
-      'method'  => 'GET'
-      )
-  );
-  $context = stream_context_create( $options );
-  $result = file_get_contents( $url, false, $context );
+    $payload = array(
+        'command' => 'Insert Playlist Immediate',
+        'multisyncCommand' => false,
+        'multisyncHosts' => '',
+        'args' => array($sequence, '0', '0', 'false')
+    );
+    $result = httpJson('http://127.0.0.1/api/command', 'POST', $payload);
+    return $result !== null;
 }
 
-function logEntry($data) {
-
-	global $logFile,$myPid;
-
-	$data = $_SERVER['PHP_SELF']." : [".$myPid."] ".$data;
-	
-	$logWrite= fopen($logFile, "a") or die("Unable to open file!");
-	fwrite($logWrite, date('Y-m-d h:i:s A',time()).": ".$data."\n");
-	fclose($logWrite);
+function logEntry($message) {
+    global $logFile;
+    $pid = getmypid();
+    $line = date('c') . " [{$pid}] " . trim((string)$message) . "\n";
+    @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
 }
-	
 ?>

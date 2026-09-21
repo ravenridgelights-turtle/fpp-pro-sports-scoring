@@ -1,184 +1,58 @@
 <?php
 include_once "/opt/fpp/www/common.php";
-include_once 'functions.inc.php';
-$pluginName = basename(dirname(__FILE__));
-$pluginConfigFile = $settings['configDirectory'] ."/plugin." .$pluginName;
-    
-if (file_exists($pluginConfigFile)) {
-  $pluginSettings = parse_ini_file($pluginConfigFile);
+include_once __DIR__ . '/functions.inc.php';
+$pluginSettings = loadPluginSettings();
+
+function s($key, $default = '') {
+    global $pluginSettings;
+    return isset($pluginSettings[$key]) ? urldecode((string)$pluginSettings[$key]) : $default;
 }
-foreach ($pluginSettings as $key => $value) { 
-  ${$key} = urldecode($value);
+function formatStart($value) {
+    if ($value === '' || $value === '0') {
+        return 'No scheduled event found';
+    }
+    try {
+        $dt = new DateTime($value);
+        $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
+        return $dt->format('l, F j @ g:i A');
+    } catch (Exception $e) {
+        return 'Unknown';
+    }
 }
-
-$showDisabledDiv="display:none;";
-
-$pluginEnabled = $pluginSettings['ENABLED'];
-if ($pluginEnabled=="OFF"){
-	$showDisabledDiv	="display:block;";
-}else{
-	$showDisabledDiv ="display:none;";
+function stateLabel($state) {
+    if ($state === 'pre') return 'Pregame';
+    if ($state === 'in') return 'Playing';
+    if ($state === 'post') return 'Postgame';
+    return 'Waiting for ESPN';
 }
-
-//get active leagues
-$activeLeagues = array();
-
-foreach ($leagues as $league) {
-	if (${$league . "TeamID"} != '') {
-		array_push($activeLeagues, $league);
-	}
-}
-
 ?>
+<div class="container-fluid">
+    <h2>Pro Sports Scoring Status</h2>
+    <?php if (s('ENABLED', 'OFF') !== 'ON'): ?>
+        <div class="alert alert-warning">The plugin is currently disabled.</div>
+    <?php endif; ?>
 
-<!DOCTYPE html>
-<html>
-<head>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta1/dist/css/bootstrap.min.css"
-    rel="stylesheet"
-    integrity="sha384-giJF6kkoqNQ00vy+HMDP7azOuL0xtbfIcaT9wjKHr8RbDVddVHyTfAAsrekwKmP1"
-    crossorigin="anonymous">
-  <style>
-    #bodyWrapper {
-      background-color: #20222e;
-    }
-    .pageContent {
-      background-color: #171720;
-    }
-    .plugin-body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      color: rgb(238, 238, 238);
-      background-color: rgb(0, 0, 0);
-      font-size: 1rem;
-      font-weight: 400;
-      line-height: 1.5;
-      padding-bottom: 2em;
-      background-repeat: no-repeat;
-      background-attachment: fixed;
-      background-position: top center;
-      background-size: auto 100%;
-    }
-    .card {
-      background-color: rgba(59, 69, 84, 0.7);
-      border-radius: 0.5em;
-      margin: 1em 1em 1em 1em;
-      padding: 1em 1em 1em 1em;
-    }
-  </style>
-</head>
-<body>
-  <div class="container-fluid plugin-body">
-	<div class="container-fluid pt-4">
-		<div class="card">
-			<div class="justify-content-md-center row py-3">
-				<div class="col-md-auto">
-					<h1 class="text-white">Pro Sports Scoring Plugin</h1>
-				</div>
-			</div>
-		</div>
-		<div class="container-fluid">
-			<div class="card">											 
-        		<!-- Status -->
-				<div class="justify-content-md-center row pt-4">
-					<div class="col-md-auto">
-						<h3 class="text-white">Game Status</h3>
-							<div style= "<?=$showDisabledDiv?>color:red;">
-								Notice: Plugin is disabled
-							</div>																
-					</div>          
-				</div>
-				<div class="justify-content-md-center row">
-					<?php foreach($activeLeagues as $league) { ?>
-						<div class="col-6 py-5">
-						<div  style= "height:100; width:100; margin:auto">
-							<img id="logoImage" src="<?echo ${$league . "TeamLogo"};?>" width="100" height ="100">
-						</div>	
-						<div class="justify-content-md-center row pt-4">
-							<div class="col-md-4">
-								<div class="card-title h5 text-white">
-									<?php if ($league == "nfl" || $league == "ncaa") {
-										echo "Kickoff:";
-									} elseif ($league == "nhl") {
-										echo "Puck Drop:";
-									} elseif ($league == "mlb") {
-										echo "First Pitch";
-									} ?>
-								</div>
-							</div>
-							<div class="col-md-7">
-								<div class="card-title text-white">
-								<?php if (${$league . "Start"} == "0") {
-									echo 'No game scheduled this week';
-								} else {
-									${$league . "Start"} = new DateTime(${$league . "Start"}, new DateTimeZone("UTC"));
-									${$league . "Start"}->setTimezone(new DateTimeZone(date_default_timezone_get()));
-									echo ${$league . "Start"}->format("l, F j @ g:i A");
-								} ?>
-								</div>
-							</div>
-						</div>
-						<?php if (!in_array(${$league . "Start"}, array("0", "1"))) { ?>
-						<div class="justify-content-md-center row">
-							<div class="col-md-4">
-								<div class="card-title h5 text-white">
-									Opponent:
-								</div>
-							</div>
-							<div class="col-md-7">
-								<div class="card-title text-white">
-									<?=${$league . "OppoName"}?>
-								</div>
-							</div>
-						</div>
-						<div class="justify-content-md-center row pt-5">
-							<div class="col-md-4">
-								<div class="card-title h5 text-white">
-									Game Status:
-								</div>
-							</div>
-							<div class="col-md-7">
-								<div class="card-title text-white">
-									<?php if (${$league . "GameStatus"} == "pre") {
-										echo "Pregame";
-									} elseif (${$league . "GameStatus"} == "in") { 
-										echo "Playing";
-									} elseif (${$league . "GameStatus"} == "post") {
-										echo "Postgame";
-									} ?>
-								</div>
-							</div>
-						</div>
-						<div class="justify-content-md-center row">
-							<div class="col-md-4">
-								<div class="card-title h5 text-white">
-									<?=${$league . "TeamAbbreviation"}?> Score:
-								</div>
-							</div>
-							<div class="col-md-7">
-								<div class="card-title text-white">
-									<?=${$league . "MyScore"}?>
-								</div>
-							</div>
-						</div>
-						<div class="justify-content-md-center row">
-							<div class="col-md-4">
-								<div class="card-title h5 text-white">
-									<?=${$league . "OppoAbbreviation"}?> Score:
-								</div>
-							</div>
-							<div class="col-md-7">
-								<div class="card-title text-white">
-									<?=${$league . "OppoScore"}?>
-								</div>
-							</div>
-						</div>
-						<?php } ?>
-					</div>
-					<?php } ?>
-				</div>
-			</div>
-		</div>
-	</div>
-</div>  
-</body>
-</html>
+    <div class="row">
+    <?php foreach ($leagues as $league):
+        $teamID = s($league . 'TeamID');
+        if ($teamID === '') continue;
+        $label = ($league === 'ncaa') ? 'NCAA Football' : strtoupper($league);
+    ?>
+        <div class="col-12 col-lg-6 mb-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h4 class="card-title"><?=htmlspecialchars($label)?> — <?=htmlspecialchars(s($league . 'TeamName', s($league . 'TeamAbbreviation', 'Selected team')))?></h4>
+                    <dl class="row mb-0">
+                        <dt class="col-sm-4">Start</dt><dd class="col-sm-8"><?=htmlspecialchars(formatStart(s($league . 'Start')))?></dd>
+                        <dt class="col-sm-4">Opponent</dt><dd class="col-sm-8"><?=htmlspecialchars(s($league . 'OppoName', 'Not loaded yet'))?></dd>
+                        <dt class="col-sm-4">Status</dt><dd class="col-sm-8"><?=htmlspecialchars(stateLabel(s($league . 'GameStatus')))?></dd>
+                        <dt class="col-sm-4"><?=htmlspecialchars(s($league . 'TeamAbbreviation', 'Team'))?> score</dt><dd class="col-sm-8"><?=htmlspecialchars(s($league . 'MyScore', '0'))?></dd>
+                        <dt class="col-sm-4"><?=htmlspecialchars(s($league . 'OppoAbbreviation', 'Opponent'))?> score</dt><dd class="col-sm-8"><?=htmlspecialchars(s($league . 'OppoScore', '0'))?></dd>
+                        <dt class="col-sm-4">ESPN event</dt><dd class="col-sm-8"><code><?=htmlspecialchars(s($league . 'TeamNextEventID', ''))?></code></dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    <?php endforeach; ?>
+    </div>
+</div>

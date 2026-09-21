@@ -1,88 +1,63 @@
 <?php
 $skipJSsettings = true;
 include_once "/opt/fpp/www/common.php";
-include_once 'functions.inc.php';
-$pluginName = basename(dirname(__FILE__));
-$pluginPath = $settings['pluginDirectory']."/".$pluginName."/"; 
-$logFile = $settings['logDirectory']."/".$pluginName.".log";
-$pluginConfigFile = $settings['configDirectory'] . "/plugin." .$pluginName;
-$pluginSettings = parse_ini_file($pluginConfigFile);
+include_once __DIR__ . '/functions.inc.php';
 
-logEntry("Starting NFL Plugin");
+function initializePluginDefaults() {
+    global $leagues, $pluginSettings;
+    $pluginSettings = loadPluginSettings();
 
-//initialize config file
-foreach (array('nfl', 'ncaa', 'nhl', 'mlb') as $league) {
+    $defaults = array(
+        'ENABLED' => 'OFF',
+        'logLevel' => '4'
+    );
+    foreach ($leagues as $league) {
+        $defaults["{$league}TeamID"] = '';
+        $defaults["{$league}TeamAbbreviation"] = '';
+        $defaults["{$league}TeamLogo"] = '';
+        $defaults["{$league}TeamName"] = '';
+        $defaults["{$league}TeamNextEventID"] = '';
+        $defaults["{$league}Start"] = '';
+        $defaults["{$league}GameStatus"] = '';
+        $defaults["{$league}OppoID"] = '';
+        $defaults["{$league}OppoAbbreviation"] = '';
+        $defaults["{$league}OppoName"] = '';
+        $defaults["{$league}MyScore"] = '0';
+        $defaults["{$league}OppoScore"] = '0';
+        $defaults["{$league}WinSequence"] = '';
+        $defaults["{$league}LastScoringPlayID"] = '';
+        $defaults["{$league}LastCelebratedScore"] = '0';
+        $defaults["{$league}LastCompletedEventID"] = '';
+        if ($league === 'nfl' || $league === 'ncaa') {
+            $defaults["{$league}TouchdownSequence"] = '';
+            $defaults["{$league}FieldgoalSequence"] = '';
+        } else {
+            $defaults["{$league}ScoreSequence"] = '';
+        }
+    }
 
-	if (strlen(urldecode($pluginSettings["{$league}TeamID"]))<1){
-	  WriteSettingToFile("{$league}TeamID",urlencode(""),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}TeamAbbreviation"]))<1){
-		WriteSettingToFile("{$league}TeamAbbreviation",urlencode(""),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}TeamLogo"]))<1){
-	  WriteSettingToFile("{$league}TeamLogo",urlencode(""),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}Start"]))<1){
-	  WriteSettingToFile("{$league}Start",urlencode("0"),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}GameStatus"]))<1){
-	  WriteSettingToFile("{$league}GameStatus",urlencode(""),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}OppoID"]))<1){
-	  WriteSettingToFile("{$league}OppoID",urlencode(""),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}OppoName"]))<1){
-		WriteSettingToFile("{$league}OppoName",urlencode(""),$pluginName);
-	}	
-	if (strlen(urldecode($pluginSettings["{$league}WinSequence"]))<1){
-	  WriteSettingToFile("{$league}WinSequence",urlencode(""),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}MyScore"]))<1){
-		WriteSettingToFile("{$league}MyScore",urlencode("0"),$pluginName);
-	}
-	if (strlen(urldecode($pluginSettings["{$league}OppoScore"]))<1){
-		WriteSettingToFile("{$league}OppoScore",urlencode("0"),$pluginName);
-	}
-  
-	if ($league == "nfl" || $league == "ncaa") {
-  
-	  if (strlen(urldecode($pluginSettings["${league}TouchdownSequence"]))<1){
-		WriteSettingToFile("${league}TouchdownSequence",urlencode(""),$pluginName);
-	  }
-	  if (strlen(urldecode($pluginSettings["${league}FieldgoalSequence"]))<1){
-		WriteSettingToFile("${league}FieldgoalSequence",urlencode(""),$pluginName);
-	  }
-  
-	} elseif ($league == "nhl" || $league == "mlb") {
-  
-	  if (strlen(urldecode($pluginSettings["{$league}ScoreSequence"]))<1){
-		WriteSettingToFile("{$league}ScoreSequence",urlencode(""),$pluginName);
-	  }
-  
-	}
-  
+    foreach ($defaults as $key => $value) {
+        if (!array_key_exists($key, $pluginSettings)) {
+            setPluginSetting($key, $value);
+        }
+    }
 }
 
-if (strlen(urldecode($pluginSettings['logLevel']))<1){
-	WriteSettingToFile("logLevel",urlencode("2"),$pluginName);
-}
-if (strlen(urldecode($pluginSettings['ENABLED']))<1){
-	WriteSettingToFile("ENABLED",urlencode("OFF"),$pluginName);
-}
+initializePluginDefaults();
+logEntry('Sports scoring daemon started');
 
-$loopState=true;
+while (true) {
+    $pluginSettings = loadPluginSettings();
+    if (pluginSetting('ENABLED', 'OFF') !== 'ON') {
+        sleep(10);
+        continue;
+    }
 
-while($loopState) {
-	$pluginSettings = parse_ini_file($pluginConfigFile); //check if needed
-	$enabledState= urldecode($pluginSettings['ENABLED']);
-	if ($enabledState== "OFF"){
-		$loopState=false; 
-		break;
-	}else{
-		$loopState=true;
-	}		
-$sleepTime=updateTeamStatus ();
-sleep($sleepTime);
+    try {
+        $sleepTime = updateTeamStatus(false);
+        sleep(max(5, (int)$sleepTime));
+    } catch (Throwable $e) {
+        logEntry('Daemon error: ' . $e->getMessage());
+        sleep(30);
+    }
 }
-
-?>

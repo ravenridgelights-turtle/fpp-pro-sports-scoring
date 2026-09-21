@@ -1,12 +1,9 @@
-#!/bin/bash
+#!/bin/sh
+set -u
+: "${FPPDIR:=/opt/fpp}"
+. "${FPPDIR}/scripts/common"
+PLUGIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
-pushd $(dirname $(which $0))
-target_PWD=$(readlink -f .)
-/opt/fpp/scripts/update_plugin ${target_PWD##*/}
-echo ; echo “Please reboot fppd.” ; echo
-. /opt/fpp/scripts/common
-setSetting rebootFlag 1
-popd
-
-. ${FPPDIR}/scripts/common
-${FPPDIR}/scripts/ManageApacheContentPolicy.sh add img-src https://a.espncdn.com
+# Start the worker immediately. The hook is idempotent, so this is also safe on reinstall/update.
+"${PLUGIN_DIR}/scripts/postStart.sh" || true
+exit 0

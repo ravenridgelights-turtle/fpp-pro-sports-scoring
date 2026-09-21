@@ -1,4 +1,2 @@
 #!/bin/sh
-
-#echo "Running fpp-plugin-Template PreStart Script"
-
+exit 0

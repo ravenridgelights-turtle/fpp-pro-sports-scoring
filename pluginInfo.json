@@ -1,23 +1,58 @@
 {
-	"repoName": "fpp-nfl",
-	"name": "Pro Sports Scoring Plugin",
-	"author": "Ben Kools (koolsb)",
-	"description": "Automatically play a celebratory sequence when your NFL, NHL, MLB or NCAA Football team scores or wins!",
-	"homeURL": "https://github.com/koolsb/fpp-nfl",
-	"srcURL": "https://github.com/koolsb/fpp-nfl.git",
-	"bugURL": "https://github.com/koolsb/fpp-nfl/issues",
-	"allowUpdates": 1,
-	"versions": [
-		{
-			"minFPPVersion": "6.0",
-			"maxFPPVersion": "0",
-			"branch": "main",
-			"sha": "",
-			"dependencies": {
-			    "plugins": [],
-			    "packages": [],
-				"scripts": []
-			}
-		}
-	]
+  "repoName": "fpp-nfl",
+  "name": "Pro Sports Scoring Plugin",
+  "author": "Ben Kools (koolsb), maintained by ravenridgelights-turtle",
+  "description": "Automatically play an FPP sequence when your NFL, NCAA Football, NHL, or MLB team scores or wins.",
+  "homeURL": "https://github.com/ravenridgelights-turtle/fpp-pro-sports-scoring",
+  "srcURL": "https://github.com/ravenridgelights-turtle/fpp-pro-sports-scoring.git",
+  "bugURL": "https://github.com/ravenridgelights-turtle/fpp-pro-sports-scoring/issues",
+  "allowUpdates": 1,
+  "releaseNotesStyle": "gitHistory",
+  "privacy": {
+    "summary": "Checks ESPN for the selected teams and game scores so FPP can trigger local sequences.",
+    "sends": [
+      {
+        "to": "site.api.espn.com",
+        "what": "selected team IDs and ESPN game IDs",
+        "why": "to retrieve schedules, scores and scoring plays",
+        "alwaysOn": false
+      }
+    ],
+    "collects": [],
+    "sensors": [],
+    "remoteAccess": "none",
+    "systemChanges": [],
+    "closedCode": false,
+    "other": "ESPN's Site API is unofficial and may change without notice."
+  },
+  "versions": [
+    {
+      "minFPPVersion": "7.0",
+      "maxFPPVersion": "7.99",
+      "branch": "main",
+      "sha": "",
+      "allowUpdates": 1
+    },
+    {
+      "minFPPVersion": "8.0",
+      "maxFPPVersion": "8.99",
+      "branch": "main",
+      "sha": "",
+      "allowUpdates": 1
+    },
+    {
+      "minFPPVersion": "9.0",
+      "maxFPPVersion": "9.99",
+      "branch": "main",
+      "sha": "",
+      "allowUpdates": 1
+    },
+    {
+      "minFPPVersion": "10.0",
+      "maxFPPVersion": "0",
+      "branch": "main",
+      "sha": "",
+      "allowUpdates": 1
+    }
+  ]
 }
