@@ -132,6 +132,12 @@ function pss_statusSnapshotData() {
         'enabled' => pss_statusValue('ENABLED', 'OFF') === 'ON',
         'generatedAt' => date(DATE_ATOM),
         'games' => $games,
+        'ticker' => array(
+            'enabled' => pss_statusValue('TickerEnabled', 'OFF') === 'ON',
+            'kioskEnabled' => pss_statusValue('TickerKioskEnabled', 'ON') === 'ON',
+            'webSpeed' => max(20, min(300, (int)pss_statusValue('TickerWebSpeed', '90'))),
+            'text' => pss_buildTickerText(false)
+        )
     );
 }
 
@@ -427,7 +433,7 @@ if ($pssDataMode) {
     width: 100%;
     max-width: 1920px;
     margin: 0 auto;
-    padding: 14px;
+    padding: 14px 14px 74px;
     box-sizing: border-box;
 }
 .pss-kiosk-page .pss-status-grid {
@@ -468,6 +474,72 @@ if ($pssDataMode) {
     border-radius: 8px;
     background: #332c18;
     color: #ffe6a3;
+}
+.pss-kiosk-ticker {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    height: 50px;
+    overflow: hidden;
+    border-top: 1px solid #3a4252;
+    background: #11151f;
+    color: #f5f7fb;
+    box-sizing: border-box;
+}
+.pss-kiosk-ticker::before {
+    content: "SCORES";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    background: #202633;
+    border-right: 1px solid #3a4252;
+    font-size: 0.78rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+}
+.pss-kiosk-ticker-window {
+    position: absolute;
+    left: 82px;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    overflow: hidden;
+}
+.pss-kiosk-ticker-track {
+    --pss-ticker-shift: 600px;
+    --pss-ticker-duration: 14s;
+    display: inline-flex;
+    align-items: center;
+    gap: 70px;
+    min-width: max-content;
+    height: 100%;
+    padding-left: 100%;
+    white-space: nowrap;
+    will-change: transform;
+    animation: pssTickerScroll var(--pss-ticker-duration) linear infinite;
+}
+.pss-kiosk-ticker-text {
+    display: inline-block;
+    font-size: 1.02rem;
+    font-weight: 750;
+    letter-spacing: 0.015em;
+}
+@keyframes pssTickerScroll {
+    from { transform: translateX(0); }
+    to { transform: translateX(calc(-1 * var(--pss-ticker-shift))); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .pss-kiosk-ticker-track {
+        animation: none;
+        padding-left: 12px;
+    }
 }
 @media (min-width: 1500px) {
     .pss-kiosk-page .pss-matchup {
@@ -633,6 +705,19 @@ body {
 
 <?php if ($pssKioskMode): ?>
     </main>
+    <?php
+        $pssTickerVisible = pss_statusValue('TickerEnabled', 'OFF') === 'ON' && pss_statusValue('TickerKioskEnabled', 'ON') === 'ON';
+        $pssTickerText = pss_buildTickerText(false);
+        $pssTickerWebSpeed = max(20, min(300, (int)pss_statusValue('TickerWebSpeed', '90')));
+    ?>
+    <div id="pss-kiosk-ticker" class="pss-kiosk-ticker" data-speed="<?=intval($pssTickerWebSpeed)?>"<?=$pssTickerVisible ? '' : ' style="display:none"'?> aria-label="Sports score ticker">
+        <div class="pss-kiosk-ticker-window">
+            <div class="pss-kiosk-ticker-track">
+                <span class="pss-kiosk-ticker-text" data-pss-ticker-copy="1"><?=htmlspecialchars($pssTickerText)?></span>
+                <span class="pss-kiosk-ticker-text" data-pss-ticker-copy="2" aria-hidden="true"><?=htmlspecialchars($pssTickerText)?></span>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -647,6 +732,34 @@ function pssKioskFullscreen() {
 (function () {
     var dataUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&data=1';
     var refreshNote = document.querySelector('.pss-kiosk-refresh-note');
+
+    var ticker = document.getElementById('pss-kiosk-ticker');
+
+    function updateTickerAnimation(text, speed) {
+        if (!ticker) return;
+        var copies = ticker.querySelectorAll('[data-pss-ticker-copy]');
+        for (var i = 0; i < copies.length; i++) {
+            copies[i].textContent = text || '';
+        }
+        ticker.setAttribute('data-speed', String(speed || 90));
+
+        var track = ticker.querySelector('.pss-kiosk-ticker-track');
+        var first = ticker.querySelector('[data-pss-ticker-copy="1"]');
+        if (!track || !first) return;
+
+        window.requestAnimationFrame(function () {
+            var firstWidth = Math.max(1, first.getBoundingClientRect().width);
+            var gap = 70;
+            var shift = firstWidth + gap;
+            var pxPerSecond = Math.max(20, Math.min(300, parseInt(speed || 90, 10)));
+            var duration = Math.max(6, shift / pxPerSecond);
+            track.style.setProperty('--pss-ticker-shift', shift + 'px');
+            track.style.setProperty('--pss-ticker-duration', duration.toFixed(2) + 's');
+            track.style.animation = 'none';
+            void track.offsetWidth;
+            track.style.animation = '';
+        });
+    }
 
     function stateClass(state) {
         if (state === 'in') return 'pss-state-in';
@@ -720,6 +833,21 @@ function pssKioskFullscreen() {
             }
         }
 
+        if (ticker && snapshot.ticker) {
+            var showTicker = !!snapshot.ticker.enabled && !!snapshot.ticker.kioskEnabled;
+            ticker.style.display = showTicker ? '' : 'none';
+            if (showTicker) {
+                var oldText = ticker.getAttribute('data-current-text') || '';
+                var newText = String(snapshot.ticker.text || '');
+                var newSpeed = parseInt(snapshot.ticker.webSpeed || 90, 10);
+                var oldSpeed = parseInt(ticker.getAttribute('data-speed') || '90', 10);
+                if (oldText !== newText || oldSpeed !== newSpeed) {
+                    ticker.setAttribute('data-current-text', newText);
+                    updateTickerAnimation(newText, newSpeed);
+                }
+            }
+        }
+
         var disabledBanner = document.getElementById('pss-disabled-banner');
         if (disabledBanner) {
             disabledBanner.style.display = snapshot.enabled ? 'none' : '';
@@ -744,6 +872,13 @@ function pssKioskFullscreen() {
                     refreshNote.textContent = 'Waiting to refresh…';
                 }
             });
+    }
+
+    if (ticker && ticker.style.display !== 'none') {
+        var initialText = ticker.querySelector('[data-pss-ticker-copy="1"]');
+        var initialValue = initialText ? initialText.textContent : '';
+        ticker.setAttribute('data-current-text', initialValue);
+        updateTickerAnimation(initialValue, parseInt(ticker.getAttribute('data-speed') || '90', 10));
     }
 
     window.setInterval(refreshScoreboard, 10000);

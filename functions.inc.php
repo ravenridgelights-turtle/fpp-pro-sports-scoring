@@ -12,32 +12,49 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
     switch ($_POST['action']) {
         case 'updateNFLTeam':
             pss_updateTeam('football', 'nfl', 1);
+            pss_updateTickerOutput(true);
             break;
         case 'updateNFLTeam2':
             pss_updateTeam('football', 'nfl', 2);
+            pss_updateTickerOutput(true);
             break;
         case 'updateNCAATeam':
             pss_updateTeam('football', 'ncaa', 1);
+            pss_updateTickerOutput(true);
             break;
         case 'updateNCAATeam2':
             pss_updateTeam('football', 'ncaa', 2);
+            pss_updateTickerOutput(true);
             break;
         case 'updateNHLTeam':
             pss_updateTeam('hockey', 'nhl', 1);
+            pss_updateTickerOutput(true);
             break;
         case 'updateNHLTeam2':
             pss_updateTeam('hockey', 'nhl', 2);
+            pss_updateTickerOutput(true);
             break;
         case 'updateMLBTeam':
             pss_updateTeam('baseball', 'mlb', 1);
+            pss_updateTickerOutput(true);
             break;
         case 'updateMLBTeam2':
             pss_updateTeam('baseball', 'mlb', 2);
+            pss_updateTickerOutput(true);
             break;
         case 'syncSequencePlaylist':
             if (isset($_POST['setting'])) {
                 pss_syncGeneratedPlaylistSetting((string)$_POST['setting']);
             }
+            break;
+        case 'saveTickerSettings':
+            pss_saveTickerSettings($_POST);
+            break;
+        case 'testTicker':
+            pss_testTickerOutput();
+            break;
+        case 'clearTicker':
+            pss_clearConfiguredTickerOutput();
             break;
     }
 }
@@ -251,6 +268,401 @@ function pss_getSequences() {
 
     ksort($sequences, SORT_NATURAL | SORT_FLAG_CASE);
     return $sequenceList + $sequences;
+}
+
+function pss_jsonResponse($ok, $message, $extra = array()) {
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    }
+    $payload = array_merge(array(
+        'ok' => (bool)$ok,
+        'message' => (string)$message
+    ), is_array($extra) ? $extra : array());
+    echo json_encode($payload);
+    exit;
+}
+
+function pss_clampInt($value, $min, $max, $default) {
+    if (!is_numeric($value)) {
+        return (int)$default;
+    }
+    $value = (int)$value;
+    if ($value < $min) return (int)$min;
+    if ($value > $max) return (int)$max;
+    return $value;
+}
+
+function pss_normalizeColor($value, $default = '#FFFFFF') {
+    $value = strtoupper(trim((string)$value));
+    if (preg_match('/^#[0-9A-F]{6}$/', $value)) {
+        return $value;
+    }
+    if (preg_match('/^[0-9A-F]{6}$/', $value)) {
+        return '#' . $value;
+    }
+    return $default;
+}
+
+function pss_overlayModelDimensions($model) {
+    if (!is_array($model)) {
+        return array(0, 0);
+    }
+
+    if (isset($model['Width'], $model['Height']) && is_numeric($model['Width']) && is_numeric($model['Height'])) {
+        return array(max(0, (int)$model['Width']), max(0, (int)$model['Height']));
+    }
+
+    $orientation = isset($model['Orientation']) ? strtolower((string)$model['Orientation']) : '';
+    if ($orientation === 'custom' && isset($model['data']) && is_string($model['data']) && $model['data'] !== '') {
+        $rows = explode(';', $model['data']);
+        $height = count($rows);
+        $width = 0;
+        foreach ($rows as $row) {
+            $width = max($width, count(explode(',', $row)));
+        }
+        return array($width, $height);
+    }
+
+    $channelCount = isset($model['ChannelCount']) ? (int)$model['ChannelCount'] : 0;
+    $channelsPerNode = isset($model['ChannelCountPerNode']) ? max(1, (int)$model['ChannelCountPerNode']) : 3;
+    $stringCount = isset($model['StringCount']) ? max(0, (int)$model['StringCount']) : 0;
+    $strandsPerString = isset($model['StrandsPerString']) ? max(1, (int)$model['StrandsPerString']) : 1;
+    $nodes = ($channelsPerNode > 0) ? (int)floor($channelCount / $channelsPerNode) : 0;
+    $lines = $stringCount * $strandsPerString;
+
+    if ($nodes <= 0 || $lines <= 0) {
+        return array(0, 0);
+    }
+
+    $other = (int)floor($nodes / $lines);
+    if ($other <= 0) {
+        return array(0, 0);
+    }
+
+    if ($orientation === 'vertical') {
+        return array($lines, $other);
+    }
+    return array($other, $lines);
+}
+
+function pss_getOverlayModels() {
+    global $settings;
+
+    $path = isset($settings['model-overlays']) ? (string)$settings['model-overlays'] : '';
+    if ($path === '') {
+        $configDir = isset($settings['configDirectory']) ? rtrim((string)$settings['configDirectory'], '/') : '/home/fpp/media/config';
+        $path = $configDir . '/model-overlays.json';
+    }
+
+    $result = array();
+    if (!is_file($path)) {
+        return $result;
+    }
+
+    $raw = @file_get_contents($path);
+    $data = ($raw !== false) ? json_decode($raw, true) : null;
+    if (!is_array($data) || !isset($data['models']) || !is_array($data['models'])) {
+        return $result;
+    }
+
+    foreach ($data['models'] as $model) {
+        if (!is_array($model) || !isset($model['Name'])) {
+            continue;
+        }
+        $name = trim((string)$model['Name']);
+        if ($name === '') {
+            continue;
+        }
+        list($width, $height) = pss_overlayModelDimensions($model);
+        $result[$name] = array(
+            'name' => $name,
+            'width' => $width,
+            'height' => $height
+        );
+    }
+
+    ksort($result, SORT_NATURAL | SORT_FLAG_CASE);
+    return $result;
+}
+
+function pss_tickerIncludeSetting($league, $slot) {
+    return 'TickerInclude' . strtoupper((string)$league) . (((int)$slot === 2) ? '2' : '1');
+}
+
+function pss_tickerLeagueLabel($league) {
+    return ($league === 'ncaa') ? 'NCAA' : strtoupper((string)$league);
+}
+
+function pss_tickerStartLabel($value) {
+    $value = trim((string)$value);
+    if ($value === '' || $value === '0') {
+        return 'TBD';
+    }
+    try {
+        $dt = new DateTime($value);
+        $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
+        return $dt->format('D g:i A');
+    } catch (Exception $e) {
+        return 'TBD';
+    }
+}
+
+function pss_tickerCleanDetail($detail) {
+    $detail = trim(preg_replace('/\\s+/', ' ', (string)$detail));
+    if ($detail === '') {
+        return '';
+    }
+    if (strlen($detail) > 48) {
+        $detail = substr($detail, 0, 48);
+    }
+    return $detail;
+}
+
+function pss_buildTickerText($forOverlay = false) {
+    global $leagues;
+
+    $style = strtolower(pss_pluginSetting('TickerStyle', 'normal'));
+    if (!in_array($style, array('compact', 'normal', 'detailed'), true)) {
+        $style = 'normal';
+    }
+
+    $dot = $forOverlay ? ' | ' : ' • ';
+    $between = $forOverlay ? '   |   ' : '   •   ';
+
+    $segments = array();
+    foreach ($leagues as $league) {
+        foreach (array(1, 2) as $slot) {
+            if (pss_pluginSetting(pss_tickerIncludeSetting($league, $slot), 'ON') !== 'ON') {
+                continue;
+            }
+
+            $prefix = pss_teamPrefix($league, $slot);
+            $teamID = pss_pluginSetting("{$prefix}TeamID", '');
+            if ($teamID === '') {
+                continue;
+            }
+
+            $leagueLabel = pss_tickerLeagueLabel($league);
+            $teamAbbr = pss_pluginSetting("{$prefix}TeamAbbreviation", 'TEAM');
+            $oppoAbbr = pss_pluginSetting("{$prefix}OppoAbbreviation", 'OPP');
+            $teamName = pss_pluginSetting("{$prefix}TeamName", $teamAbbr);
+            $oppoName = pss_pluginSetting("{$prefix}OppoName", $oppoAbbr);
+            $myScore = pss_pluginSetting("{$prefix}MyScore", '0');
+            $oppoScore = pss_pluginSetting("{$prefix}OppoScore", '0');
+            $state = pss_pluginSetting("{$prefix}GameStatus", '');
+            $detail = pss_tickerCleanDetail(pss_pluginSetting("{$prefix}GameDetail", ''));
+            $start = pss_tickerStartLabel(pss_pluginSetting("{$prefix}Start", ''));
+
+            $left = ($style === 'detailed') ? $teamName : $teamAbbr;
+            $right = ($style === 'detailed') ? $oppoName : $oppoAbbr;
+            $leaguePrefix = ($style === 'compact') ? '' : ($leagueLabel . $dot);
+
+            if ($state === 'in') {
+                $status = 'LIVE';
+                if (!$forOverlay && $detail !== '') {
+                    $status = $detail;
+                }
+                $segments[] = $leaguePrefix . $left . ' ' . $myScore . ' - ' . $right . ' ' . $oppoScore . $dot . $status;
+            } elseif ($state === 'post') {
+                $status = ($detail !== '' && stripos($detail, 'final') !== false) ? $detail : 'FINAL';
+                $segments[] = $leaguePrefix . $left . ' ' . $myScore . ' - ' . $right . ' ' . $oppoScore . $dot . $status;
+            } elseif ($state === 'pre') {
+                $segments[] = $leaguePrefix . 'NEXT' . $dot . $left . ' vs ' . $right . $dot . $start;
+            } else {
+                $segments[] = $leaguePrefix . $left . $dot . 'Waiting for ESPN';
+            }
+        }
+    }
+
+    if (empty($segments)) {
+        return $forOverlay ? 'PRO SPORTS SCORING | NO SELECTED TEAMS' : 'PRO SPORTS SCORING • NO SELECTED TEAMS';
+    }
+
+    return implode($between, $segments);
+}
+
+function pss_runFppCommand($command, $args) {
+    $payload = array(
+        'command' => (string)$command,
+        'multisyncCommand' => false,
+        'multisyncHosts' => '',
+        'args' => is_array($args) ? $args : array()
+    );
+    return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+}
+
+function pss_clearOverlayModel($model) {
+    $model = trim((string)$model);
+    if ($model === '') {
+        return false;
+    }
+    $response = pss_runFppCommand('Overlay Model Clear', array($model));
+    if (!$response['ok']) {
+        pss_logEntry("FPP rejected Overlay Model Clear for {$model} with HTTP {$response['status']}");
+        return false;
+    }
+    return true;
+}
+
+function pss_sendOverlayTickerText($text, $force = false) {
+    static $lastSignature = '';
+    static $lastModel = '';
+
+    if (pss_pluginSetting('TickerEnabled', 'OFF') !== 'ON' || pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
+        if ($lastModel !== '') {
+            pss_clearOverlayModel($lastModel);
+            $lastModel = '';
+            $lastSignature = '';
+        }
+        return false;
+    }
+
+    $model = trim(pss_pluginSetting('TickerOverlayModel', ''));
+    if ($model === '') {
+        return false;
+    }
+
+    $color = pss_normalizeColor(pss_pluginSetting('TickerTextColor', '#FFFFFF'));
+    $font = trim(pss_pluginSetting('TickerFont', 'Helvetica'));
+    if ($font === '') $font = 'Helvetica';
+    $fontSize = pss_clampInt(pss_pluginSetting('TickerFontSize', '16'), 6, 128, 16);
+    $direction = pss_pluginSetting('TickerDirection', 'Right to Left');
+    if ($direction !== 'Left to Right' && $direction !== 'Right to Left') {
+        $direction = 'Right to Left';
+    }
+    $speed = pss_clampInt(pss_pluginSetting('TickerScrollSpeed', '10'), 1, 100, 10);
+    $text = trim((string)$text);
+    if ($text === '') {
+        $text = 'PRO SPORTS SCORING';
+    }
+    if (strlen($text) > 1200) {
+        $text = substr($text, 0, 1200);
+    }
+
+    $signature = md5(implode('|', array($model, $color, $font, $fontSize, $direction, $speed, $text)));
+    if (!$force && $signature === $lastSignature) {
+        return true;
+    }
+
+    if ($lastModel !== '' && $lastModel !== $model) {
+        pss_clearOverlayModel($lastModel);
+    }
+
+    // This command signature has been supported by FPP since the older FPP 3.x/4.x command system
+    // and remains the most compatible path for FPP 7/8/9 while also working on current FPP.
+    $args = array(
+        $model,
+        $color,
+        $font,
+        (string)$fontSize,
+        'false',
+        $direction,
+        (string)$speed,
+        'true',
+        $text
+    );
+    $response = pss_runFppCommand('Overlay Model Text', $args);
+    if (!$response['ok']) {
+        pss_logEntry("FPP rejected sports ticker text for model {$model} with HTTP {$response['status']}");
+        return false;
+    }
+
+    $lastModel = $model;
+    $lastSignature = $signature;
+    return true;
+}
+
+function pss_updateTickerOutput($force = false) {
+    if (pss_pluginSetting('TickerEnabled', 'OFF') !== 'ON' || pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
+        return pss_sendOverlayTickerText('', $force);
+    }
+    return pss_sendOverlayTickerText(pss_buildTickerText(true), $force);
+}
+
+function pss_clearConfiguredTickerOutput() {
+    $model = trim(pss_pluginSetting('TickerOverlayModel', ''));
+    $ok = ($model !== '') ? pss_clearOverlayModel($model) : true;
+    pss_jsonResponse($ok, $ok ? 'Pixel Overlay ticker cleared.' : 'FPP could not clear the selected Pixel Overlay Model.');
+}
+
+function pss_saveTickerSettings($post) {
+    $oldModel = trim(pss_pluginSetting('TickerOverlayModel', ''));
+    $oldActive = (pss_pluginSetting('TickerEnabled', 'OFF') === 'ON' && pss_pluginSetting('TickerOverlayEnabled', 'OFF') === 'ON');
+
+    $style = isset($post['TickerStyle']) ? strtolower(trim((string)$post['TickerStyle'])) : 'normal';
+    if (!in_array($style, array('compact', 'normal', 'detailed'), true)) $style = 'normal';
+
+    $direction = isset($post['TickerDirection']) ? trim((string)$post['TickerDirection']) : 'Right to Left';
+    if ($direction !== 'Left to Right' && $direction !== 'Right to Left') $direction = 'Right to Left';
+
+    $values = array(
+        'TickerEnabled' => (isset($post['TickerEnabled']) && (string)$post['TickerEnabled'] === 'ON') ? 'ON' : 'OFF',
+        'TickerKioskEnabled' => (isset($post['TickerKioskEnabled']) && (string)$post['TickerKioskEnabled'] === 'ON') ? 'ON' : 'OFF',
+        'TickerStyle' => $style,
+        'TickerWebSpeed' => (string)pss_clampInt(isset($post['TickerWebSpeed']) ? $post['TickerWebSpeed'] : 90, 20, 300, 90),
+        'TickerOverlayEnabled' => (isset($post['TickerOverlayEnabled']) && (string)$post['TickerOverlayEnabled'] === 'ON') ? 'ON' : 'OFF',
+        'TickerOverlayModel' => isset($post['TickerOverlayModel']) ? trim((string)$post['TickerOverlayModel']) : '',
+        'TickerWidth' => (string)pss_clampInt(isset($post['TickerWidth']) ? $post['TickerWidth'] : 128, 1, 4096, 128),
+        'TickerHeight' => (string)pss_clampInt(isset($post['TickerHeight']) ? $post['TickerHeight'] : 32, 1, 4096, 32),
+        'TickerFont' => isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'Helvetica',
+        'TickerFontSize' => (string)pss_clampInt(isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 16, 6, 128, 16),
+        'TickerTextColor' => pss_normalizeColor(isset($post['TickerTextColor']) ? $post['TickerTextColor'] : '#FFFFFF'),
+        'TickerDirection' => $direction,
+        'TickerScrollSpeed' => (string)pss_clampInt(isset($post['TickerScrollSpeed']) ? $post['TickerScrollSpeed'] : 10, 1, 100, 10)
+    );
+
+    global $leagues;
+    foreach ($leagues as $league) {
+        foreach (array(1, 2) as $slot) {
+            $key = pss_tickerIncludeSetting($league, $slot);
+            $values[$key] = (isset($post[$key]) && (string)$post[$key] === 'ON') ? 'ON' : 'OFF';
+        }
+    }
+
+    if ($values['TickerFont'] === '') $values['TickerFont'] = 'Helvetica';
+
+    foreach ($values as $key => $value) {
+        pss_setPluginSetting($key, $value);
+    }
+
+    $newActive = ($values['TickerEnabled'] === 'ON' && $values['TickerOverlayEnabled'] === 'ON');
+    $newModel = $values['TickerOverlayModel'];
+    if ($oldActive && $oldModel !== '' && (!$newActive || $oldModel !== $newModel)) {
+        pss_clearOverlayModel($oldModel);
+    }
+
+    $message = 'Ticker settings saved.';
+    if ($newActive) {
+        if ($newModel === '') {
+            $message .= ' Select a Pixel Overlay Model before enabling matrix output.';
+        } else {
+            $ok = pss_updateTickerOutput(true);
+            $message .= $ok ? ' Pixel Overlay ticker updated.' : ' Pixel Overlay output did not start; check the plugin log.';
+        }
+    }
+
+    pss_jsonResponse(true, $message, array(
+        'tickerText' => pss_buildTickerText(false)
+    ));
+}
+
+function pss_testTickerOutput() {
+    if (pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
+        pss_jsonResponse(false, 'Enable Pixel Overlay output and save the ticker settings first.');
+    }
+    $model = trim(pss_pluginSetting('TickerOverlayModel', ''));
+    if ($model === '') {
+        pss_jsonResponse(false, 'Select a Pixel Overlay Model and save the ticker settings first.');
+    }
+
+    $text = pss_buildTickerText(true);
+    if ($text === 'PRO SPORTS SCORING | NO SELECTED TEAMS') {
+        $text = 'PRO SPORTS SCORING | PIXEL OVERLAY TEST | ' . date('g:i A');
+    }
+
+    $ok = pss_sendOverlayTickerText($text, true);
+    pss_jsonResponse($ok, $ok ? 'Test ticker sent to ' . $model . '.' : 'FPP rejected the test ticker. Check the plugin log.');
 }
 
 function pss_generatedPlaylistMarker() {

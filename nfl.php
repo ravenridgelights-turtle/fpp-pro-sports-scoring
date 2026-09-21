@@ -9,7 +9,20 @@ function pss_initializePluginDefaults() {
 
     $defaults = array(
         'ENABLED' => 'OFF',
-        'logLevel' => '4'
+        'logLevel' => '4',
+        'TickerEnabled' => 'OFF',
+        'TickerKioskEnabled' => 'ON',
+        'TickerStyle' => 'normal',
+        'TickerWebSpeed' => '90',
+        'TickerOverlayEnabled' => 'OFF',
+        'TickerOverlayModel' => '',
+        'TickerWidth' => '128',
+        'TickerHeight' => '32',
+        'TickerFont' => 'Helvetica',
+        'TickerFontSize' => '16',
+        'TickerTextColor' => '#FFFFFF',
+        'TickerDirection' => 'Right to Left',
+        'TickerScrollSpeed' => '10'
     );
 
     foreach ($leagues as $league) {
@@ -45,6 +58,12 @@ function pss_initializePluginDefaults() {
         }
     }
 
+    foreach ($leagues as $league) {
+        foreach (array(1, 2) as $slot) {
+            $defaults[pss_tickerIncludeSetting($league, $slot)] = 'ON';
+        }
+    }
+
     foreach ($defaults as $key => $value) {
         if (!array_key_exists($key, $pluginSettings)) {
             pss_setPluginSetting($key, $value);
@@ -64,6 +83,7 @@ while (true) {
 
     try {
         $sleepTime = pss_updateTeamStatus(false);
+        pss_updateTickerOutput(false);
         sleep(max(5, (int)$sleepTime));
     } catch (Throwable $e) {
         pss_logEntry('Daemon error: ' . $e->getMessage());
