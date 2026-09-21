@@ -307,31 +307,57 @@ function pss_highlightMediaSources($video) {
         );
     }
 
-    usort($sources, function ($a, $b) {
-        // Keep this simple and Pi-friendly: prefer ESPN's smaller/mobile
-        // progressive MP4 when multiple renditions are exposed. Do not transcode.
-        $score = function ($source) {
+    $qualityPreference = strtolower(trim((string)pss_statusValue('HighlightQuality', 'low')));
+    if (!in_array($qualityPreference, array('low', 'medium', 'best'), true)) {
+        $qualityPreference = 'low';
+    }
+
+    usort($sources, function ($a, $b) use ($qualityPreference) {
+        $score = function ($source) use ($qualityPreference) {
             $type = isset($source['type']) ? strtolower((string)$source['type']) : '';
             $path = isset($source['path']) ? strtolower((string)$source['path']) : '';
             $url = isset($source['url']) ? strtolower((string)$source['url']) : '';
             $text = $path . ' ' . $url;
 
-            // Progressive MP4 always beats HLS on the legacy FPP browsers.
+            // Progressive MP4 stays ahead of HLS for old FPP browsers.
             $base = ($type === 'mp4') ? 0 : 1000;
 
-            // Prefer explicit low/mobile variants first.
-            if (strpos($text, '240') !== false) return $base + 0;
-            if (strpos($text, '360') !== false) return $base + 1;
-            if (strpos($text, 'mobile') !== false) return $base + 2;
-            if (strpos($text, '480') !== false) return $base + 4;
-            if (strpos($text, '540') !== false) return $base + 6;
+            $isMobile = strpos($text, 'mobile') !== false;
+            $isFull = strpos($text, '.full') !== false || strpos($text, 'full.') !== false;
+            $isHD = strpos($text, '.hd') !== false || strpos($text, '/hd') !== false || strpos($text, '720') !== false;
+            $isMezz = strpos($text, 'mezzanine') !== false || strpos($text, '1080') !== false;
+            $is240 = strpos($text, '240') !== false;
+            $is360 = strpos($text, '360') !== false;
+            $is480 = strpos($text, '480') !== false;
+            $is540 = strpos($text, '540') !== false;
 
-            // Standard/full is still preferable to HD/mezzanine for a small
-            // scoreboard window when no mobile label is available.
-            if (strpos($text, '.full') !== false || strpos($text, 'full.') !== false) return $base + 8;
-            if (strpos($text, '720') !== false || strpos($text, '.hd') !== false || strpos($text, '/hd') !== false) return $base + 20;
-            if (strpos($text, '1080') !== false || strpos($text, 'mezzanine') !== false) return $base + 30;
+            if ($qualityPreference === 'best') {
+                if ($isMezz) return $base + 0;
+                if ($isHD) return $base + 2;
+                if ($is540 || $isFull) return $base + 5;
+                if ($is480) return $base + 7;
+                if ($is360 || $isMobile) return $base + 12;
+                if ($is240) return $base + 16;
+                return $base + 8;
+            }
 
+            if ($qualityPreference === 'medium') {
+                if ($is480 || $is540 || $isFull) return $base + 0;
+                if ($is360 || $isMobile) return $base + 3;
+                if ($isHD) return $base + 8;
+                if ($is240) return $base + 10;
+                if ($isMezz) return $base + 14;
+                return $base + 5;
+            }
+
+            // Data Saver: use the smallest labelled/mobile MP4 ESPN exposes.
+            if ($is240) return $base + 0;
+            if ($is360) return $base + 1;
+            if ($isMobile) return $base + 2;
+            if ($is480) return $base + 5;
+            if ($is540 || $isFull) return $base + 8;
+            if ($isHD) return $base + 16;
+            if ($isMezz) return $base + 24;
             return $base + 10;
         };
 
@@ -418,7 +444,8 @@ function pss_normalizeHighlightVideo($video, $index = 0) {
         'mediaType' => (!empty($mediaSources) ? $mediaSources[0]['type'] : ''),
         'mediaSources' => $mediaSources,
         'selectedSourcePath' => (!empty($mediaSources) && isset($mediaSources[0]['path'])) ? $mediaSources[0]['path'] : '',
-        'sourcePreference' => 'low-bandwidth',
+        'sourcePreference' => strtolower(trim((string)pss_statusValue('HighlightQuality', 'low'))),
+        'availableSourceCount' => count($mediaSources),
         'webUrl' => $webUrl,
         'playable' => ($mediaUrl !== ''),
         '_sortTime' => (int)$sortTime,
@@ -1935,6 +1962,9 @@ function pssKioskFullscreen() {
     var activeVideo = null;
     var highlightBlobCache = {};
     var highlightBlobPending = {};
+    var highlightFetchQueue = [];
+    var highlightFetchActive = 0;
+    var highlightFetchLimit = <?=max(1, min(2, (int)pss_statusValue('HighlightBufferConcurrency', '1')))?>;
 
     function playedStorageKey(eventID) {
         return 'pss-highlight-played-' + String(eventID || 'none');
@@ -2059,81 +2089,133 @@ function pssKioskFullscreen() {
         return bytes + ' B';
     }
 
-    function prefetchHighlight(panel, item, source, onProgress) {
+    function runHighlightFetchQueue() {
+        while (highlightFetchActive < highlightFetchLimit && highlightFetchQueue.length) {
+            var task = highlightFetchQueue.shift();
+
+            // If the viewer changed clips before this queued task started, skip the
+            // stale transfer instead of wasting Pi/network resources.
+            if (task.panel && task.panel._pssDesiredBufferKey !== task.key) {
+                task.reject(new Error('superseded'));
+                continue;
+            }
+
+            highlightFetchActive++;
+            if (typeof task.onState === 'function') {
+                task.onState('buffering', 0);
+            }
+
+            task.start().then(task.resolve, task.reject).then(function () {
+                highlightFetchActive = Math.max(0, highlightFetchActive - 1);
+                runHighlightFetchQueue();
+            });
+        }
+    }
+
+    function prefetchHighlight(panel, item, source, onProgress, onState, priority) {
         if (!source || !source.url) return Promise.reject(new Error('No media source'));
         var key = highlightCacheKey(panel, item, source);
 
+        panel._pssDesiredBufferKey = key;
+
         if (highlightBlobCache[key]) {
+            if (typeof onState === 'function') onState('cached', 0);
             return Promise.resolve(highlightBlobCache[key]);
         }
         if (highlightBlobPending[key]) {
+            if (typeof onState === 'function') onState('queued', 0);
             return highlightBlobPending[key];
         }
 
-        var request = fetch(source.url, { cache: 'force-cache' })
-            .then(function (response) {
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-
-                var total = parseInt(response.headers.get('Content-Length') || '0', 10);
-                var contentType = response.headers.get('Content-Type') || 'video/mp4';
-
-                // Streaming reader gives us real buffering progress when the browser
-                // supports it. Older browsers fall back to response.blob().
-                if (response.body && typeof response.body.getReader === 'function') {
-                    var reader = response.body.getReader();
-                    var chunks = [];
-                    var received = 0;
-
-                    function pump() {
-                        return reader.read().then(function (result) {
-                            if (result.done) {
-                                var blob = new Blob(chunks, { type: contentType });
-                                var cached = {
-                                    url: URL.createObjectURL(blob),
-                                    bytes: received,
-                                    total: total || received
-                                };
-                                highlightBlobCache[key] = cached;
-                                return cached;
-                            }
-
-                            chunks.push(result.value);
-                            received += result.value.byteLength || result.value.length || 0;
-                            if (typeof onProgress === 'function') {
-                                onProgress(received, total);
-                            }
-                            return pump();
-                        });
-                    }
-                    return pump();
-                }
-
-                return response.blob().then(function (blob) {
-                    var cached = {
-                        url: URL.createObjectURL(blob),
-                        bytes: blob.size || 0,
-                        total: blob.size || total || 0
-                    };
-                    highlightBlobCache[key] = cached;
-                    if (typeof onProgress === 'function') {
-                        onProgress(cached.bytes, cached.total);
-                    }
-                    return cached;
-                });
-            })
-            .then(function (cached) {
-                delete highlightBlobPending[key];
-                return cached;
-            }, function (error) {
-                delete highlightBlobPending[key];
-                throw error;
-            });
-
+        var resolvePromise;
+        var rejectPromise;
+        var request = new Promise(function (resolve, reject) {
+            resolvePromise = resolve;
+            rejectPromise = reject;
+        });
         highlightBlobPending[key] = request;
+
+        function doFetch() {
+            return fetch(source.url, { cache: 'force-cache' })
+                .then(function (response) {
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+
+                    var total = parseInt(response.headers.get('Content-Length') || '0', 10);
+                    var contentType = response.headers.get('Content-Type') || 'video/mp4';
+
+                    if (response.body && typeof response.body.getReader === 'function') {
+                        var reader = response.body.getReader();
+                        var chunks = [];
+                        var received = 0;
+
+                        function pump() {
+                            return reader.read().then(function (result) {
+                                if (result.done) {
+                                    var blob = new Blob(chunks, { type: contentType });
+                                    var cached = {
+                                        url: URL.createObjectURL(blob),
+                                        bytes: received,
+                                        total: total || received
+                                    };
+                                    highlightBlobCache[key] = cached;
+                                    return cached;
+                                }
+
+                                chunks.push(result.value);
+                                received += result.value.byteLength || result.value.length || 0;
+                                if (typeof onProgress === 'function') {
+                                    onProgress(received, total);
+                                }
+                                return pump();
+                            });
+                        }
+                        return pump();
+                    }
+
+                    return response.blob().then(function (blob) {
+                        var cached = {
+                            url: URL.createObjectURL(blob),
+                            bytes: blob.size || 0,
+                            total: blob.size || total || 0
+                        };
+                        highlightBlobCache[key] = cached;
+                        if (typeof onProgress === 'function') {
+                            onProgress(cached.bytes, cached.total);
+                        }
+                        return cached;
+                    });
+                });
+        }
+
+        var task = {
+            key: key,
+            panel: panel,
+            onState: onState,
+            start: doFetch,
+            resolve: function (cached) {
+                delete highlightBlobPending[key];
+                resolvePromise(cached);
+            },
+            reject: function (error) {
+                delete highlightBlobPending[key];
+                rejectPromise(error);
+            }
+        };
+
+        if (priority) {
+            highlightFetchQueue.unshift(task);
+        } else {
+            highlightFetchQueue.push(task);
+        }
+
+        if (typeof onState === 'function') {
+            onState('queued', highlightFetchQueue.length);
+        }
+        runHighlightFetchQueue();
         return request;
     }
 
-    function loadHighlight(panel, item, autoPlay, isNew) {
+    function loadHighlight(panel, item, autoPlay, isNew, userChoice) {
         if (!item) return;
         var body = panel.querySelector('[data-highlight-body="1"]');
         if (!body) return;
@@ -2273,7 +2355,7 @@ function pssKioskFullscreen() {
                 historyButton.textContent = 'Replay: ' + String(items[i].headline || 'Earlier highlight');
                 historyButton.addEventListener('click', function () {
                     var selected = findItem(panel, this.getAttribute('data-highlight-id'));
-                    if (selected) loadHighlight(panel, selected, false, false);
+                    if (selected) loadHighlight(panel, selected, false, false, true);
                 });
                 history.appendChild(historyButton);
             }
@@ -2289,13 +2371,21 @@ function pssKioskFullscreen() {
             setStatus(panel, 'Starting full background buffer…');
 
             prefetchHighlight(panel, item, videoSources[0], function (received, total) {
+                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
                 if (total > 0) {
                     var percent = Math.max(0, Math.min(100, Math.round((received / total) * 100)));
                     setStatus(panel, 'Buffering ' + percent + '% · ' + formatBytes(received) + ' / ' + formatBytes(total));
                 } else {
                     setStatus(panel, 'Buffering · ' + formatBytes(received));
                 }
-            }).then(function (cached) {
+            }, function (state, position) {
+                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
+                if (state === 'queued') {
+                    setStatus(panel, position > 1 ? ('Queued for buffering · position ' + position) : 'Queued for buffering…');
+                } else if (state === 'buffering') {
+                    setStatus(panel, 'Starting buffer…');
+                }
+            }, !!userChoice).then(function (cached) {
                 if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
                 video._pssStreamingFallback = false;
                 video.src = cached.url;
@@ -2303,8 +2393,9 @@ function pssKioskFullscreen() {
                 replay.disabled = false;
                 replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
                 setStatus(panel, 'Buffered ' + formatBytes(cached.bytes) + ' · ready to play');
-            }).catch(function () {
+            }).catch(function (error) {
                 if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
+                if (error && error.message === 'superseded') return;
                 // If full-prefetch fails, retain the proven streaming proxy path.
                 video._pssStreamingFallback = true;
                 if (setVideoSource(video, videoSources, 0)) {
@@ -2367,14 +2458,14 @@ function pssKioskFullscreen() {
         // On initial load or when a new clip arrives, render the newest clip and let
         // the browser preload it in the background. Playback is always user-initiated.
         if (firstLoad || newArrival) {
-            loadHighlight(panel, newest, false, newArrival);
+            loadHighlight(panel, newest, false, newArrival, false);
             return;
         }
 
         // Keep whatever clip the viewer is currently watching/replaying. If nothing
         // has been rendered yet, restore the newest clip without starting playback.
         if (!panel._pssCurrentHighlightID) {
-            loadHighlight(panel, newest, false, false);
+            loadHighlight(panel, newest, false, false, false);
         }
     }
 
