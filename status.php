@@ -176,6 +176,7 @@ function pss_statusSnapshotData() {
             'enabled' => pss_statusValue('TickerEnabled', 'OFF') === 'ON',
             'kioskEnabled' => pss_statusValue('TickerKioskEnabled', 'ON') === 'ON',
             'webSpeed' => max(20, min(300, (int)pss_statusValue('TickerWebSpeed', '90'))),
+            'webFontSize' => max(12, min(48, (int)pss_statusValue('TickerWebFontSize', '18'))),
             'spacing' => pss_tickerSpacing(),
             'items' => pss_buildTickerItems(false),
             'text' => pss_buildTickerText(false)
@@ -461,6 +462,8 @@ if ($pssDataMode) {
     background: rgba(127, 127, 127, 0.18);
 }
 .pss-kiosk-page {
+    --pss-ticker-font-size: 18px;
+    --pss-ticker-height: 50px;
     min-height: 100vh;
     background: #0d1017;
     color: #f3f5f9;
@@ -518,7 +521,7 @@ if ($pssDataMode) {
     width: 100%;
     max-width: 1920px;
     margin: 0 auto;
-    padding: 14px 14px 74px;
+    padding: 14px 14px calc(var(--pss-ticker-height, 50px) + 24px);
     box-sizing: border-box;
 }
 .pss-kiosk-page .pss-status-grid {
@@ -566,7 +569,7 @@ if ($pssDataMode) {
     right: 0;
     bottom: 0;
     z-index: 80;
-    height: 50px;
+    height: var(--pss-ticker-height, 50px);
     overflow: hidden;
     border-top: 1px solid #3a4252;
     background: #11151f;
@@ -617,7 +620,7 @@ if ($pssDataMode) {
     align-items: center;
     width: max-content;
     white-space: nowrap;
-    font-size: 1.02rem;
+    font-size: var(--pss-ticker-font-size, 18px);
     font-weight: 750;
     letter-spacing: 0.015em;
 }
@@ -813,8 +816,11 @@ body {
         $pssTickerSpacing = pss_tickerSpacing();
         $pssTickerGapEm = number_format($pssTickerSpacing * 0.35, 2, '.', '');
         $pssTickerWebSpeed = max(20, min(300, (int)pss_statusValue('TickerWebSpeed', '90')));
+        $pssTickerWebFontSize = max(12, min(48, (int)pss_statusValue('TickerWebFontSize', '18')));
+        $pssTickerHeight = max(50, min(80, $pssTickerWebFontSize + 32));
     ?>
-    <div id="pss-kiosk-ticker" class="pss-kiosk-ticker" data-speed="<?=intval($pssTickerWebSpeed)?>" data-spacing="<?=intval($pssTickerSpacing)?>"<?=$pssTickerVisible ? '' : ' style="display:none"'?> aria-label="Sports score ticker">
+    <style>.pss-kiosk-page{--pss-ticker-font-size:<?=$pssTickerWebFontSize?>px;--pss-ticker-height:<?=$pssTickerHeight?>px;}</style>
+    <div id="pss-kiosk-ticker" class="pss-kiosk-ticker" data-speed="<?=intval($pssTickerWebSpeed)?>" data-spacing="<?=intval($pssTickerSpacing)?>" data-font-size="<?=intval($pssTickerWebFontSize)?>"<?=$pssTickerVisible ? '' : ' style="display:none"'?> aria-label="Sports score ticker">
         <div class="pss-kiosk-ticker-window">
             <div class="pss-kiosk-ticker-track">
                 <span class="pss-kiosk-ticker-content" data-pss-ticker-content="1" style="--pss-ticker-gap:<?=$pssTickerGapEm?>em;">
@@ -848,12 +854,27 @@ function pssKioskFullscreen() {
         text: <?=json_encode($pssTickerText)?>,
         items: <?=json_encode($pssTickerItems)?>,
         speed: <?=intval($pssTickerWebSpeed)?>,
-        spacing: <?=intval($pssTickerSpacing)?>
+        spacing: <?=intval($pssTickerSpacing)?>,
+        fontSize: <?=intval($pssTickerWebFontSize)?>
     };
 
     function tickerGapEm(spacing) {
         var safeSpacing = Math.max(1, Math.min(12, parseInt(spacing || 4, 10)));
         return (safeSpacing * 0.35).toFixed(2) + 'em';
+    }
+
+    function applyTickerSize(fontSize) {
+        var safeFontSize = Math.max(12, Math.min(48, parseInt(fontSize || 18, 10)));
+        var tickerHeight = Math.max(50, Math.min(80, safeFontSize + 32));
+        var kioskPage = document.querySelector('.pss-kiosk-page');
+        if (kioskPage) {
+            kioskPage.style.setProperty('--pss-ticker-font-size', safeFontSize + 'px');
+            kioskPage.style.setProperty('--pss-ticker-height', tickerHeight + 'px');
+        }
+        if (ticker) {
+            ticker.setAttribute('data-font-size', String(safeFontSize));
+        }
+        return safeFontSize;
     }
 
     function renderTickerItems(items, fallbackText, spacing) {
@@ -897,7 +918,7 @@ function pssKioskFullscreen() {
         return content;
     }
 
-    function updateTickerAnimation(text, speed, items, spacing) {
+    function updateTickerAnimation(text, speed, items, spacing, fontSize) {
         if (!ticker) return;
 
         var track = ticker.querySelector('.pss-kiosk-ticker-track');
@@ -907,6 +928,7 @@ function pssKioskFullscreen() {
 
         ticker.setAttribute('data-speed', String(speed || 90));
         ticker.setAttribute('data-spacing', String(spacing || 4));
+        applyTickerSize(fontSize);
 
         window.requestAnimationFrame(function () {
             /*
@@ -1008,20 +1030,22 @@ function pssKioskFullscreen() {
                 var newText = String(snapshot.ticker.text || '');
                 var newSpeed = parseInt(snapshot.ticker.webSpeed || 90, 10);
                 var newSpacing = parseInt(snapshot.ticker.spacing || 4, 10);
+                var newFontSize = parseInt(snapshot.ticker.webFontSize || 18, 10);
                 var newItems = Array.isArray(snapshot.ticker.items) ? snapshot.ticker.items : [];
-                var newSignature = JSON.stringify(newItems) + '|' + newText + '|' + newSpeed + '|' + newSpacing;
+                var newSignature = JSON.stringify(newItems) + '|' + newText + '|' + newSpeed + '|' + newSpacing + '|' + newFontSize;
                 var oldSignature = ticker.getAttribute('data-current-signature') || '';
 
                 tickerState = {
                     text: newText,
                     items: newItems,
                     speed: newSpeed,
-                    spacing: newSpacing
+                    spacing: newSpacing,
+                    fontSize: newFontSize
                 };
 
                 if (oldSignature !== newSignature) {
                     ticker.setAttribute('data-current-signature', newSignature);
-                    updateTickerAnimation(newText, newSpeed, newItems, newSpacing);
+                    updateTickerAnimation(newText, newSpeed, newItems, newSpacing, newFontSize);
                 }
             }
         }
@@ -1053,9 +1077,9 @@ function pssKioskFullscreen() {
     }
 
     if (ticker && ticker.style.display !== 'none') {
-        var initialSignature = JSON.stringify(tickerState.items) + '|' + tickerState.text + '|' + tickerState.speed + '|' + tickerState.spacing;
+        var initialSignature = JSON.stringify(tickerState.items) + '|' + tickerState.text + '|' + tickerState.speed + '|' + tickerState.spacing + '|' + tickerState.fontSize;
         ticker.setAttribute('data-current-signature', initialSignature);
-        updateTickerAnimation(tickerState.text, tickerState.speed, tickerState.items, tickerState.spacing);
+        updateTickerAnimation(tickerState.text, tickerState.speed, tickerState.items, tickerState.spacing, tickerState.fontSize);
     }
 
     var resizeTimer = null;
@@ -1063,7 +1087,7 @@ function pssKioskFullscreen() {
         if (!ticker || ticker.style.display === 'none') return;
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(function () {
-            updateTickerAnimation(tickerState.text, tickerState.speed, tickerState.items, tickerState.spacing);
+            updateTickerAnimation(tickerState.text, tickerState.speed, tickerState.items, tickerState.spacing, tickerState.fontSize);
         }, 150);
     });
 

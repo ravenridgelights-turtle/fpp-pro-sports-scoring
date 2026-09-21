@@ -14,6 +14,7 @@ function pss_initializePluginDefaults() {
         'TickerKioskEnabled' => 'ON',
         'TickerStyle' => 'normal',
         'TickerWebSpeed' => '90',
+        'TickerWebFontSize' => '18',
         'TickerSpacing' => '4',
         'TickerOverlayEnabled' => 'OFF',
         'TickerOverlayModel' => '',

@@ -670,6 +670,7 @@ function pss_saveTickerSettings($post) {
         'TickerKioskEnabled' => (isset($post['TickerKioskEnabled']) && (string)$post['TickerKioskEnabled'] === 'ON') ? 'ON' : 'OFF',
         'TickerStyle' => $style,
         'TickerWebSpeed' => (string)pss_clampInt(isset($post['TickerWebSpeed']) ? $post['TickerWebSpeed'] : 90, 20, 300, 90),
+        'TickerWebFontSize' => (string)pss_clampInt(isset($post['TickerWebFontSize']) ? $post['TickerWebFontSize'] : 18, 12, 48, 18),
         'TickerSpacing' => (string)pss_clampInt(isset($post['TickerSpacing']) ? $post['TickerSpacing'] : 4, 1, 12, 4),
         'TickerOverlayEnabled' => (isset($post['TickerOverlayEnabled']) && (string)$post['TickerOverlayEnabled'] === 'ON') ? 'ON' : 'OFF',
         'TickerOverlayModel' => isset($post['TickerOverlayModel']) ? trim((string)$post['TickerOverlayModel']) : '',
@@ -718,7 +719,8 @@ function pss_saveTickerSettings($post) {
     pss_jsonResponse(true, $message, array(
         'tickerText' => pss_buildTickerText(false),
         'tickerItems' => pss_buildTickerItems(false),
-        'tickerSpacing' => pss_tickerSpacing()
+        'tickerSpacing' => pss_tickerSpacing(),
+        'tickerWebFontSize' => pss_clampInt(pss_pluginSetting('TickerWebFontSize', '18'), 12, 48, 18)
     ));
 }
 
