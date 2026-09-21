@@ -943,71 +943,28 @@ function pss_clearOverlayModel($model) {
 function pss_resolveOverlayFont($requestedFont) {
     $requestedFont = trim((string)$requestedFont);
 
-    // An absolute font file path is the most deterministic option for ImageMagick.
-    if ($requestedFont !== '' && is_file($requestedFont)) {
-        return $requestedFont;
+    // IMPORTANT: FPP's Text effect expects the font value shown by its own
+    // Overlay Model Effect -> Text dropdown.  Do not translate those names to
+    // filesystem paths here.  On FPP 10.1.2 the player can advertise both
+    // ImageMagick font aliases and font-file paths, but the alias C059-Bdlta is
+    // confirmed to start and scroll Text successfully on this player while the
+    // previously forced Lato-Bold.ttf path returns "Could not start effect: Text".
+    //
+    // Older plugin builds stored "Helvetica" and then rewrote it to a Lato
+    // path.  Keep existing settings compatible by mapping that historical value
+    // (and the Lato path we previously injected) to the known-good FPP alias.
+    if ($requestedFont === ''
+        || strcasecmp($requestedFont, 'Helvetica') === 0
+        || strcasecmp($requestedFont, 'Lato-Bold') === 0
+        || strcasecmp($requestedFont, 'Lato-Bold.ttf') === 0
+        || $requestedFont === '/usr/share/fonts/truetype/lato/Lato-Bold.ttf') {
+        return 'C059-Bdlta';
     }
 
-    // Older versions of this plugin defaulted to "Helvetica", but the FPP 10
-    // image does not necessarily ship a Helvetica font. Map common friendly
-    // names to font files that are normally present on FPP 10.
-    $normalized = strtolower(preg_replace('/[^a-z0-9]+/', '', $requestedFont));
-    $known = array(
-        'helvetica' => '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
-        'latobold' => '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
-        'lato' => '/usr/share/fonts/truetype/lato/Lato-Regular.ttf',
-        'latoregular' => '/usr/share/fonts/truetype/lato/Lato-Regular.ttf',
-        'freesansbold' => '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
-        'freesans' => '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
-        'freemonobold' => '/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf',
-        'freemono' => '/usr/share/fonts/truetype/freefont/FreeMono.ttf',
-        'notosansmonobold' => '/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf',
-        'notosansmono' => '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf'
-    );
-
-    if ($normalized !== '' && isset($known[$normalized]) && is_file($known[$normalized])) {
-        return $known[$normalized];
-    }
-
-    // Also allow a user to type a font filename/name shown by FPP. Search only
-    // normal system font locations and return an exact normalized basename match.
-    if ($normalized !== '') {
-        $patterns = array(
-            '/usr/share/fonts/truetype/*/*.ttf',
-            '/usr/share/fonts/truetype/*/*.otf',
-            '/usr/share/fonts/opentype/*/*.ttf',
-            '/usr/share/fonts/opentype/*/*.otf',
-            '/usr/local/share/fonts/*/*.ttf',
-            '/usr/local/share/fonts/*/*.otf'
-        );
-        foreach ($patterns as $pattern) {
-            $files = glob($pattern);
-            if (!is_array($files)) continue;
-            foreach ($files as $file) {
-                $base = pathinfo($file, PATHINFO_FILENAME);
-                $baseNormalized = strtolower(preg_replace('/[^a-z0-9]+/', '', $base));
-                if ($baseNormalized === $normalized && is_file($file)) {
-                    return $file;
-                }
-            }
-        }
-    }
-
-    $fallbacks = array(
-        '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
-        '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
-        '/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf',
-        '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
-    );
-    foreach ($fallbacks as $fallback) {
-        if (is_file($fallback)) {
-            return $fallback;
-        }
-    }
-
-    // Last resort: preserve the user's value. FPP will return a useful command
-    // error which we now include in the plugin log.
-    return $requestedFont !== '' ? $requestedFont : 'Lato-Bold';
+    // Otherwise preserve exactly what the user entered/selected.  FPP owns
+    // font discovery and validation; changing a valid FPP alias here can turn a
+    // working command into a 500 before TextEffect ever begins scrolling.
+    return $requestedFont;
 }
 
 function pss_overlayCommandErrorText($response) {
@@ -1047,7 +1004,7 @@ function pss_sendOverlayTickerText($text, $force = false) {
     }
 
     $color = pss_normalizeColor(pss_pluginSetting('TickerTextColor', '#FFFFFF'));
-    $requestedFont = trim(pss_pluginSetting('TickerFont', 'Helvetica'));
+    $requestedFont = trim(pss_pluginSetting('TickerFont', 'C059-Bdlta'));
     $font = pss_resolveOverlayFont($requestedFont);
 
     // FPP 10's Text effect advertises FontSize 4-100 and Scroll Speed 0-200.
@@ -1173,7 +1130,7 @@ function pss_saveTickerSettings($post) {
         'TickerOverlayModel' => isset($post['TickerOverlayModel']) ? trim((string)$post['TickerOverlayModel']) : '',
         'TickerWidth' => (string)pss_clampInt(isset($post['TickerWidth']) ? $post['TickerWidth'] : 128, 1, 4096, 128),
         'TickerHeight' => (string)pss_clampInt(isset($post['TickerHeight']) ? $post['TickerHeight'] : 32, 1, 4096, 32),
-        'TickerFont' => isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'Helvetica',
+        'TickerFont' => isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'C059-Bdlta',
         'TickerFontSize' => (string)pss_clampInt(isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 16, 6, 128, 16),
         'TickerTextColor' => pss_normalizeColor(isset($post['TickerTextColor']) ? $post['TickerTextColor'] : '#FFFFFF'),
         'TickerDirection' => $direction,
@@ -1191,7 +1148,7 @@ function pss_saveTickerSettings($post) {
         }
     }
 
-    if ($values['TickerFont'] === '') $values['TickerFont'] = 'Helvetica';
+    if ($values['TickerFont'] === '') $values['TickerFont'] = 'C059-Bdlta';
 
     foreach ($values as $key => $value) {
         pss_setPluginSetting($key, $value);
