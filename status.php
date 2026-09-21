@@ -258,38 +258,69 @@ function pss_collectHighlightMediaCandidates($node, &$candidates, $path = '', $d
     }
 }
 
-function pss_highlightMediaUrl($video) {
+function pss_highlightMediaSources($video) {
+    $candidates = array();
+
+    // Collect every media URL ESPN exposes rather than returning the first generic
+    // "source" value. ESPN commonly exposes HLS first even when an MP4 is also
+    // present, and older FPP kiosk browsers generally cannot play HLS natively.
+    if (isset($video['links']) && is_array($video['links'])) {
+        pss_collectHighlightMediaCandidates($video['links'], $candidates);
+    }
+
     $preferredPaths = array(
-        array('links', 'source', 'href'),
-        array('links', 'source', 'full', 'href'),
         array('links', 'mobile', 'source', 'href'),
+        array('links', 'source', 'full', 'href'),
         array('links', 'source', 'HD', 'href'),
         array('links', 'source', 'mezzanine', 'href'),
+        array('links', 'source', 'href'),
         array('links', 'source', 'HLS', 'href'),
         array('links', 'source', 'HLS', 'HD', 'href')
     );
     foreach ($preferredPaths as $path) {
         $candidate = pss_highlightAllowedMediaUrl(pss_highlightArrayValue($video, $path, ''));
         if ($candidate !== '') {
-            return $candidate;
+            $candidates[] = array('path' => strtolower(implode('.', $path)), 'url' => $candidate);
         }
     }
 
-    $candidates = array();
-    if (isset($video['links']) && is_array($video['links'])) {
-        pss_collectHighlightMediaCandidates($video['links'], $candidates);
-    }
-    if (empty($candidates)) {
-        return '';
-    }
-
-    // Prefer a progressive MP4 over HLS for broad browser support on FPP kiosk devices.
+    $seen = array();
+    $sources = array();
     foreach ($candidates as $candidate) {
-        if (preg_match('/\.mp4(?:\?|$)/i', $candidate['url'])) {
-            return $candidate['url'];
+        $url = isset($candidate['url']) ? (string)$candidate['url'] : '';
+        if ($url === '' || isset($seen[$url])) continue;
+        $seen[$url] = true;
+
+        $type = '';
+        if (preg_match('/\.mp4(?:\?|$)/i', $url)) {
+            $type = 'mp4';
+        } elseif (preg_match('/\.m3u8(?:\?|$)/i', $url)) {
+            $type = 'hls';
         }
+        if ($type === '') continue;
+
+        $sources[] = array(
+            'url' => $url,
+            'type' => $type,
+            'path' => isset($candidate['path']) ? (string)$candidate['path'] : ''
+        );
     }
-    return $candidates[0]['url'];
+
+    usort($sources, function ($a, $b) {
+        // Progressive MP4 must win on legacy FPP browsers. HLS is a fallback for
+        // Safari/iOS and any browser that reports native HLS support.
+        $rankA = ($a['type'] === 'mp4') ? 0 : 1;
+        $rankB = ($b['type'] === 'mp4') ? 0 : 1;
+        if ($rankA === $rankB) return 0;
+        return ($rankA < $rankB) ? -1 : 1;
+    });
+
+    return $sources;
+}
+
+function pss_highlightMediaUrl($video) {
+    $sources = pss_highlightMediaSources($video);
+    return !empty($sources) ? $sources[0]['url'] : '';
 }
 
 function pss_normalizeHighlightVideo($video, $index = 0) {
@@ -328,7 +359,8 @@ function pss_normalizeHighlightVideo($video, $index = 0) {
         $webUrl = 'https://www.espn.com/video/clip/_/id/' . rawurlencode($id);
     }
 
-    $mediaUrl = pss_highlightMediaUrl($video);
+    $mediaSources = pss_highlightMediaSources($video);
+    $mediaUrl = !empty($mediaSources) ? $mediaSources[0]['url'] : '';
     $duration = isset($video['duration']) ? max(0, (int)$video['duration']) : 0;
 
     $published = '';
@@ -352,7 +384,8 @@ function pss_normalizeHighlightVideo($video, $index = 0) {
         'duration' => $duration,
         'published' => $published,
         'mediaUrl' => $mediaUrl,
-        'mediaType' => (preg_match('/\.m3u8(?:\?|$)/i', $mediaUrl) ? 'hls' : ($mediaUrl !== '' ? 'mp4' : '')),
+        'mediaType' => (!empty($mediaSources) ? $mediaSources[0]['type'] : ''),
+        'mediaSources' => $mediaSources,
         'webUrl' => $webUrl,
         'playable' => ($mediaUrl !== ''),
         '_sortTime' => (int)$sortTime,
@@ -1698,6 +1731,45 @@ function pssKioskFullscreen() {
         return null;
     }
 
+    function playableHighlightSources(item, video) {
+        var sources = [];
+        if (item && Array.isArray(item.mediaSources)) {
+            sources = item.mediaSources.slice(0);
+        } else if (item && item.mediaUrl) {
+            sources = [{url: item.mediaUrl, type: item.mediaType || ''}];
+        }
+
+        var result = [];
+        var seen = {};
+        for (var i = 0; i < sources.length; i++) {
+            var source = sources[i] || {};
+            var url = String(source.url || '');
+            var type = String(source.type || '');
+            if (!url || seen[url]) continue;
+            seen[url] = true;
+
+            if (type === 'hls') {
+                var hlsSupport = '';
+                try {
+                    hlsSupport = video && typeof video.canPlayType === 'function'
+                        ? video.canPlayType('application/vnd.apple.mpegurl')
+                        : '';
+                } catch (e) {}
+                if (!hlsSupport) continue;
+            }
+            result.push({url: url, type: type});
+        }
+        return result;
+    }
+
+    function setVideoSource(video, sources, index) {
+        if (!video || !sources || index < 0 || index >= sources.length) return false;
+        video._pssSourceIndex = index;
+        video.src = sources[index].url;
+        try { video.load(); } catch (e) {}
+        return true;
+    }
+
     function loadHighlight(panel, item, autoPlay, isNew) {
         if (!item) return;
         var body = panel.querySelector('[data-highlight-body="1"]');
@@ -1712,38 +1784,56 @@ function pssKioskFullscreen() {
         media.className = 'pss-highlight-media';
 
         var video = null;
-        if (item.mediaUrl) {
+        var videoSources = [];
+        if (item.mediaUrl || (Array.isArray(item.mediaSources) && item.mediaSources.length)) {
             video = document.createElement('video');
             video.className = 'pss-highlight-video';
             video.controls = true;
             video.preload = 'metadata';
             video.playsInline = true;
             if (item.thumbnail) video.poster = item.thumbnail;
-            video.src = item.mediaUrl;
             video.setAttribute('aria-label', item.headline || 'ESPN highlight');
-            video.addEventListener('play', function () {
-                stopOtherVideos(video);
-                markPlayed(panel.getAttribute('data-event-id') || '', item.id);
-                showNewBadge(panel, false);
-                setStatus(panel, 'Playing highlight');
-            });
-            video.addEventListener('ended', function () {
-                setStatus(panel, 'Played once · Replay available');
-            });
-            video.addEventListener('error', function () {
-                setStatus(panel, 'Direct playback unavailable · use ESPN link');
-            });
-            media.appendChild(video);
-        } else if (item.thumbnail) {
+
+            videoSources = playableHighlightSources(item, video);
+            if (!videoSources.length) {
+                video = null;
+            } else {
+                setVideoSource(video, videoSources, 0);
+                video.addEventListener('play', function () {
+                    stopOtherVideos(video);
+                    markPlayed(panel.getAttribute('data-event-id') || '', item.id);
+                    showNewBadge(panel, false);
+                    setStatus(panel, 'Playing highlight');
+                });
+                video.addEventListener('loadedmetadata', function () {
+                    var idx = parseInt(video._pssSourceIndex || 0, 10);
+                    var label = videoSources[idx] && videoSources[idx].type === 'mp4' ? 'MP4' : 'video';
+                    setStatus(panel, 'Ready · ' + label + ' source');
+                });
+                video.addEventListener('ended', function () {
+                    setStatus(panel, 'Played once · Replay available');
+                });
+                video.addEventListener('error', function () {
+                    var nextIndex = (parseInt(video._pssSourceIndex || 0, 10) + 1);
+                    if (nextIndex < videoSources.length && setVideoSource(video, videoSources, nextIndex)) {
+                        setStatus(panel, 'Trying alternate ESPN video source…');
+                        return;
+                    }
+                    setStatus(panel, 'Direct playback unavailable · use ESPN link');
+                });
+                media.appendChild(video);
+            }
+        }
+        if (!video && item.thumbnail) {
             var poster = document.createElement('img');
             poster.className = 'pss-highlight-poster';
             poster.src = item.thumbnail;
             poster.alt = item.headline || 'ESPN highlight thumbnail';
             media.appendChild(poster);
-        } else {
+        } else if (!video) {
             var noMedia = document.createElement('div');
             noMedia.className = 'pss-highlight-empty';
-            noMedia.textContent = 'ESPN did not provide a direct playable source for this clip.';
+            noMedia.textContent = 'ESPN did not provide a browser-playable source for this clip.';
             media.appendChild(noMedia);
         }
 
@@ -1759,7 +1849,8 @@ function pssKioskFullscreen() {
         var parts = [];
         var duration = durationLabel(item.duration);
         if (duration) parts.push(duration);
-        if (item.playable) parts.push('plays inside scoreboard');
+        if (video) parts.push('plays inside scoreboard');
+        else if (item.playable) parts.push('stream format not supported by this browser');
         else parts.push('ESPN link only');
         meta.textContent = parts.join(' · ');
         copy.appendChild(meta);
