@@ -28,6 +28,7 @@ function pss_initializePluginDefaults() {
         $defaults["{$league}LastScoringPlayID"] = '';
         $defaults["{$league}LastCelebratedScore"] = '0';
         $defaults["{$league}LastCompletedEventID"] = '';
+        $defaults["{$league}GameSnapshotEventID"] = '';
         if ($league === 'nfl' || $league === 'ncaa') {
             $defaults["{$league}TouchdownSequence"] = '';
             $defaults["{$league}FieldgoalSequence"] = '';
@@ -48,7 +49,6 @@ pss_logEntry('Sports scoring daemon started');
 
 while (true) {
     $pluginSettings = pss_loadPluginSettings();
-    pss_syncAllGeneratedPlaylists();
     if (pss_pluginSetting('ENABLED', 'OFF') !== 'ON') {
         sleep(10);
         continue;
