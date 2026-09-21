@@ -1,5 +1,5 @@
 #!/bin/bash
-set -u
+# nounset intentionally disabled for FPP 7-9 compatibility
 : "${FPPDIR:=/opt/fpp}"
 . "${FPPDIR}/scripts/common"
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -u
+# nounset intentionally disabled for FPP 7-9 compatibility
 
 PLUGIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 PID_FILE="${PLUGIN_DIR}/sports-scoring.pid"
