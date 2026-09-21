@@ -11,29 +11,37 @@ function pss_initializePluginDefaults() {
         'ENABLED' => 'OFF',
         'logLevel' => '4'
     );
+
     foreach ($leagues as $league) {
-        $defaults["{$league}TeamID"] = '';
-        $defaults["{$league}TeamAbbreviation"] = '';
-        $defaults["{$league}TeamLogo"] = '';
-        $defaults["{$league}TeamName"] = '';
-        $defaults["{$league}TeamNextEventID"] = '';
-        $defaults["{$league}Start"] = '';
-        $defaults["{$league}GameStatus"] = '';
-        $defaults["{$league}OppoID"] = '';
-        $defaults["{$league}OppoAbbreviation"] = '';
-        $defaults["{$league}OppoName"] = '';
-        $defaults["{$league}MyScore"] = '0';
-        $defaults["{$league}OppoScore"] = '0';
-        $defaults["{$league}WinSequence"] = '';
-        $defaults["{$league}LastScoringPlayID"] = '';
-        $defaults["{$league}LastCelebratedScore"] = '0';
-        $defaults["{$league}LastCompletedEventID"] = '';
-        $defaults["{$league}GameSnapshotEventID"] = '';
-        if ($league === 'nfl' || $league === 'ncaa') {
-            $defaults["{$league}TouchdownSequence"] = '';
-            $defaults["{$league}FieldgoalSequence"] = '';
-        } else {
-            $defaults["{$league}ScoreSequence"] = '';
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+
+            $defaults["{$prefix}TeamID"] = '';
+            $defaults["{$prefix}TeamAbbreviation"] = '';
+            $defaults["{$prefix}TeamLogo"] = '';
+            $defaults["{$prefix}TeamName"] = '';
+            $defaults["{$prefix}TeamNextEventID"] = '';
+            $defaults["{$prefix}Start"] = '';
+            $defaults["{$prefix}GameStatus"] = '';
+            $defaults["{$prefix}GameDetail"] = '';
+            $defaults["{$prefix}OppoID"] = '';
+            $defaults["{$prefix}OppoAbbreviation"] = '';
+            $defaults["{$prefix}OppoName"] = '';
+            $defaults["{$prefix}OppoLogo"] = '';
+            $defaults["{$prefix}MyScore"] = '0';
+            $defaults["{$prefix}OppoScore"] = '0';
+            $defaults["{$prefix}WinSequence"] = '';
+            $defaults["{$prefix}LastScoringPlayID"] = '';
+            $defaults["{$prefix}LastCelebratedScore"] = '0';
+            $defaults["{$prefix}LastCompletedEventID"] = '';
+            $defaults["{$prefix}GameSnapshotEventID"] = '';
+
+            if ($league === 'nfl' || $league === 'ncaa') {
+                $defaults["{$prefix}TouchdownSequence"] = '';
+                $defaults["{$prefix}FieldgoalSequence"] = '';
+            } else {
+                $defaults["{$prefix}ScoreSequence"] = '';
+            }
         }
     }
 
