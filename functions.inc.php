@@ -478,6 +478,27 @@ function pss_syncAllGeneratedPlaylists() {
     }
 }
 
+function pss_extractTeamLogo($teamData) {
+    if (!is_array($teamData)) {
+        return '';
+    }
+
+    if (isset($teamData['logos'][0]['href']) && is_string($teamData['logos'][0]['href'])) {
+        return (string)$teamData['logos'][0]['href'];
+    }
+    if (isset($teamData['logos'][0]) && is_string($teamData['logos'][0])) {
+        return (string)$teamData['logos'][0];
+    }
+    if (isset($teamData['logo']) && is_string($teamData['logo'])) {
+        return (string)$teamData['logo'];
+    }
+    if (isset($teamData['logo']['href']) && is_string($teamData['logo']['href'])) {
+        return (string)$teamData['logo']['href'];
+    }
+
+    return '';
+}
+
 function pss_getTeamInfo($sport, $league, $team) {
     $info = array(
         'valid' => false,
@@ -501,7 +522,7 @@ function pss_getTeamInfo($sport, $league, $team) {
 
     $teamData = $data['team'];
     $info['valid'] = true;
-    $info['logo'] = isset($teamData['logos'][0]['href']) ? (string)$teamData['logos'][0]['href'] : '';
+    $info['logo'] = pss_extractTeamLogo($teamData);
     $info['abbreviation'] = isset($teamData['abbreviation']) ? (string)$teamData['abbreviation'] : '';
     $info['name'] = isset($teamData['displayName']) ? (string)$teamData['displayName'] : '';
 
@@ -567,7 +588,7 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
     $status['oppoID'] = isset($opponent['team']['id']) ? (string)$opponent['team']['id'] : '';
     $status['oppoAbbreviation'] = isset($opponent['team']['abbreviation']) ? (string)$opponent['team']['abbreviation'] : '';
     $status['oppoName'] = isset($opponent['team']['displayName']) ? (string)$opponent['team']['displayName'] : '';
-    $status['oppoLogo'] = isset($opponent['team']['logos'][0]['href']) ? (string)$opponent['team']['logos'][0]['href'] : '';
+    $status['oppoLogo'] = pss_extractTeamLogo($opponent['team']);
     if (isset($competition['status']['type']['shortDetail'])) {
         $status['detail'] = (string)$competition['status']['type']['shortDetail'];
     } elseif (isset($competition['status']['type']['detail'])) {
@@ -660,11 +681,31 @@ function pss_clearLeagueState($league, $clearTeam = false) {
 }
 
 function pss_applyGameSnapshot($league, $status, $updateStatus = true) {
+    $oppoLogo = isset($status['oppoLogo']) ? trim((string)$status['oppoLogo']) : '';
+
+    // ESPN's game summary does not consistently include team logos in every sport/league.
+    // Preserve an already-cached opponent logo, or fetch it once from the team endpoint.
+    if ($oppoLogo === '') {
+        $cachedOppoID = pss_pluginSetting("{$league}OppoID", '');
+        if ((string)$cachedOppoID === (string)$status['oppoID']) {
+            $oppoLogo = pss_pluginSetting("{$league}OppoLogo", '');
+        }
+    }
+    if ($oppoLogo === '' && !empty($status['oppoID'])) {
+        $leagueInfo = pss_leagueInfo($league);
+        if ($leagueInfo['sport'] !== '') {
+            $oppoInfo = pss_getTeamInfo($leagueInfo['sport'], $league, (string)$status['oppoID']);
+            if ($oppoInfo['valid'] && $oppoInfo['logo'] !== '') {
+                $oppoLogo = $oppoInfo['logo'];
+            }
+        }
+    }
+
     pss_setPluginSetting("{$league}Start", $status['start']);
     pss_setPluginSetting("{$league}OppoID", $status['oppoID']);
     pss_setPluginSetting("{$league}OppoName", $status['oppoName']);
     pss_setPluginSetting("{$league}OppoAbbreviation", $status['oppoAbbreviation']);
-    pss_setPluginSetting("{$league}OppoLogo", isset($status['oppoLogo']) ? $status['oppoLogo'] : '');
+    pss_setPluginSetting("{$league}OppoLogo", $oppoLogo);
     pss_setPluginSetting("{$league}GameDetail", isset($status['detail']) ? $status['detail'] : '');
     pss_setPluginSetting("{$league}MyScore", (string)$status['myScore']);
     pss_setPluginSetting("{$league}OppoScore", (string)$status['oppoScore']);

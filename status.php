@@ -90,8 +90,15 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
 ?>
 <style>
 .pss-status-wrap {
-    max-width: 1500px;
+    width: 100%;
+    max-width: 1900px;
     margin: 0 auto;
+}
+.pss-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+    gap: 16px;
+    align-items: start;
 }
 .pss-scoreboard {
     border: 1px solid rgba(127, 127, 127, 0.28);
@@ -99,15 +106,12 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
     overflow: hidden;
     background: rgba(127, 127, 127, 0.07);
 }
-.pss-scoreboard + .pss-scoreboard {
-    margin-top: 18px;
-}
 .pss-scoreboard-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    padding: 12px 16px;
+    padding: 9px 12px;
     border-bottom: 1px solid rgba(127, 127, 127, 0.22);
     background: rgba(127, 127, 127, 0.08);
 }
@@ -126,7 +130,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
     grid-template-columns: minmax(0, 1fr) minmax(170px, 0.7fr) minmax(0, 1fr);
     align-items: center;
     gap: 18px;
-    padding: 24px 22px 18px;
+    padding: 18px 16px 14px;
 }
 .pss-team {
     min-width: 0;
@@ -151,8 +155,8 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
 }
 .pss-team-logo,
 .pss-team-logo-fallback {
-    width: 78px;
-    height: 78px;
+    width: 64px;
+    height: 64px;
     margin: 0 auto 10px;
 }
 .pss-team-logo {
@@ -170,7 +174,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
     background: rgba(127, 127, 127, 0.08);
 }
 .pss-team-name {
-    font-size: 1.08rem;
+    font-size: 0.98rem;
     font-weight: 700;
     line-height: 1.2;
     overflow-wrap: anywhere;
@@ -188,7 +192,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
     justify-content: center;
     align-items: baseline;
     gap: 15px;
-    font-size: clamp(2.4rem, 5vw, 4.1rem);
+    font-size: clamp(2.1rem, 4vw, 3.45rem);
     font-weight: 800;
     line-height: 1;
     font-variant-numeric: tabular-nums;
@@ -199,7 +203,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
 }
 .pss-state-pill {
     display: inline-block;
-    margin-top: 12px;
+    margin-top: 9px;
     padding: 5px 11px;
     border-radius: 999px;
     font-size: 0.78rem;
@@ -213,7 +217,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
 .pss-state-post { background: rgba(127, 127, 127, 0.16); }
 .pss-state-wait { background: rgba(215, 165, 35, 0.16); }
 .pss-game-detail {
-    margin-top: 8px;
+    margin-top: 6px;
     font-weight: 700;
     min-height: 1.2em;
 }
@@ -224,7 +228,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
     border-top: 1px solid rgba(127, 127, 127, 0.22);
 }
 .pss-meta-item {
-    padding: 12px 16px;
+    padding: 9px 12px;
     min-width: 0;
 }
 .pss-meta-item + .pss-meta-item {
@@ -242,7 +246,15 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
 .pss-meta-value {
     overflow-wrap: anywhere;
 }
+@media (max-width: 1180px) {
+    .pss-status-grid {
+        grid-template-columns: 1fr;
+    }
+}
 @media (max-width: 720px) {
+    .pss-status-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
     .pss-matchup {
         grid-template-columns: 1fr 1fr;
         gap: 12px;
@@ -275,6 +287,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
         <div class="alert alert-warning">The plugin is currently disabled.</div>
     <?php endif; ?>
 
+    <div class="pss-status-grid">
     <?php
     $rendered = 0;
     foreach ($leagues as $league):
@@ -344,6 +357,7 @@ function pss_teamLogoMarkup($logoUrl, $abbr, $name) {
             </div>
         </section>
     <?php endforeach; ?>
+    </div>
 
     <?php if ($rendered === 0): ?>
         <div class="alert alert-info">Select a team on the Pro Sports Scoring setup page to display game status here.</div>
