@@ -561,15 +561,189 @@ function pss_runFppCommand($command, $args) {
     return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
 }
 
+function pss_legacyOverlayTickerPaths() {
+    return array(
+        'script' => '/tmp/fpp-pro-sports-scoring-overlay-ticker.pl',
+        'pid' => '/tmp/fpp-pro-sports-scoring-overlay-ticker.pid'
+    );
+}
+
+function pss_legacyOverlayTickerAvailable() {
+    return is_file('/opt/fpp/lib/perl/FPP/MemoryMap.pm')
+        && (is_executable('/usr/bin/perl') || is_executable('/usr/local/bin/perl'));
+}
+
+function pss_legacyOverlayTickerProcessMatches($pid) {
+    $pid = (int)$pid;
+    if ($pid <= 1 || !is_dir('/proc/' . $pid)) {
+        return false;
+    }
+    $cmdline = @file_get_contents('/proc/' . $pid . '/cmdline');
+    return is_string($cmdline)
+        && strpos($cmdline, 'fpp-pro-sports-scoring-overlay-ticker.pl') !== false;
+}
+
+function pss_legacyOverlayTickerPid() {
+    $paths = pss_legacyOverlayTickerPaths();
+    if (!is_file($paths['pid'])) {
+        return 0;
+    }
+    $pid = (int)trim((string)@file_get_contents($paths['pid']));
+    if (!pss_legacyOverlayTickerProcessMatches($pid)) {
+        @unlink($paths['pid']);
+        return 0;
+    }
+    return $pid;
+}
+
+function pss_legacyOverlayTickerIsRunning() {
+    return pss_legacyOverlayTickerPid() > 1;
+}
+
+function pss_stopLegacyOverlayTicker() {
+    $paths = pss_legacyOverlayTickerPaths();
+    $pid = pss_legacyOverlayTickerPid();
+    if ($pid > 1) {
+        if (function_exists('posix_kill')) {
+            @posix_kill($pid, 15);
+        } elseif (function_exists('exec')) {
+            @exec('kill -TERM ' . (int)$pid . ' >/dev/null 2>&1');
+        }
+
+        // Do not leave the old scroller racing the replacement process.
+        for ($i = 0; $i < 20 && pss_legacyOverlayTickerProcessMatches($pid); $i++) {
+            usleep(25000);
+        }
+        if (pss_legacyOverlayTickerProcessMatches($pid)) {
+            if (function_exists('posix_kill')) {
+                @posix_kill($pid, 9);
+            } elseif (function_exists('exec')) {
+                @exec('kill -KILL ' . (int)$pid . ' >/dev/null 2>&1');
+            }
+        }
+    }
+    @unlink($paths['pid']);
+}
+
+function pss_writeLegacyOverlayTickerHelper() {
+    $paths = pss_legacyOverlayTickerPaths();
+    $script = <<<'PERL'
+#!/usr/bin/perl
+use strict;
+use warnings;
+use lib "/opt/fpp/lib/perl/";
+use FPP::MemoryMap;
+
+my ($name, $msg, $color, $size, $dir, $pps) = @ARGV;
+die "Missing Pixel Overlay model\n" unless defined($name) && length($name);
+$msg = 'PRO SPORTS SCORING' unless defined($msg) && length($msg);
+$color = '#FFFFFF' unless defined($color) && length($color);
+$size = int($size || 16);
+$dir = ($dir && $dir eq 'L2R') ? 'L2R' : 'R2L';
+$pps = int($pps || 10);
+$pps = 1 if $pps < 1;
+
+my $fppmm = new FPP::MemoryMap;
+$fppmm->OpenMaps();
+my $blk = $fppmm->GetBlockInfo($name);
+$fppmm->SetBlockColor($blk, 0, 0, 0);
+$fppmm->SetBlockState($blk, 1);
+
+# FPP::MemoryMap::TextMessage scrolls one pass. Repeat so the sports ticker
+# remains on the selected model until PHP replaces or stops this process.
+while (1) {
+    $fppmm->TextMessage($blk, $msg, $color, '#000000', 'fixed', $size, 'scroll', $dir, $pps);
+}
+PERL;
+
+    $tmp = $paths['script'] . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $script) === false) {
+        return false;
+    }
+    @chmod($tmp, 0700);
+    if (!@rename($tmp, $paths['script'])) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
+function pss_startLegacyOverlayTicker($model, $text, $color, $fontSize, $direction, $speed) {
+    global $logFile;
+
+    if (!pss_legacyOverlayTickerAvailable()) {
+        pss_logEntry('FPP MemoryMap ticker fallback is unavailable: /opt/fpp/lib/perl/FPP/MemoryMap.pm or perl is missing');
+        return false;
+    }
+    if (!function_exists('exec')) {
+        pss_logEntry('FPP MemoryMap ticker fallback is unavailable because PHP exec() is disabled');
+        return false;
+    }
+
+    pss_stopLegacyOverlayTicker();
+    if (!pss_writeLegacyOverlayTickerHelper()) {
+        pss_logEntry('Could not write the FPP MemoryMap ticker helper under /tmp');
+        return false;
+    }
+
+    $paths = pss_legacyOverlayTickerPaths();
+    $perl = is_executable('/usr/bin/perl') ? '/usr/bin/perl' : '/usr/local/bin/perl';
+    $legacyDirection = ($direction === 'Left to Right') ? 'L2R' : 'R2L';
+    $legacySpeed = max(1, min(200, (int)$speed));
+    $legacySize = max(4, min(100, (int)$fontSize));
+    $helperLog = (isset($logFile) && trim((string)$logFile) !== '') ? (string)$logFile : '/tmp/fpp-pro-sports-scoring-overlay-ticker.log';
+
+    $cmd = escapeshellarg($perl)
+        . ' ' . escapeshellarg($paths['script'])
+        . ' ' . escapeshellarg((string)$model)
+        . ' ' . escapeshellarg((string)$text)
+        . ' ' . escapeshellarg((string)$color)
+        . ' ' . escapeshellarg((string)$legacySize)
+        . ' ' . escapeshellarg($legacyDirection)
+        . ' ' . escapeshellarg((string)$legacySpeed)
+        . ' >> ' . escapeshellarg($helperLog) . ' 2>&1 & echo $!';
+
+    $output = array();
+    $rc = 0;
+    @exec($cmd, $output, $rc);
+    $pid = !empty($output) ? (int)trim((string)end($output)) : 0;
+    if ($rc !== 0 || $pid <= 1) {
+        pss_logEntry("Could not launch FPP MemoryMap ticker fallback for {$model}");
+        return false;
+    }
+
+    @file_put_contents($paths['pid'], (string)$pid);
+    usleep(150000);
+    if (!pss_legacyOverlayTickerProcessMatches($pid)) {
+        @unlink($paths['pid']);
+        pss_logEntry("FPP MemoryMap ticker fallback exited immediately for {$model}; check {$helperLog}");
+        return false;
+    }
+
+    pss_logEntry("Using FPP MemoryMap ticker fallback for {$model} (pid {$pid})");
+    return true;
+}
+
 function pss_clearOverlayModel($model) {
     $model = trim((string)$model);
     if ($model === '') {
         return false;
     }
+
+    // A MemoryMap fallback process writes continuously, so stop it before
+    // clearing/disabling the model or it would immediately paint the text back.
+    pss_stopLegacyOverlayTicker();
+
     $response = pss_runFppCommand('Overlay Model Clear', array($model));
     if (!$response['ok']) {
         pss_logEntry("FPP rejected Overlay Model Clear for {$model} with HTTP {$response['status']}");
         return false;
+    }
+
+    // Restore normal sequence output after a ticker has owned the overlay.
+    $stateResponse = pss_runFppCommand('Overlay Model State', array($model, 'Disabled', '0', '100'));
+    if (!$stateResponse['ok']) {
+        pss_logEntry("FPP rejected Overlay Model State/Disabled for {$model} with HTTP {$stateResponse['status']}");
     }
     return true;
 }
@@ -657,12 +831,20 @@ function pss_overlayCommandErrorText($response) {
 function pss_sendOverlayTickerText($text, $force = false) {
     static $lastSignature = '';
     static $lastModel = '';
+    static $lastDelivery = '';
+    static $preferMemoryMap = false;
 
     if (pss_pluginSetting('TickerEnabled', 'OFF') !== 'ON' || pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
-        if ($lastModel !== '') {
-            pss_clearOverlayModel($lastModel);
+        if ($lastModel !== '' || pss_legacyOverlayTickerIsRunning()) {
+            $clearModel = ($lastModel !== '') ? $lastModel : trim(pss_pluginSetting('TickerOverlayModel', ''));
+            if ($clearModel !== '') {
+                pss_clearOverlayModel($clearModel);
+            } else {
+                pss_stopLegacyOverlayTicker();
+            }
             $lastModel = '';
             $lastSignature = '';
+            $lastDelivery = '';
         }
         return false;
     }
@@ -694,7 +876,13 @@ function pss_sendOverlayTickerText($text, $force = false) {
 
     $signature = md5(implode('|', array($model, $color, $font, $fontSize, $direction, $speed, $text)));
     if (!$force && $signature === $lastSignature) {
-        return true;
+        if ($lastDelivery === 'modern') {
+            return true;
+        }
+        if ($lastDelivery === 'memorymap' && pss_legacyOverlayTickerIsRunning()) {
+            return true;
+        }
+        // The helper died or the daemon restarted. Fall through and recreate it.
     }
 
     if ($lastModel !== '' && $lastModel !== $model) {
@@ -704,60 +892,53 @@ function pss_sendOverlayTickerText($text, $force = false) {
     // FPP 10 native command:
     // Models, AutoEnable, Effect,
     // Color, Font, FontSize, FontAntiAlias, Position, Speed, Duration, Text
-    $modernArgs = array(
-        $model,
-        'Enabled',
-        'Text',
-        $color,
-        $font,
-        (string)$fontSize,
-        'false',
-        $direction,
-        (string)$speed,
-        '0',
-        $text
-    );
-
-    $response = pss_runFppCommand('Overlay Model Effect', $modernArgs);
-
-    if (!$response['ok']) {
-        $detail = pss_overlayCommandErrorText($response);
-        pss_logEntry(
-            "FPP 10 Overlay Model Effect rejected sports ticker for {$model}"
-            . " HTTP {$response['status']}"
-            . ($detail !== '' ? " response={$detail}" : '')
-            . " font={$font}"
-        );
-
-        // Compatibility fallback. FPP 10 still contains the hidden legacy
-        // Overlay Model Text translator. If the direct modern command is ever
-        // unavailable on a particular build, retry through that translator.
-        $legacyArgs = array(
+    //
+    // FPP 10.1.2 on the affected player accepts this command but returns HTTP
+    // 500 "Could not start effect: Text" inside the overlay-effect engine. Once
+    // that has happened in this daemon, skip repeating the known-bad call and
+    // use FPP's MemoryMap text engine directly for later ticker refreshes.
+    $response = null;
+    if (!$preferMemoryMap) {
+        pss_stopLegacyOverlayTicker();
+        $modernArgs = array(
             $model,
+            'Enabled',
+            'Text',
             $color,
             $font,
             (string)$fontSize,
             'false',
             $direction,
             (string)$speed,
-            'true',
+            '0',
             $text
         );
-        $legacyResponse = pss_runFppCommand('Overlay Model Text', $legacyArgs);
-        if (!$legacyResponse['ok']) {
-            $legacyDetail = pss_overlayCommandErrorText($legacyResponse);
+        $response = pss_runFppCommand('Overlay Model Effect', $modernArgs);
+    }
+
+    if ($preferMemoryMap || !is_array($response) || !$response['ok']) {
+        if (is_array($response) && !$response['ok']) {
+            $detail = pss_overlayCommandErrorText($response);
             pss_logEntry(
-                "Legacy Overlay Model Text fallback also failed for {$model}"
-                . " HTTP {$legacyResponse['status']}"
-                . ($legacyDetail !== '' ? " response={$legacyDetail}" : '')
+                "FPP 10 Overlay Model Effect rejected sports ticker for {$model}"
+                . " HTTP {$response['status']}"
+                . ($detail !== '' ? " response={$detail}" : '')
+                . " font={$font}; switching to MemoryMap ticker fallback"
             );
+        }
+
+        if (!pss_startLegacyOverlayTicker($model, $text, $color, $fontSize, $direction, $speed)) {
+            $lastDelivery = '';
             return false;
         }
 
-        $response = $legacyResponse;
+        $preferMemoryMap = true;
+        $lastDelivery = 'memorymap';
+    } else {
+        $lastDelivery = 'modern';
     }
 
-    if ($requestedFont !== $font) {
+    if ($requestedFont !== $font && $lastDelivery === 'modern') {
         pss_logEntry("Pixel ticker font '{$requestedFont}' resolved to '{$font}'");
     }
 
