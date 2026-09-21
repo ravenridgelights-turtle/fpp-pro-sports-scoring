@@ -513,14 +513,16 @@ if ($pssDataMode) {
     overflow: hidden;
 }
 .pss-kiosk-ticker-track {
-    --pss-ticker-shift: 600px;
-    --pss-ticker-duration: 14s;
+    --pss-ticker-start: 1000px;
+    --pss-ticker-end: -600px;
+    --pss-ticker-duration: 18s;
+    position: absolute;
+    left: 0;
+    top: 0;
     display: inline-flex;
     align-items: center;
-    gap: 70px;
-    min-width: max-content;
+    width: max-content;
     height: 100%;
-    padding-left: 100%;
     white-space: nowrap;
     will-change: transform;
     animation: pssTickerScroll var(--pss-ticker-duration) linear infinite;
@@ -532,12 +534,13 @@ if ($pssDataMode) {
     letter-spacing: 0.015em;
 }
 @keyframes pssTickerScroll {
-    from { transform: translateX(0); }
-    to { transform: translateX(calc(-1 * var(--pss-ticker-shift))); }
+    from { transform: translateX(var(--pss-ticker-start)); }
+    to { transform: translateX(var(--pss-ticker-end)); }
 }
 @media (prefers-reduced-motion: reduce) {
     .pss-kiosk-ticker-track {
         animation: none;
+        position: static;
         padding-left: 12px;
     }
 }
@@ -714,7 +717,6 @@ body {
         <div class="pss-kiosk-ticker-window">
             <div class="pss-kiosk-ticker-track">
                 <span class="pss-kiosk-ticker-text" data-pss-ticker-copy="1"><?=htmlspecialchars($pssTickerText)?></span>
-                <span class="pss-kiosk-ticker-text" data-pss-ticker-copy="2" aria-hidden="true"><?=htmlspecialchars($pssTickerText)?></span>
             </div>
         </div>
     </div>
@@ -737,23 +739,30 @@ function pssKioskFullscreen() {
 
     function updateTickerAnimation(text, speed) {
         if (!ticker) return;
-        var copies = ticker.querySelectorAll('[data-pss-ticker-copy]');
-        for (var i = 0; i < copies.length; i++) {
-            copies[i].textContent = text || '';
-        }
+
+        var first = ticker.querySelector('[data-pss-ticker-copy="1"]');
+        var track = ticker.querySelector('.pss-kiosk-ticker-track');
+        var windowEl = ticker.querySelector('.pss-kiosk-ticker-window');
+        if (!track || !first || !windowEl) return;
+
+        first.textContent = text || '';
         ticker.setAttribute('data-speed', String(speed || 90));
 
-        var track = ticker.querySelector('.pss-kiosk-ticker-track');
-        var first = ticker.querySelector('[data-pss-ticker-copy="1"]');
-        if (!track || !first) return;
-
         window.requestAnimationFrame(function () {
-            var firstWidth = Math.max(1, first.getBoundingClientRect().width);
-            var gap = 70;
-            var shift = firstWidth + gap;
+            /*
+             * Move one complete ticker message from fully off-screen on the
+             * right to fully off-screen on the left.  The animation resets
+             * only while the text is invisible, so short score strings no
+             * longer jump/repeat in the middle of the display.
+             */
+            var windowWidth = Math.max(1, windowEl.getBoundingClientRect().width);
+            var textWidth = Math.max(1, first.getBoundingClientRect().width);
             var pxPerSecond = Math.max(20, Math.min(300, parseInt(speed || 90, 10)));
-            var duration = Math.max(6, shift / pxPerSecond);
-            track.style.setProperty('--pss-ticker-shift', shift + 'px');
+            var travel = windowWidth + textWidth;
+            var duration = Math.max(6, travel / pxPerSecond);
+
+            track.style.setProperty('--pss-ticker-start', windowWidth + 'px');
+            track.style.setProperty('--pss-ticker-end', (-textWidth) + 'px');
             track.style.setProperty('--pss-ticker-duration', duration.toFixed(2) + 's');
             track.style.animation = 'none';
             void track.offsetWidth;
@@ -880,6 +889,19 @@ function pssKioskFullscreen() {
         ticker.setAttribute('data-current-text', initialValue);
         updateTickerAnimation(initialValue, parseInt(ticker.getAttribute('data-speed') || '90', 10));
     }
+
+    var resizeTimer = null;
+    window.addEventListener('resize', function () {
+        if (!ticker || ticker.style.display === 'none') return;
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(function () {
+            var current = ticker.querySelector('[data-pss-ticker-copy="1"]');
+            updateTickerAnimation(
+                current ? current.textContent : '',
+                parseInt(ticker.getAttribute('data-speed') || '90', 10)
+            );
+        }, 150);
+    });
 
     window.setInterval(refreshScoreboard, 10000);
 })();
