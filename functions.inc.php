@@ -574,6 +574,86 @@ function pss_clearOverlayModel($model) {
     return true;
 }
 
+function pss_resolveOverlayFont($requestedFont) {
+    $requestedFont = trim((string)$requestedFont);
+
+    // An absolute font file path is the most deterministic option for ImageMagick.
+    if ($requestedFont !== '' && is_file($requestedFont)) {
+        return $requestedFont;
+    }
+
+    // Older versions of this plugin defaulted to "Helvetica", but the FPP 10
+    // image does not necessarily ship a Helvetica font. Map common friendly
+    // names to font files that are normally present on FPP 10.
+    $normalized = strtolower(preg_replace('/[^a-z0-9]+/', '', $requestedFont));
+    $known = array(
+        'helvetica' => '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
+        'latobold' => '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
+        'lato' => '/usr/share/fonts/truetype/lato/Lato-Regular.ttf',
+        'latoregular' => '/usr/share/fonts/truetype/lato/Lato-Regular.ttf',
+        'freesansbold' => '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+        'freesans' => '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+        'freemonobold' => '/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf',
+        'freemono' => '/usr/share/fonts/truetype/freefont/FreeMono.ttf',
+        'notosansmonobold' => '/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf',
+        'notosansmono' => '/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf'
+    );
+
+    if ($normalized !== '' && isset($known[$normalized]) && is_file($known[$normalized])) {
+        return $known[$normalized];
+    }
+
+    // Also allow a user to type a font filename/name shown by FPP. Search only
+    // normal system font locations and return an exact normalized basename match.
+    if ($normalized !== '') {
+        $patterns = array(
+            '/usr/share/fonts/truetype/*/*.ttf',
+            '/usr/share/fonts/truetype/*/*.otf',
+            '/usr/share/fonts/opentype/*/*.ttf',
+            '/usr/share/fonts/opentype/*/*.otf',
+            '/usr/local/share/fonts/*/*.ttf',
+            '/usr/local/share/fonts/*/*.otf'
+        );
+        foreach ($patterns as $pattern) {
+            $files = glob($pattern);
+            if (!is_array($files)) continue;
+            foreach ($files as $file) {
+                $base = pathinfo($file, PATHINFO_FILENAME);
+                $baseNormalized = strtolower(preg_replace('/[^a-z0-9]+/', '', $base));
+                if ($baseNormalized === $normalized && is_file($file)) {
+                    return $file;
+                }
+            }
+        }
+    }
+
+    $fallbacks = array(
+        '/usr/share/fonts/truetype/lato/Lato-Bold.ttf',
+        '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+        '/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf',
+        '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+    );
+    foreach ($fallbacks as $fallback) {
+        if (is_file($fallback)) {
+            return $fallback;
+        }
+    }
+
+    // Last resort: preserve the user's value. FPP will return a useful command
+    // error which we now include in the plugin log.
+    return $requestedFont !== '' ? $requestedFont : 'Lato-Bold';
+}
+
+function pss_overlayCommandErrorText($response) {
+    if (!is_array($response)) return '';
+    $body = isset($response['body']) ? trim((string)$response['body']) : '';
+    if ($body === '') return '';
+    if (strlen($body) > 600) {
+        $body = substr($body, 0, 600) . '...';
+    }
+    return preg_replace('/\s+/', ' ', $body);
+}
+
 function pss_sendOverlayTickerText($text, $force = false) {
     static $lastSignature = '';
     static $lastModel = '';
@@ -593,14 +673,17 @@ function pss_sendOverlayTickerText($text, $force = false) {
     }
 
     $color = pss_normalizeColor(pss_pluginSetting('TickerTextColor', '#FFFFFF'));
-    $font = trim(pss_pluginSetting('TickerFont', 'Helvetica'));
-    if ($font === '') $font = 'Helvetica';
-    $fontSize = pss_clampInt(pss_pluginSetting('TickerFontSize', '16'), 6, 128, 16);
+    $requestedFont = trim(pss_pluginSetting('TickerFont', 'Helvetica'));
+    $font = pss_resolveOverlayFont($requestedFont);
+
+    // FPP 10's Text effect advertises FontSize 4-100 and Scroll Speed 0-200.
+    $fontSize = pss_clampInt(pss_pluginSetting('TickerFontSize', '16'), 4, 100, 16);
     $direction = pss_pluginSetting('TickerDirection', 'Right to Left');
     if ($direction !== 'Left to Right' && $direction !== 'Right to Left') {
         $direction = 'Right to Left';
     }
-    $speed = pss_clampInt(pss_pluginSetting('TickerScrollSpeed', '10'), 1, 100, 10);
+    $speed = pss_clampInt(pss_pluginSetting('TickerScrollSpeed', '10'), 0, 200, 10);
+
     $text = trim((string)$text);
     if ($text === '') {
         $text = 'PRO SPORTS SCORING';
@@ -618,16 +701,10 @@ function pss_sendOverlayTickerText($text, $force = false) {
         pss_clearOverlayModel($lastModel);
     }
 
-    // FPP 10 exposes scrolling text through "Overlay Model Effect" with the
-    // Text effect.  "Overlay Model Text" is the older command used by FPP 7/8/9.
-    //
-    // FPP 10 Text effect argument order:
-    // Models, Auto Enable/Disable, Effect, Color, Font, FontSize,
-    // Anti-Aliased, Position, Scroll Speed, Duration, Text.
-    //
-    // TickerDirection maps directly to the Text effect Position values
-    // "Right to Left" / "Left to Right".
-    $args = array(
+    // FPP 10 native command:
+    // Models, AutoEnable, Effect,
+    // Color, Font, FontSize, FontAntiAlias, Position, Speed, Duration, Text
+    $modernArgs = array(
         $model,
         'Enabled',
         'Text',
@@ -641,18 +718,47 @@ function pss_sendOverlayTickerText($text, $force = false) {
         $text
     );
 
-    $response = pss_runFppCommand('Overlay Model Effect', $args);
+    $response = pss_runFppCommand('Overlay Model Effect', $modernArgs);
+
     if (!$response['ok']) {
-        $body = trim(isset($response['body']) ? (string)$response['body'] : '');
-        if (strlen($body) > 300) {
-            $body = substr($body, 0, 300);
-        }
+        $detail = pss_overlayCommandErrorText($response);
         pss_logEntry(
-            "FPP rejected Overlay Model Effect/Text for sports ticker model {$model} "
-            . "with HTTP {$response['status']}"
-            . ($body !== '' ? ": {$body}" : '')
+            "FPP 10 Overlay Model Effect rejected sports ticker for {$model}"
+            . " HTTP {$response['status']}"
+            . ($detail !== '' ? " response={$detail}" : '')
+            . " font={$font}"
         );
-        return false;
+
+        // Compatibility fallback. FPP 10 still contains the hidden legacy
+        // Overlay Model Text translator. If the direct modern command is ever
+        // unavailable on a particular build, retry through that translator.
+        $legacyArgs = array(
+            $model,
+            $color,
+            $font,
+            (string)$fontSize,
+            'false',
+            $direction,
+            (string)$speed,
+            'true',
+            $text
+        );
+        $legacyResponse = pss_runFppCommand('Overlay Model Text', $legacyArgs);
+        if (!$legacyResponse['ok']) {
+            $legacyDetail = pss_overlayCommandErrorText($legacyResponse);
+            pss_logEntry(
+                "Legacy Overlay Model Text fallback also failed for {$model}"
+                . " HTTP {$legacyResponse['status']}"
+                . ($legacyDetail !== '' ? " response={$legacyDetail}" : '')
+            );
+            return false;
+        }
+
+        $response = $legacyResponse;
+    }
+
+    if ($requestedFont !== $font) {
+        pss_logEntry("Pixel ticker font '{$requestedFont}' resolved to '{$font}'");
     }
 
     $lastModel = $model;
