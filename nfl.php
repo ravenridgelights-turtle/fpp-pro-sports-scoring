@@ -10,6 +10,7 @@ function pss_initializePluginDefaults() {
     $defaults = array(
         'ENABLED' => 'OFF',
         'logLevel' => '4',
+        'HighlightQuality' => 'low',
         'TickerEnabled' => 'OFF',
         'TickerKioskEnabled' => 'ON',
         'TickerStyle' => 'normal',

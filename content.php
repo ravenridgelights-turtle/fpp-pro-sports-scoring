@@ -118,6 +118,31 @@ function pss_currentValue($key, $default = '') {
                 <div class="col-md-5"><strong>Log level</strong><div class="text-muted small">Info logs scoring actions. Debug also logs ESPN polling.</div></div>
                 <div class="col-md-7"><?php PrintSettingSelect('logLevel', 'logLevel', 0, 0, '4', array('Info' => '4', 'Debug' => '5'), $pluginName, '', ''); ?></div>
             </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-5">
+                    <strong>Highlight video quality</strong>
+                    <div class="text-muted small">Chooses among the video renditions ESPN already provides. The Pi does not transcode video.</div>
+                </div>
+                <div class="col-md-7">
+                    <?php PrintSettingSelect(
+                        'HighlightQuality',
+                        'HighlightQuality',
+                        0,
+                        0,
+                        'low',
+                        array(
+                            'Data Saver — prefer mobile / ~360p' => 'low',
+                            'Balanced — prefer standard / ~480–540p' => 'medium',
+                            'Best Available — prefer HD' => 'best'
+                        ),
+                        $pluginName,
+                        '',
+                        ''
+                    ); ?>
+                    <div class="text-muted small mt-1">Data Saver is recommended for Pi Zero / Wi-Fi. If ESPN exposes only one MP4, that source is used.</div>
+                </div>
+            </div>
         </div>
     </div>
 

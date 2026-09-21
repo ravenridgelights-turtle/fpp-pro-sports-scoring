@@ -17,11 +17,19 @@ function pss_hc_cacheDir() {
     return '/home/fpp/media/cache/fpp-nfl-highlights';
 }
 
+function pss_hc_quality() {
+    $quality = function_exists('pss_pluginSetting')
+        ? strtolower(trim((string)pss_pluginSetting('HighlightQuality', 'low')))
+        : 'low';
+    return in_array($quality, array('low', 'medium', 'best'), true) ? $quality : 'low';
+}
+
 function pss_hc_file($league, $slot, $eventID, $clipID) {
     return pss_hc_cacheDir() . '/'
         . pss_hc_safe(strtolower($league)) . '-'
         . (((int)$slot === 2) ? 2 : 1) . '-'
         . pss_hc_safe($eventID) . '-'
+        . pss_hc_safe(pss_hc_quality()) . '-'
         . pss_hc_safe($clipID) . '.mp4';
 }
 
@@ -163,10 +171,90 @@ if (function_exists('pss_pluginSetting') && pss_pluginSetting('ENABLED', 'OFF') 
 }
 
 $supported = array('nfl', 'ncaa', 'nhl', 'mlb');
+$backgroundKeepPerTeam = 2;
+$maxCachedPerCurrentEvent = 3;
 $keepFiles = array();
-$keepPerTeam = 2;
-$downloadBudget = 1;
+$currentEventPrefixes = array();
+$backgroundCandidates = array();
+$allItemsBySlot = array();
 
+function pss_hc_priorityRequestPath() {
+    return pss_hc_cacheDir() . '/priority-request.json';
+}
+
+function pss_hc_readPriorityRequest() {
+    $path = pss_hc_priorityRequestPath();
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if ($raw === false || $raw === '') return array();
+    $data = json_decode($raw, true);
+    if (!is_array($data)) return array();
+
+    $requestedAt = isset($data['requestedAt']) ? (int)$data['requestedAt'] : 0;
+    if ($requestedAt <= 0 || (time() - $requestedAt) > 600) {
+        @unlink($path);
+        return array();
+    }
+    return $data;
+}
+
+function pss_hc_clearPriorityRequest($expectedClipID = '') {
+    $path = pss_hc_priorityRequestPath();
+    if (!is_file($path)) return;
+    if ($expectedClipID !== '') {
+        $data = pss_hc_readPriorityRequest();
+        if (isset($data['clipID']) && (string)$data['clipID'] !== (string)$expectedClipID) {
+            return;
+        }
+    }
+    @unlink($path);
+}
+
+function pss_hc_candidateFromItem($league, $slot, $eventID, $item) {
+    if (!is_array($item)) return null;
+    $clipID = isset($item['id']) ? trim((string)$item['id']) : '';
+    if ($clipID === '') return null;
+
+    $upstream = '';
+    $sourcePath = '';
+
+    if (isset($item['upstreamMediaSources']) && is_array($item['upstreamMediaSources'])) {
+        foreach ($item['upstreamMediaSources'] as $source) {
+            if (!is_array($source)) continue;
+            $candidateUrl = isset($source['url']) ? trim((string)$source['url']) : '';
+            if ($candidateUrl !== '' && preg_match('/^https:\/\/[^ ]+\.mp4(?:\?|$)/i', $candidateUrl)) {
+                $upstream = $candidateUrl;
+                $sourcePath = isset($source['path']) ? (string)$source['path'] : '';
+                break;
+            }
+        }
+    }
+
+    if ($upstream === '') {
+        $candidateUrl = isset($item['upstreamMediaUrl']) ? trim((string)$item['upstreamMediaUrl']) : '';
+        if ($candidateUrl !== '' && preg_match('/^https:\/\/[^ ]+\.mp4(?:\?|$)/i', $candidateUrl)) {
+            $upstream = $candidateUrl;
+            $sourcePath = isset($item['selectedSourcePath']) ? (string)$item['selectedSourcePath'] : '';
+        }
+    }
+
+    if ($upstream === '') {
+        return null;
+    }
+
+    return array(
+        'league' => $league,
+        'slot' => (int)$slot,
+        'eventID' => (string)$eventID,
+        'clipID' => $clipID,
+        'upstream' => $upstream,
+        'sourcePath' => $sourcePath,
+        'quality' => pss_hc_quality(),
+        'target' => pss_hc_file($league, $slot, $eventID, $clipID)
+    );
+}
+
+// Discover all current slots first. No downloads happen during discovery.
 foreach ($supported as $league) {
     foreach (array(1, 2) as $slot) {
         $prefix = pss_teamPrefix($league, $slot);
@@ -174,11 +262,12 @@ foreach ($supported as $league) {
         $eventID = function_exists('pss_pluginSetting') ? urldecode((string)pss_pluginSetting($prefix . 'TeamNextEventID', '')) : '';
         $state = function_exists('pss_pluginSetting') ? urldecode((string)pss_pluginSetting($prefix . 'GameStatus', '')) : '';
 
-        if ($teamID === '' || $eventID === '') continue;
+        if ($teamID === '' || $eventID === '' || $state === 'pre') continue;
 
-        // No useful video exists before a game has begun. Once a game is live or final,
-        // continuously look for new clips in the background.
-        if ($state === 'pre') continue;
+        $slotKey = $league . ':' . $slot;
+        $currentEventPrefixes[] = pss_hc_cacheDir() . '/'
+            . pss_hc_safe($league) . '-' . $slot . '-' . pss_hc_safe($eventID) . '-'
+            . pss_hc_safe(pss_hc_quality()) . '-';
 
         $url = 'http://127.0.0.1/plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlights=1&league='
             . rawurlencode($league) . '&slot=' . $slot;
@@ -188,49 +277,151 @@ foreach ($supported as $league) {
             continue;
         }
 
-        $count = 0;
+        $allItemsBySlot[$slotKey] = array(
+            'league' => $league,
+            'slot' => $slot,
+            'eventID' => $eventID,
+            'items' => $data['items']
+        );
+
+        $kept = 0;
         foreach ($data['items'] as $item) {
-            if ($count >= $keepPerTeam) break;
-            if (!is_array($item)) continue;
+            $candidate = pss_hc_candidateFromItem($league, $slot, $eventID, $item);
+            if (!is_array($candidate)) continue;
 
-            $clipID = isset($item['id']) ? trim((string)$item['id']) : '';
-            if ($clipID === '') continue;
-
-            $upstream = isset($item['upstreamMediaUrl']) ? trim((string)$item['upstreamMediaUrl']) : '';
-            if ($upstream === '' && isset($item['upstreamMediaSources'][0]['url'])) {
-                $upstream = trim((string)$item['upstreamMediaSources'][0]['url']);
-            }
-            if ($upstream === '' || !preg_match('/^https:\/\/[^ ]+\.mp4(?:\?|$)/i', $upstream)) {
-                continue;
-            }
-
-            $target = pss_hc_file($league, $slot, $eventID, $clipID);
-            $keepFiles[$target] = true;
-            $count++;
-
-            if (is_file($target) && filesize($target) > 1024) {
-                continue;
-            }
-
-            // Strict serialization on low-power FPP: at most ONE new video is
-            // downloaded per worker invocation. Other missing clips wait until
-            // the next 45-second pass.
-            if ($downloadBudget <= 0) {
-                continue;
-            }
-
-            $downloadBudget--;
-            pss_hc_log($league . ' slot ' . $slot . ' caching clip ' . $clipID . ' at low priority');
-            if (pss_hc_download($upstream, $target)) {
-                pss_hc_log($league . ' slot ' . $slot . ' cached clip ' . $clipID . ' (' . filesize($target) . ' bytes)');
-            } else {
-                pss_hc_log($league . ' slot ' . $slot . ' failed to cache clip ' . $clipID);
+            if ($kept < $backgroundKeepPerTeam) {
+                $keepFiles[$candidate['target']] = true;
+                $backgroundCandidates[] = $candidate;
+                $kept++;
             }
         }
     }
 }
 
-pss_hc_cleanup($keepFiles);
+// Most recently selected uncached clip gets first priority, even if it is an older
+// history item outside the two automatic background clips.
+$priority = pss_hc_readPriorityRequest();
+$selected = null;
+if (!empty($priority['league']) && !empty($priority['clipID'])) {
+    $league = strtolower((string)$priority['league']);
+    $slot = ((int)$priority['slot'] === 2) ? 2 : 1;
+    $eventID = isset($priority['eventID']) ? (string)$priority['eventID'] : '';
+    $clipID = (string)$priority['clipID'];
+    $slotKey = $league . ':' . $slot;
+
+    if (isset($allItemsBySlot[$slotKey])
+        && (string)$allItemsBySlot[$slotKey]['eventID'] === $eventID) {
+        foreach ($allItemsBySlot[$slotKey]['items'] as $item) {
+            if (isset($item['id']) && (string)$item['id'] === $clipID) {
+                $candidate = pss_hc_candidateFromItem($league, $slot, $eventID, $item);
+                if (is_array($candidate)) {
+                    $keepFiles[$candidate['target']] = true;
+                    if (is_file($candidate['target']) && filesize($candidate['target']) > 1024) {
+                        @touch($candidate['target']);
+                        pss_hc_clearPriorityRequest($clipID);
+                    } else {
+                        $selected = $candidate;
+                    }
+                } else {
+                    pss_hc_clearPriorityRequest($clipID);
+                }
+                break;
+            }
+        }
+    } else {
+        // Event/team changed; don't keep a stale request forever.
+        pss_hc_clearPriorityRequest($clipID);
+    }
+}
+
+// No priority click waiting: choose ONE automatic background candidate fairly.
+// Persisting a cursor prevents NFL Team 1 from starving MLB/NHL/NCAA forever.
+if (!is_array($selected) && !empty($backgroundCandidates)) {
+    $missing = array();
+    foreach ($backgroundCandidates as $candidate) {
+        if (!is_file($candidate['target']) || filesize($candidate['target']) <= 1024) {
+            $missing[] = $candidate;
+        }
+    }
+
+    if (!empty($missing)) {
+        $cursorPath = pss_hc_cacheDir() . '/background-cursor.txt';
+        $cursor = is_file($cursorPath) ? max(0, (int)@file_get_contents($cursorPath)) : 0;
+        $index = $cursor % count($missing);
+        $selected = $missing[$index];
+        @file_put_contents($cursorPath, (string)(($index + 1) % max(1, count($missing))), LOCK_EX);
+    }
+}
+
+if (is_array($selected)) {
+    pss_hc_log($selected['league'] . ' slot ' . $selected['slot']
+        . ' caching clip ' . $selected['clipID']
+        . ' quality=' . $selected['quality']
+        . ($selected['sourcePath'] !== '' ? ' source=' . $selected['sourcePath'] : '')
+        . ' at low priority');
+
+    if (pss_hc_download($selected['upstream'], $selected['target'])) {
+        @touch($selected['target']);
+        $keepFiles[$selected['target']] = true;
+        pss_hc_log($selected['league'] . ' slot ' . $selected['slot']
+            . ' cached clip ' . $selected['clipID'] . ' (' . filesize($selected['target']) . ' bytes)');
+
+        if (!empty($priority['clipID']) && (string)$priority['clipID'] === (string)$selected['clipID']) {
+            pss_hc_clearPriorityRequest($selected['clipID']);
+        }
+    } else {
+        pss_hc_log($selected['league'] . ' slot ' . $selected['slot']
+            . ' failed to cache clip ' . $selected['clipID']);
+        // Don't let one permanently bad clip starve every other sport.
+        if (!empty($priority['clipID']) && (string)$priority['clipID'] === (string)$selected['clipID']) {
+            pss_hc_clearPriorityRequest($selected['clipID']);
+        }
+    }
+}
+
+// LRU cleanup:
+// - delete old-event files immediately;
+// - for each current event keep at most 3 complete clips, newest/recently-viewed first.
+$allCached = glob(pss_hc_cacheDir() . '/*.mp4');
+if (is_array($allCached)) {
+    $groups = array();
+    foreach ($allCached as $file) {
+        $matchedPrefix = '';
+        foreach ($currentEventPrefixes as $prefix) {
+            if (strpos($file, $prefix) === 0) {
+                $matchedPrefix = $prefix;
+                break;
+            }
+        }
+        if ($matchedPrefix === '') {
+            @unlink($file);
+            continue;
+        }
+        if (!isset($groups[$matchedPrefix])) $groups[$matchedPrefix] = array();
+        $groups[$matchedPrefix][] = $file;
+    }
+
+    foreach ($groups as $prefix => $files) {
+        usort($files, function ($a, $b) {
+            $ma = (int)@filemtime($a);
+            $mb = (int)@filemtime($b);
+            if ($ma === $mb) return strcmp($a, $b);
+            return ($ma > $mb) ? -1 : 1;
+        });
+        foreach ($files as $index => $file) {
+            if ($index >= $maxCachedPerCurrentEvent) {
+                @unlink($file);
+            }
+        }
+    }
+}
+
+foreach (glob(pss_hc_cacheDir() . '/*.part') ?: array() as $part) {
+    if ((time() - (int)@filemtime($part)) > 900) {
+        @unlink($part);
+    }
+}
+
 
 @flock($lock, LOCK_UN);
 fclose($lock);
