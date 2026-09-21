@@ -415,10 +415,15 @@ function pss_getOverlayModels() {
             continue;
         }
         list($width, $height) = pss_overlayModelDimensions($model);
+        $orientation = isset($model['Orientation']) ? trim((string)$model['Orientation']) : '';
+        $startCorner = isset($model['StartCorner']) ? trim((string)$model['StartCorner']) : '';
         $result[$name] = array(
             'name' => $name,
             'width' => $width,
-            'height' => $height
+            'height' => $height,
+            'orientation' => $orientation,
+            'startCorner' => $startCorner,
+            'xlights' => !empty($model['xLights'])
         );
     }
 

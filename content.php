@@ -5,6 +5,7 @@ $pluginName = basename(dirname(__FILE__));
 $pluginSettings = pss_loadPluginSettings();
 $pssSequenceOptions = pss_getSequences();
 $pssOverlayModels = pss_getOverlayCommandModels();
+$pssOverlayGeometry = pss_getOverlayModels();
 $pssOverlayFonts = pss_getOverlayFonts();
 
 function pss_currentValue($key, $default = '') {
@@ -66,6 +67,22 @@ function pss_currentValue($key, $default = '') {
 }
 .pss-ticker-preview-separator {
     opacity: .65;
+}
+.pss-overlay-geometry-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    align-items: center;
+    padding: 10px 12px;
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 4px;
+    background: rgba(255,255,255,.025);
+}
+.pss-overlay-geometry-item {
+    white-space: nowrap;
+}
+.pss-overlay-geometry-actions {
+    margin-left: auto;
 }
 .pss-ticker-actions {
     display: flex;
@@ -216,6 +233,20 @@ function pss_currentValue($key, $default = '') {
                             <?php endforeach; ?>
                         </select>
                         <?php if (empty($pssOverlayModels)): ?><div class="text-warning small mt-1">FPP did not return any Pixel Overlay Models from its command model API.</div><?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="row mb-3 align-items-start">
+                    <div class="col-md-4"><strong>FPP Model Geometry</strong><div class="text-muted small">Read-only. FPP/xLights controls how rendered text maps onto the physical pixels.</div></div>
+                    <div class="col-md-8">
+                        <div class="pss-overlay-geometry-panel" id="pss-overlay-geometry-panel">
+                            <span class="pss-overlay-geometry-item">Orientation: <strong id="pss-overlay-geometry-orientation">—</strong></span>
+                            <span class="pss-overlay-geometry-item">Start Corner: <strong id="pss-overlay-geometry-corner">—</strong></span>
+                            <span class="pss-overlay-geometry-item">Size: <strong id="pss-overlay-geometry-size">—</strong></span>
+                            <span class="pss-overlay-geometry-item">Source: <strong id="pss-overlay-geometry-source">—</strong></span>
+                            <span class="pss-overlay-geometry-actions"><a class="btn btn-sm btn-secondary" href="pixeloverlaymodels.php" target="_blank" rel="noopener">Open Pixel Overlay Models</a></span>
+                        </div>
+                        <div id="pss-overlay-geometry-note" class="text-muted small mt-1">If text appears upside down or mirrored, change the selected model's Orientation/Start Corner in FPP. The sports plugin does not alter these values.</div>
                     </div>
                 </div>
 
@@ -462,6 +493,52 @@ function pssCelebrationDelayChanged(setting, input) {
     });
 }
 
+var pssOverlayGeometry = <?=json_encode($pssOverlayGeometry, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>;
+
+function pssOverlayCornerLabel(value) {
+    var labels = { TL: 'Top Left', TR: 'Top Right', BL: 'Bottom Left', BR: 'Bottom Right' };
+    var key = String(value || '').trim();
+    return labels[key.toUpperCase()] || key || 'Unknown';
+}
+
+function pssOverlayOrientationLabel(value) {
+    var text = String(value || '').trim();
+    if (!text) return 'Unknown';
+    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
+}
+
+function pssUpdateOverlayGeometry() {
+    var select = document.getElementById('pss-ticker-model');
+    var model = select ? select.value : '';
+    var info = model && pssOverlayGeometry ? pssOverlayGeometry[model] : null;
+    var orientation = document.getElementById('pss-overlay-geometry-orientation');
+    var corner = document.getElementById('pss-overlay-geometry-corner');
+    var size = document.getElementById('pss-overlay-geometry-size');
+    var source = document.getElementById('pss-overlay-geometry-source');
+    var note = document.getElementById('pss-overlay-geometry-note');
+
+    if (!info) {
+        if (orientation) orientation.textContent = 'Unknown';
+        if (corner) corner.textContent = 'Unknown';
+        if (size) size.textContent = 'Unknown';
+        if (source) source.textContent = 'FPP runtime model';
+        if (note) note.textContent = model
+            ? 'This model is returned by FPP but its saved geometry was not found in model-overlays.json. Open Pixel Overlay Models to inspect it.'
+            : 'Select a model to display its FPP geometry.';
+        return;
+    }
+
+    if (orientation) orientation.textContent = pssOverlayOrientationLabel(info.orientation);
+    if (corner) corner.textContent = pssOverlayCornerLabel(info.startCorner);
+    if (size) {
+        var w = parseInt(info.width || 0, 10);
+        var h = parseInt(info.height || 0, 10);
+        size.textContent = (w > 0 && h > 0) ? (w + ' × ' + h) : 'Unknown';
+    }
+    if (source) source.textContent = info.xlights ? 'xLights' : 'FPP';
+    if (note) note.textContent = 'Text orientation comes from this FPP model. If text is upside down or mirrored, adjust Orientation/Start Corner in Pixel Overlay Models; the sports plugin leaves geometry unchanged.';
+}
+
 function pssTickerFormData(action) {
     var form = document.getElementById('pss-ticker-form');
     var data = $(form).serializeArray();
@@ -559,6 +636,12 @@ function pssClearTicker() {
         pssTickerMessage('Unable to clear ticker. Check the plugin log.', true);
     });
 }
+
+document.addEventListener('DOMContentLoaded', function () {
+    var modelSelect = document.getElementById('pss-ticker-model');
+    if (modelSelect) modelSelect.addEventListener('change', pssUpdateOverlayGeometry);
+    pssUpdateOverlayGeometry();
+});
 
 <?php foreach ($leagues as $league): ?>
 function update<?=strtoupper($league)?>Team() {
