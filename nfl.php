@@ -14,6 +14,7 @@ function pss_initializePluginDefaults() {
         'TickerKioskEnabled' => 'ON',
         'TickerStyle' => 'normal',
         'TickerWebSpeed' => '90',
+        'TickerSpacing' => '4',
         'TickerOverlayEnabled' => 'OFF',
         'TickerOverlayModel' => '',
         'TickerWidth' => '128',
@@ -61,6 +62,7 @@ function pss_initializePluginDefaults() {
     foreach ($leagues as $league) {
         foreach (array(1, 2) as $slot) {
             $defaults[pss_tickerIncludeSetting($league, $slot)] = 'ON';
+            $defaults[pss_tickerColorSetting($league, $slot)] = '#FFFFFF';
         }
     }
 

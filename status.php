@@ -136,6 +136,8 @@ function pss_statusSnapshotData() {
             'enabled' => pss_statusValue('TickerEnabled', 'OFF') === 'ON',
             'kioskEnabled' => pss_statusValue('TickerKioskEnabled', 'ON') === 'ON',
             'webSpeed' => max(20, min(300, (int)pss_statusValue('TickerWebSpeed', '90'))),
+            'spacing' => pss_tickerSpacing(),
+            'items' => pss_buildTickerItems(false),
             'text' => pss_buildTickerText(false)
         )
     );
@@ -527,11 +529,23 @@ if ($pssDataMode) {
     will-change: transform;
     animation: pssTickerScroll var(--pss-ticker-duration) linear infinite;
 }
-.pss-kiosk-ticker-text {
-    display: inline-block;
+.pss-kiosk-ticker-content {
+    display: inline-flex;
+    align-items: center;
+    width: max-content;
+    white-space: nowrap;
     font-size: 1.02rem;
     font-weight: 750;
     letter-spacing: 0.015em;
+}
+.pss-kiosk-ticker-segment {
+    display: inline-block;
+}
+.pss-kiosk-ticker-separator {
+    display: inline-block;
+    opacity: .62;
+    margin-left: var(--pss-ticker-gap, 1.4em);
+    margin-right: var(--pss-ticker-gap, 1.4em);
 }
 @keyframes pssTickerScroll {
     from { transform: translateX(var(--pss-ticker-start)); }
@@ -711,12 +725,22 @@ body {
     <?php
         $pssTickerVisible = pss_statusValue('TickerEnabled', 'OFF') === 'ON' && pss_statusValue('TickerKioskEnabled', 'ON') === 'ON';
         $pssTickerText = pss_buildTickerText(false);
+        $pssTickerItems = pss_buildTickerItems(false);
+        $pssTickerSpacing = pss_tickerSpacing();
+        $pssTickerGapEm = number_format($pssTickerSpacing * 0.35, 2, '.', '');
         $pssTickerWebSpeed = max(20, min(300, (int)pss_statusValue('TickerWebSpeed', '90')));
     ?>
-    <div id="pss-kiosk-ticker" class="pss-kiosk-ticker" data-speed="<?=intval($pssTickerWebSpeed)?>"<?=$pssTickerVisible ? '' : ' style="display:none"'?> aria-label="Sports score ticker">
+    <div id="pss-kiosk-ticker" class="pss-kiosk-ticker" data-speed="<?=intval($pssTickerWebSpeed)?>" data-spacing="<?=intval($pssTickerSpacing)?>"<?=$pssTickerVisible ? '' : ' style="display:none"'?> aria-label="Sports score ticker">
         <div class="pss-kiosk-ticker-window">
             <div class="pss-kiosk-ticker-track">
-                <span class="pss-kiosk-ticker-text" data-pss-ticker-copy="1"><?=htmlspecialchars($pssTickerText)?></span>
+                <span class="pss-kiosk-ticker-content" data-pss-ticker-content="1" style="--pss-ticker-gap:<?=$pssTickerGapEm?>em;">
+                <?php if (empty($pssTickerItems)): ?>
+                    <span class="pss-kiosk-ticker-segment"><?=htmlspecialchars($pssTickerText)?></span>
+                <?php else: foreach ($pssTickerItems as $pssTickerIndex => $pssTickerItem): ?>
+                    <?php if ($pssTickerIndex > 0): ?><span class="pss-kiosk-ticker-separator">•</span><?php endif; ?>
+                    <span class="pss-kiosk-ticker-segment" style="color:<?=htmlspecialchars($pssTickerItem['color'], ENT_QUOTES)?>"><?=htmlspecialchars($pssTickerItem['text'])?></span>
+                <?php endforeach; endif; ?>
+                </span>
             </div>
         </div>
     </div>
@@ -736,27 +760,78 @@ function pssKioskFullscreen() {
     var refreshNote = document.querySelector('.pss-kiosk-refresh-note');
 
     var ticker = document.getElementById('pss-kiosk-ticker');
+    var tickerState = {
+        text: <?=json_encode($pssTickerText)?>,
+        items: <?=json_encode($pssTickerItems)?>,
+        speed: <?=intval($pssTickerWebSpeed)?>,
+        spacing: <?=intval($pssTickerSpacing)?>
+    };
 
-    function updateTickerAnimation(text, speed) {
+    function tickerGapEm(spacing) {
+        var safeSpacing = Math.max(1, Math.min(12, parseInt(spacing || 4, 10)));
+        return (safeSpacing * 0.35).toFixed(2) + 'em';
+    }
+
+    function renderTickerItems(items, fallbackText, spacing) {
+        if (!ticker) return null;
+
+        var content = ticker.querySelector('[data-pss-ticker-content="1"]');
+        if (!content) return null;
+
+        while (content.firstChild) {
+            content.removeChild(content.firstChild);
+        }
+
+        content.style.setProperty('--pss-ticker-gap', tickerGapEm(spacing));
+
+        if (!items || !items.length) {
+            var emptySegment = document.createElement('span');
+            emptySegment.className = 'pss-kiosk-ticker-segment';
+            emptySegment.textContent = fallbackText || 'PRO SPORTS SCORING • NO SELECTED TEAMS';
+            content.appendChild(emptySegment);
+            return content;
+        }
+
+        for (var i = 0; i < items.length; i++) {
+            if (i > 0) {
+                var separator = document.createElement('span');
+                separator.className = 'pss-kiosk-ticker-separator';
+                separator.textContent = '•';
+                content.appendChild(separator);
+            }
+
+            var segment = document.createElement('span');
+            segment.className = 'pss-kiosk-ticker-segment';
+            segment.textContent = String(items[i].text || '');
+            var color = String(items[i].color || '');
+            if (/^#[0-9A-Fa-f]{6}$/.test(color)) {
+                segment.style.color = color;
+            }
+            content.appendChild(segment);
+        }
+
+        return content;
+    }
+
+    function updateTickerAnimation(text, speed, items, spacing) {
         if (!ticker) return;
 
-        var first = ticker.querySelector('[data-pss-ticker-copy="1"]');
         var track = ticker.querySelector('.pss-kiosk-ticker-track');
         var windowEl = ticker.querySelector('.pss-kiosk-ticker-window');
-        if (!track || !first || !windowEl) return;
+        var content = renderTickerItems(items, text, spacing);
+        if (!track || !content || !windowEl) return;
 
-        first.textContent = text || '';
         ticker.setAttribute('data-speed', String(speed || 90));
+        ticker.setAttribute('data-spacing', String(spacing || 4));
 
         window.requestAnimationFrame(function () {
             /*
              * Move one complete ticker message from fully off-screen on the
-             * right to fully off-screen on the left.  The animation resets
-             * only while the text is invisible, so short score strings no
-             * longer jump/repeat in the middle of the display.
+             * right to fully off-screen on the left. The reset happens only
+             * while the content is invisible.
              */
             var windowWidth = Math.max(1, windowEl.getBoundingClientRect().width);
-            var textWidth = Math.max(1, first.getBoundingClientRect().width);
+            var textWidth = Math.max(1, content.getBoundingClientRect().width);
             var pxPerSecond = Math.max(20, Math.min(300, parseInt(speed || 90, 10)));
             var travel = windowWidth + textWidth;
             var duration = Math.max(6, travel / pxPerSecond);
@@ -846,13 +921,23 @@ function pssKioskFullscreen() {
             var showTicker = !!snapshot.ticker.enabled && !!snapshot.ticker.kioskEnabled;
             ticker.style.display = showTicker ? '' : 'none';
             if (showTicker) {
-                var oldText = ticker.getAttribute('data-current-text') || '';
                 var newText = String(snapshot.ticker.text || '');
                 var newSpeed = parseInt(snapshot.ticker.webSpeed || 90, 10);
-                var oldSpeed = parseInt(ticker.getAttribute('data-speed') || '90', 10);
-                if (oldText !== newText || oldSpeed !== newSpeed) {
-                    ticker.setAttribute('data-current-text', newText);
-                    updateTickerAnimation(newText, newSpeed);
+                var newSpacing = parseInt(snapshot.ticker.spacing || 4, 10);
+                var newItems = Array.isArray(snapshot.ticker.items) ? snapshot.ticker.items : [];
+                var newSignature = JSON.stringify(newItems) + '|' + newText + '|' + newSpeed + '|' + newSpacing;
+                var oldSignature = ticker.getAttribute('data-current-signature') || '';
+
+                tickerState = {
+                    text: newText,
+                    items: newItems,
+                    speed: newSpeed,
+                    spacing: newSpacing
+                };
+
+                if (oldSignature !== newSignature) {
+                    ticker.setAttribute('data-current-signature', newSignature);
+                    updateTickerAnimation(newText, newSpeed, newItems, newSpacing);
                 }
             }
         }
@@ -884,10 +969,9 @@ function pssKioskFullscreen() {
     }
 
     if (ticker && ticker.style.display !== 'none') {
-        var initialText = ticker.querySelector('[data-pss-ticker-copy="1"]');
-        var initialValue = initialText ? initialText.textContent : '';
-        ticker.setAttribute('data-current-text', initialValue);
-        updateTickerAnimation(initialValue, parseInt(ticker.getAttribute('data-speed') || '90', 10));
+        var initialSignature = JSON.stringify(tickerState.items) + '|' + tickerState.text + '|' + tickerState.speed + '|' + tickerState.spacing;
+        ticker.setAttribute('data-current-signature', initialSignature);
+        updateTickerAnimation(tickerState.text, tickerState.speed, tickerState.items, tickerState.spacing);
     }
 
     var resizeTimer = null;
@@ -895,11 +979,7 @@ function pssKioskFullscreen() {
         if (!ticker || ticker.style.display === 'none') return;
         window.clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(function () {
-            var current = ticker.querySelector('[data-pss-ticker-copy="1"]');
-            updateTickerAnimation(
-                current ? current.textContent : '',
-                parseInt(ticker.getAttribute('data-speed') || '90', 10)
-            );
+            updateTickerAnimation(tickerState.text, tickerState.speed, tickerState.items, tickerState.spacing);
         }, 150);
     });
 

@@ -39,10 +39,32 @@ function pss_currentValue($key, $default = '') {
     gap: 8px 14px;
 }
 .pss-ticker-team-option {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 42px;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+}
+.pss-ticker-team-check {
     display: flex;
     align-items: center;
     gap: 7px;
     min-width: 0;
+    margin: 0;
+}
+.pss-ticker-team-color {
+    width: 40px !important;
+    min-width: 40px;
+    height: 34px;
+    padding: 2px;
+}
+.pss-ticker-preview-items {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+}
+.pss-ticker-preview-separator {
+    opacity: .65;
 }
 .pss-ticker-actions {
     display: flex;
@@ -126,7 +148,14 @@ function pss_currentValue($key, $default = '') {
                             $tickerTeamName = pss_currentValue($tickerPrefix . 'TeamName', '');
                             $tickerOptionLabel = $tickerLeagueLabel . ' Team ' . $tickerSlot . ($tickerTeamName !== '' ? ' — ' . $tickerTeamName : '');
                         ?>
-                            <label class="pss-ticker-team-option"><input type="checkbox" name="<?=htmlspecialchars($tickerKey)?>" value="ON" <?=pss_currentValue($tickerKey, 'ON') === 'ON' ? 'checked' : ''?>> <span><?=htmlspecialchars($tickerOptionLabel)?></span></label>
+                            <?php $tickerColorKey = pss_tickerColorSetting($tickerLeague, $tickerSlot); ?>
+                            <div class="pss-ticker-team-option">
+                                <label class="pss-ticker-team-check">
+                                    <input type="checkbox" name="<?=htmlspecialchars($tickerKey)?>" value="ON" <?=pss_currentValue($tickerKey, 'ON') === 'ON' ? 'checked' : ''?>>
+                                    <span><?=htmlspecialchars($tickerOptionLabel)?></span>
+                                </label>
+                                <input class="form-control pss-ticker-team-color" type="color" name="<?=htmlspecialchars($tickerColorKey)?>" value="<?=htmlspecialchars(pss_currentValue($tickerColorKey, '#FFFFFF'))?>" title="Ticker color for <?=htmlspecialchars($tickerOptionLabel, ENT_QUOTES)?>">
+                            </div>
                         <?php endforeach; endforeach; ?>
                         </div>
                     </div>
@@ -144,6 +173,12 @@ function pss_currentValue($key, $default = '') {
                     </div>
                     <div class="col-md-2"><strong>Web speed</strong><div class="text-muted small">pixels/sec</div></div>
                     <div class="col-md-2"><input class="form-control" type="number" min="20" max="300" name="TickerWebSpeed" value="<?=htmlspecialchars(pss_currentValue('TickerWebSpeed', '90'))?>"></div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Item spacing</strong><div class="text-muted small">Adds more breathing room between each team's ticker item. Also adds spacing to Pixel Overlay text.</div></div>
+                    <div class="col-md-2"><input class="form-control" type="number" min="1" max="12" name="TickerSpacing" value="<?=htmlspecialchars(pss_currentValue('TickerSpacing', '4'))?>"></div>
+                    <div class="col-md-6 text-muted small">1 = tight, 4 = comfortable, 12 = extra wide. Team colors below apply to the web/kiosk ticker; Pixel Overlay output still uses its single Text color setting.</div>
                 </div>
 
                 <hr>
@@ -195,7 +230,21 @@ function pss_currentValue($key, $default = '') {
                     <button type="button" class="btn btn-secondary" onclick="pssClearTicker()">Clear Pixel Ticker</button>
                 </div>
                 <div id="pss-ticker-message" class="pss-ticker-message text-muted" role="status" aria-live="polite"></div>
-                <div class="pss-ticker-preview"><strong>Current ticker preview:</strong> <span id="pss-ticker-preview-text"><?=htmlspecialchars(pss_buildTickerText(false))?></span></div>
+                <?php
+                    $pssPreviewItems = pss_buildTickerItems(false);
+                    $pssPreviewSpacing = pss_tickerSpacing();
+                ?>
+                <div class="pss-ticker-preview">
+                    <strong>Current ticker preview:</strong>
+                    <span id="pss-ticker-preview-text" class="pss-ticker-preview-items" data-spacing="<?=intval($pssPreviewSpacing)?>">
+                    <?php if (empty($pssPreviewItems)): ?>
+                        <span>PRO SPORTS SCORING • NO SELECTED TEAMS</span>
+                    <?php else: foreach ($pssPreviewItems as $pssPreviewIndex => $pssPreviewItem): ?>
+                        <?php if ($pssPreviewIndex > 0): ?><span class="pss-ticker-preview-separator" style="margin:0 <?=htmlspecialchars(number_format($pssPreviewSpacing * 0.35, 2, '.', ''))?>em;">•</span><?php endif; ?>
+                        <span style="color:<?=htmlspecialchars($pssPreviewItem['color'], ENT_QUOTES)?>"><?=htmlspecialchars($pssPreviewItem['text'])?></span>
+                    <?php endforeach; endif; ?>
+                    </span>
+                </div>
             </form>
         </div>
     </div>
@@ -206,8 +255,11 @@ function pss_currentValue($key, $default = '') {
         $teamOptions = pss_getTeams($meta['sport'], $league);
         $prefix1 = pss_teamPrefix($league, 1);
         $prefix2 = pss_teamPrefix($league, 2);
-        $callback1 = 'update' . strtoupper($league) . 'Team';
-        $callback2 = 'update' . strtoupper($league) . 'Team2';
+        // Team changes are handled below with the selected ID sent explicitly.
+        // Leaving the FPP callback empty avoids a race where the plugin reads
+        // the previous TeamID before FPP's own AJAX setting save completes.
+        $callback1 = '';
+        $callback2 = '';
     ?>
     <div class="card mb-3">
         <div class="card-body">
@@ -289,6 +341,37 @@ function pss_currentValue($key, $default = '') {
 </div>
 
 <script>
+function pssTeamSelectionChanged(league, slot, selectElement) {
+    var teamID = selectElement ? selectElement.value : '';
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: {
+            action: 'updateTeamSelection',
+            league: league,
+            slot: slot,
+            teamID: teamID
+        },
+        type: 'post'
+    });
+}
+
+$(function() {
+    var teamSelects = [
+        ['nfl', 1, 'nflTeamID'], ['nfl', 2, 'nfl2TeamID'],
+        ['ncaa', 1, 'ncaaTeamID'], ['ncaa', 2, 'ncaa2TeamID'],
+        ['nhl', 1, 'nhlTeamID'], ['nhl', 2, 'nhl2TeamID'],
+        ['mlb', 1, 'mlbTeamID'], ['mlb', 2, 'mlb2TeamID']
+    ];
+
+    teamSelects.forEach(function(config) {
+        var select = document.getElementById(config[2]);
+        if (!select) return;
+        $(select).off('change.pssTeamSelection').on('change.pssTeamSelection', function() {
+            pssTeamSelectionChanged(config[0], config[1], this);
+        });
+    });
+});
+
 function pssSequenceChanged(setting) {
     $.ajax({
         url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
@@ -330,6 +413,37 @@ function pssTickerMessage(text, isError) {
     el.className = 'pss-ticker-message ' + (isError ? 'text-danger' : 'text-success');
 }
 
+function pssRenderTickerPreview(items, fallbackText, spacing) {
+    var root = document.getElementById('pss-ticker-preview-text');
+    if (!root) return;
+    while (root.firstChild) root.removeChild(root.firstChild);
+
+    var safeSpacing = Math.max(1, Math.min(12, parseInt(spacing || 4, 10)));
+    if (!items || !items.length) {
+        var empty = document.createElement('span');
+        empty.textContent = fallbackText || 'PRO SPORTS SCORING • NO SELECTED TEAMS';
+        root.appendChild(empty);
+        return;
+    }
+
+    for (var i = 0; i < items.length; i++) {
+        if (i > 0) {
+            var separator = document.createElement('span');
+            separator.className = 'pss-ticker-preview-separator';
+            separator.textContent = '•';
+            separator.style.margin = '0 ' + (safeSpacing * 0.35).toFixed(2) + 'em';
+            root.appendChild(separator);
+        }
+
+        var segment = document.createElement('span');
+        segment.textContent = String(items[i].text || '');
+        if (/^#[0-9A-Fa-f]{6}$/.test(String(items[i].color || ''))) {
+            segment.style.color = items[i].color;
+        }
+        root.appendChild(segment);
+    }
+}
+
 function pssSaveTickerSettings(event) {
     if (event) event.preventDefault();
     pssTickerMessage('Saving ticker settings…', false);
@@ -341,7 +455,7 @@ function pssSaveTickerSettings(event) {
     }).done(function (response) {
         pssTickerMessage(response && response.message ? response.message : 'Ticker settings saved.', !(response && response.ok));
         if (response && response.tickerText) {
-            $('#pss-ticker-preview-text').text(response.tickerText);
+            pssRenderTickerPreview(response.tickerItems || [], response.tickerText, response.tickerSpacing || 4);
         }
     }).fail(function () {
         pssTickerMessage('Unable to save ticker settings. Check the plugin log.', true);

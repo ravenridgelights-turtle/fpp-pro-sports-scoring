@@ -42,6 +42,19 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
             pss_updateTeam('baseball', 'mlb', 2);
             pss_updateTickerOutput(true);
             break;
+        case 'updateTeamSelection':
+            $league = isset($_POST['league']) ? strtolower(trim((string)$_POST['league'])) : '';
+            $slot = (isset($_POST['slot']) && (int)$_POST['slot'] === 2) ? 2 : 1;
+            $teamID = isset($_POST['teamID']) ? trim((string)$_POST['teamID']) : '';
+            $info = pss_leagueInfo($league);
+            if ($info['sport'] !== '') {
+                // Use the value sent by the changed select instead of racing the
+                // FPP settings AJAX request.  This keeps helper-playlist names
+                // on the same team the user just selected on FPP 7-10.
+                pss_updateTeam($info['sport'], $league, $slot, $teamID);
+                pss_updateTickerOutput(true);
+            }
+            break;
         case 'syncSequencePlaylist':
             if (isset($_POST['setting'])) {
                 pss_syncGeneratedPlaylistSetting((string)$_POST['setting']);
@@ -414,6 +427,14 @@ function pss_tickerIncludeSetting($league, $slot) {
     return 'TickerInclude' . strtoupper((string)$league) . (((int)$slot === 2) ? '2' : '1');
 }
 
+function pss_tickerColorSetting($league, $slot) {
+    return 'TickerColor' . strtoupper((string)$league) . (((int)$slot === 2) ? '2' : '1');
+}
+
+function pss_tickerSpacing() {
+    return pss_clampInt(pss_pluginSetting('TickerSpacing', '4'), 1, 12, 4);
+}
+
 function pss_tickerLeagueLabel($league) {
     return ($league === 'ncaa') ? 'NCAA' : strtoupper((string)$league);
 }
@@ -443,7 +464,7 @@ function pss_tickerCleanDetail($detail) {
     return $detail;
 }
 
-function pss_buildTickerText($forOverlay = false) {
+function pss_buildTickerItems($forOverlay = false) {
     global $leagues;
 
     $style = strtolower(pss_pluginSetting('TickerStyle', 'normal'));
@@ -452,9 +473,8 @@ function pss_buildTickerText($forOverlay = false) {
     }
 
     $dot = $forOverlay ? ' | ' : ' • ';
-    $between = $forOverlay ? '   |   ' : '   •   ';
+    $items = array();
 
-    $segments = array();
     foreach ($leagues as $league) {
         foreach (array(1, 2) as $slot) {
             if (pss_pluginSetting(pss_tickerIncludeSetting($league, $slot), 'ON') !== 'ON') {
@@ -487,23 +507,45 @@ function pss_buildTickerText($forOverlay = false) {
                 if (!$forOverlay && $detail !== '') {
                     $status = $detail;
                 }
-                $segments[] = $leaguePrefix . $left . ' ' . $myScore . ' - ' . $right . ' ' . $oppoScore . $dot . $status;
+                $segmentText = $leaguePrefix . $left . ' ' . $myScore . ' - ' . $right . ' ' . $oppoScore . $dot . $status;
             } elseif ($state === 'post') {
                 $status = ($detail !== '' && stripos($detail, 'final') !== false) ? $detail : 'FINAL';
-                $segments[] = $leaguePrefix . $left . ' ' . $myScore . ' - ' . $right . ' ' . $oppoScore . $dot . $status;
+                $segmentText = $leaguePrefix . $left . ' ' . $myScore . ' - ' . $right . ' ' . $oppoScore . $dot . $status;
             } elseif ($state === 'pre') {
-                $segments[] = $leaguePrefix . 'NEXT' . $dot . $left . ' vs ' . $right . $dot . $start;
+                $segmentText = $leaguePrefix . 'NEXT' . $dot . $left . ' vs ' . $right . $dot . $start;
             } else {
-                $segments[] = $leaguePrefix . $left . $dot . 'Waiting for ESPN';
+                $segmentText = $leaguePrefix . $left . $dot . 'Waiting for ESPN';
             }
+
+            $items[] = array(
+                'key' => strtoupper((string)$league) . (((int)$slot === 2) ? '2' : '1'),
+                'league' => $leagueLabel,
+                'slot' => (int)$slot,
+                'text' => $segmentText,
+                'color' => pss_normalizeColor(pss_pluginSetting(pss_tickerColorSetting($league, $slot), '#FFFFFF'))
+            );
         }
     }
 
-    if (empty($segments)) {
+    return $items;
+}
+
+function pss_buildTickerText($forOverlay = false) {
+    $items = pss_buildTickerItems($forOverlay);
+    if (empty($items)) {
         return $forOverlay ? 'PRO SPORTS SCORING | NO SELECTED TEAMS' : 'PRO SPORTS SCORING • NO SELECTED TEAMS';
     }
 
-    return implode($between, $segments);
+    $texts = array();
+    foreach ($items as $item) {
+        $texts[] = isset($item['text']) ? (string)$item['text'] : '';
+    }
+
+    $spacing = pss_tickerSpacing();
+    $pad = str_repeat(' ', $spacing);
+    $separator = $forOverlay ? '|' : '•';
+
+    return implode($pad . $separator . $pad, $texts);
 }
 
 function pss_runFppCommand($command, $args) {
@@ -625,6 +667,7 @@ function pss_saveTickerSettings($post) {
         'TickerKioskEnabled' => (isset($post['TickerKioskEnabled']) && (string)$post['TickerKioskEnabled'] === 'ON') ? 'ON' : 'OFF',
         'TickerStyle' => $style,
         'TickerWebSpeed' => (string)pss_clampInt(isset($post['TickerWebSpeed']) ? $post['TickerWebSpeed'] : 90, 20, 300, 90),
+        'TickerSpacing' => (string)pss_clampInt(isset($post['TickerSpacing']) ? $post['TickerSpacing'] : 4, 1, 12, 4),
         'TickerOverlayEnabled' => (isset($post['TickerOverlayEnabled']) && (string)$post['TickerOverlayEnabled'] === 'ON') ? 'ON' : 'OFF',
         'TickerOverlayModel' => isset($post['TickerOverlayModel']) ? trim((string)$post['TickerOverlayModel']) : '',
         'TickerWidth' => (string)pss_clampInt(isset($post['TickerWidth']) ? $post['TickerWidth'] : 128, 1, 4096, 128),
@@ -641,6 +684,9 @@ function pss_saveTickerSettings($post) {
         foreach (array(1, 2) as $slot) {
             $key = pss_tickerIncludeSetting($league, $slot);
             $values[$key] = (isset($post[$key]) && (string)$post[$key] === 'ON') ? 'ON' : 'OFF';
+
+            $colorKey = pss_tickerColorSetting($league, $slot);
+            $values[$colorKey] = pss_normalizeColor(isset($post[$colorKey]) ? $post[$colorKey] : '#FFFFFF');
         }
     }
 
@@ -667,7 +713,9 @@ function pss_saveTickerSettings($post) {
     }
 
     pss_jsonResponse(true, $message, array(
-        'tickerText' => pss_buildTickerText(false)
+        'tickerText' => pss_buildTickerText(false),
+        'tickerItems' => pss_buildTickerItems(false),
+        'tickerSpacing' => pss_tickerSpacing()
     ));
 }
 
@@ -1185,11 +1233,20 @@ function pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo, $slo
     return true;
 }
 
-function pss_updateTeam($sport, $league, $slot = 1) {
+function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     global $pluginSettings;
     $pluginSettings = pss_loadPluginSettings();
     $prefix = pss_teamPrefix($league, $slot);
-    $teamID = pss_pluginSetting("{$prefix}TeamID", '');
+
+    if ($selectedTeamID !== null) {
+        // Team-select callbacks can arrive before FPP's own async setting save
+        // is visible to PHP. Persist and use the value from the browser so the
+        // team metadata and generated playlist name cannot lag one selection.
+        $teamID = trim((string)$selectedTeamID);
+        pss_setPluginSetting("{$prefix}TeamID", $teamID);
+    } else {
+        $teamID = pss_pluginSetting("{$prefix}TeamID", '');
+    }
 
     if ($teamID === '') {
         pss_clearLeagueState($league, true, $slot);
