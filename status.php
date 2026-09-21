@@ -308,11 +308,41 @@ function pss_highlightMediaSources($video) {
     }
 
     usort($sources, function ($a, $b) {
-        // Progressive MP4 must win on legacy FPP browsers. HLS is a fallback for
-        // Safari/iOS and any browser that reports native HLS support.
-        $rankA = ($a['type'] === 'mp4') ? 0 : 1;
-        $rankB = ($b['type'] === 'mp4') ? 0 : 1;
-        if ($rankA === $rankB) return 0;
+        // Keep this simple and Pi-friendly: prefer ESPN's smaller/mobile
+        // progressive MP4 when multiple renditions are exposed. Do not transcode.
+        $score = function ($source) {
+            $type = isset($source['type']) ? strtolower((string)$source['type']) : '';
+            $path = isset($source['path']) ? strtolower((string)$source['path']) : '';
+            $url = isset($source['url']) ? strtolower((string)$source['url']) : '';
+            $text = $path . ' ' . $url;
+
+            // Progressive MP4 always beats HLS on the legacy FPP browsers.
+            $base = ($type === 'mp4') ? 0 : 1000;
+
+            // Prefer explicit low/mobile variants first.
+            if (strpos($text, '240') !== false) return $base + 0;
+            if (strpos($text, '360') !== false) return $base + 1;
+            if (strpos($text, 'mobile') !== false) return $base + 2;
+            if (strpos($text, '480') !== false) return $base + 4;
+            if (strpos($text, '540') !== false) return $base + 6;
+
+            // Standard/full is still preferable to HD/mezzanine for a small
+            // scoreboard window when no mobile label is available.
+            if (strpos($text, '.full') !== false || strpos($text, 'full.') !== false) return $base + 8;
+            if (strpos($text, '720') !== false || strpos($text, '.hd') !== false || strpos($text, '/hd') !== false) return $base + 20;
+            if (strpos($text, '1080') !== false || strpos($text, 'mezzanine') !== false) return $base + 30;
+
+            return $base + 10;
+        };
+
+        $rankA = $score($a);
+        $rankB = $score($b);
+        if ($rankA === $rankB) {
+            return strcmp(
+                isset($a['path']) ? (string)$a['path'] : '',
+                isset($b['path']) ? (string)$b['path'] : ''
+            );
+        }
         return ($rankA < $rankB) ? -1 : 1;
     });
 
@@ -387,6 +417,8 @@ function pss_normalizeHighlightVideo($video, $index = 0) {
         'mediaUrl' => $mediaUrl,
         'mediaType' => (!empty($mediaSources) ? $mediaSources[0]['type'] : ''),
         'mediaSources' => $mediaSources,
+        'selectedSourcePath' => (!empty($mediaSources) && isset($mediaSources[0]['path'])) ? $mediaSources[0]['path'] : '',
+        'sourcePreference' => 'low-bandwidth',
         'webUrl' => $webUrl,
         'playable' => ($mediaUrl !== ''),
         '_sortTime' => (int)$sortTime,
