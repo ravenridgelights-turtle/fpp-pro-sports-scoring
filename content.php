@@ -176,6 +176,12 @@ function pss_currentValue($key, $default = '') {
                 </div>
 
                 <div class="row mb-3 align-items-center">
+                    <div class="col-md-4"><strong>Kiosk ticker text size</strong><div class="text-muted small">Controls the scrolling ticker text size on the web/kiosk display, including mobile screens.</div></div>
+                    <div class="col-md-2"><input class="form-control" type="number" min="12" max="48" name="TickerWebFontSize" value="<?=htmlspecialchars(pss_currentValue('TickerWebFontSize', '18'))?>"></div>
+                    <div class="col-md-6 text-muted small">Pixels. 18 = normal, 24–30 works well for phones/tablets. Pixel Overlay font size is configured separately below.</div>
+                </div>
+
+                <div class="row mb-3 align-items-center">
                     <div class="col-md-4"><strong>Item spacing</strong><div class="text-muted small">Adds more breathing room between each team's ticker item. Also adds spacing to Pixel Overlay text.</div></div>
                     <div class="col-md-2"><input class="form-control" type="number" min="1" max="12" name="TickerSpacing" value="<?=htmlspecialchars(pss_currentValue('TickerSpacing', '4'))?>"></div>
                     <div class="col-md-6 text-muted small">1 = tight, 4 = comfortable, 12 = extra wide. Team colors below apply to the web/kiosk ticker; Pixel Overlay output still uses its single Text color setting.</div>
@@ -236,7 +242,7 @@ function pss_currentValue($key, $default = '') {
                 ?>
                 <div class="pss-ticker-preview">
                     <strong>Current ticker preview:</strong>
-                    <span id="pss-ticker-preview-text" class="pss-ticker-preview-items" data-spacing="<?=intval($pssPreviewSpacing)?>">
+                    <span id="pss-ticker-preview-text" class="pss-ticker-preview-items" data-spacing="<?=intval($pssPreviewSpacing)?>" style="font-size:<?=intval(max(12, min(48, (int)pss_currentValue('TickerWebFontSize', '18'))))?>px;">
                     <?php if (empty($pssPreviewItems)): ?>
                         <span>PRO SPORTS SCORING • NO SELECTED TEAMS</span>
                     <?php else: foreach ($pssPreviewItems as $pssPreviewIndex => $pssPreviewItem): ?>
@@ -413,12 +419,14 @@ function pssTickerMessage(text, isError) {
     el.className = 'pss-ticker-message ' + (isError ? 'text-danger' : 'text-success');
 }
 
-function pssRenderTickerPreview(items, fallbackText, spacing) {
+function pssRenderTickerPreview(items, fallbackText, spacing, fontSize) {
     var root = document.getElementById('pss-ticker-preview-text');
     if (!root) return;
     while (root.firstChild) root.removeChild(root.firstChild);
 
     var safeSpacing = Math.max(1, Math.min(12, parseInt(spacing || 4, 10)));
+    var safeFontSize = Math.max(12, Math.min(48, parseInt(fontSize || 18, 10)));
+    root.style.fontSize = safeFontSize + 'px';
     if (!items || !items.length) {
         var empty = document.createElement('span');
         empty.textContent = fallbackText || 'PRO SPORTS SCORING • NO SELECTED TEAMS';
@@ -455,7 +463,7 @@ function pssSaveTickerSettings(event) {
     }).done(function (response) {
         pssTickerMessage(response && response.message ? response.message : 'Ticker settings saved.', !(response && response.ok));
         if (response && response.tickerText) {
-            pssRenderTickerPreview(response.tickerItems || [], response.tickerText, response.tickerSpacing || 4);
+            pssRenderTickerPreview(response.tickerItems || [], response.tickerText, response.tickerSpacing || 4, response.tickerWebFontSize || 18);
         }
     }).fail(function () {
         pssTickerMessage('Unable to save ticker settings. Check the plugin log.', true);
