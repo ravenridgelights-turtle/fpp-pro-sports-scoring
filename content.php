@@ -228,6 +228,25 @@ function pss_currentValue($key, $default = '') {
                 <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'TeamID', $prefix2 . 'TeamID', 0, 0, '', $teamOptions, $pluginName, $callback2, ''); ?></div>
             </div>
 
+            <div class="row mb-3 align-items-start">
+                <div class="col-md-4 pss-config-label">
+                    <strong>Celebration delay</strong>
+                    <div class="text-muted small pss-config-note">Optional pause added to the beginning of every helper playlist for this team. Useful for delayed TV/streaming feeds. 0 = play immediately.</div>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <div class="input-group">
+                        <input class="form-control" type="number" min="0" max="300" step="1" value="<?=htmlspecialchars(pss_currentValue($prefix1 . 'CelebrationDelay', '0'))?>" onchange="pssCelebrationDelayChanged('<?=htmlspecialchars($prefix1 . 'CelebrationDelay', ENT_QUOTES)?>', this)">
+                        <div class="input-group-append"><span class="input-group-text">sec</span></div>
+                    </div>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <div class="input-group">
+                        <input class="form-control" type="number" min="0" max="300" step="1" value="<?=htmlspecialchars(pss_currentValue($prefix2 . 'CelebrationDelay', '0'))?>" onchange="pssCelebrationDelayChanged('<?=htmlspecialchars($prefix2 . 'CelebrationDelay', ENT_QUOTES)?>', this)">
+                        <div class="input-group-append"><span class="input-group-text">sec</span></div>
+                    </div>
+                </div>
+            </div>
+
             <?php if ($meta['sport'] === 'football'): ?>
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
@@ -275,6 +294,25 @@ function pssSequenceChanged(setting) {
         url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
         data: { action: 'syncSequencePlaylist', setting: setting },
         type: 'post'
+    });
+}
+
+function pssCelebrationDelayChanged(setting, input) {
+    var value = parseInt(input.value, 10);
+    if (isNaN(value)) value = 0;
+    value = Math.max(0, Math.min(300, value));
+    input.value = value;
+
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'saveCelebrationDelay', setting: setting, value: value },
+        type: 'post',
+        dataType: 'json',
+        success: function(response) {
+            if (response && response.ok && typeof response.value !== 'undefined') {
+                input.value = response.value;
+            }
+        }
     });
 }
 

@@ -47,6 +47,9 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
                 pss_syncGeneratedPlaylistSetting((string)$_POST['setting']);
             }
             break;
+        case 'saveCelebrationDelay':
+            pss_saveCelebrationDelay($_POST);
+            break;
         case 'saveTickerSettings':
             pss_saveTickerSettings($_POST);
             break;
@@ -665,6 +668,31 @@ function pss_testTickerOutput() {
     pss_jsonResponse($ok, $ok ? 'Test ticker sent to ' . $model . '.' : 'FPP rejected the test ticker. Check the plugin log.');
 }
 
+function pss_teamCelebrationDelay($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return pss_clampInt(pss_pluginSetting("{$prefix}CelebrationDelay", '0'), 0, 300, 0);
+}
+
+function pss_saveCelebrationDelay($post) {
+    global $pluginSettings;
+
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
+    $value = isset($post['value']) ? $post['value'] : 0;
+
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?CelebrationDelay$/', $setting, $matches)) {
+        pss_jsonResponse(false, 'Invalid celebration delay setting.');
+    }
+
+    $delay = pss_clampInt($value, 0, 300, 0);
+    if (!pss_setPluginSetting($setting, (string)$delay)) {
+        pss_jsonResponse(false, 'Unable to save celebration delay.');
+    }
+
+    $pluginSettings = pss_loadPluginSettings();
+    pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    pss_jsonResponse(true, 'Celebration delay saved.', array('value' => $delay));
+}
+
 function pss_generatedPlaylistMarker() {
     return 'Managed by Pro Sports Scoring plugin. Do not edit manually.';
 }
@@ -741,8 +769,35 @@ function pss_sequenceDuration($sequenceName) {
     return round(($frames * $stepMs) / 1000, 3);
 }
 
-function pss_generatedPlaylistData($playlistName, $sequenceName) {
+function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds = 0) {
     $duration = pss_sequenceDuration($sequenceName);
+    $delaySeconds = pss_clampInt($delaySeconds, 0, 300, 0);
+
+    $mainPlaylist = array();
+    if ($delaySeconds > 0) {
+        $mainPlaylist[] = array(
+            'type' => 'pause',
+            'enabled' => 1,
+            'playOnce' => 0,
+            'duration' => $delaySeconds,
+            'note' => 'Pro Sports Scoring celebration delay',
+            'displayMode' => 'argsOnly'
+        );
+    }
+
+    $mainPlaylist[] = array(
+        'type' => 'sequence',
+        'enabled' => 1,
+        'playOnce' => 0,
+        'sequenceName' => basename((string)$sequenceName),
+        'displayMode' => 'argsOnly',
+        'timecode' => 'Default',
+        'duration' => $duration
+    );
+
+    $totalDuration = $duration + $delaySeconds;
+    $itemCount = count($mainPlaylist);
+
     return array(
         'name' => $playlistName,
         'version' => 4,
@@ -753,32 +808,22 @@ function pss_generatedPlaylistData($playlistName, $sequenceName) {
         'globalPauseBetweenSequencesMS' => 0,
         'empty' => false,
         'leadIn' => array(),
-        'mainPlaylist' => array(
-            array(
-                'type' => 'sequence',
-                'enabled' => 1,
-                'playOnce' => 0,
-                'sequenceName' => basename((string)$sequenceName),
-                'displayMode' => 'argsOnly',
-                'timecode' => 'Default',
-                'duration' => $duration
-            )
-        ),
+        'mainPlaylist' => $mainPlaylist,
         'leadOut' => array(),
         'playlistInfo' => array(
             'leadIn_duration' => 0,
             'leadIn_items' => 0,
-            'mainPlaylist_duration' => $duration,
-            'mainPlaylist_items' => 1,
+            'mainPlaylist_duration' => $totalDuration,
+            'mainPlaylist_items' => $itemCount,
             'leadOut_duration' => 0,
             'leadOut_items' => 0,
-            'total_duration' => $duration,
-            'total_items' => 1
+            'total_duration' => $totalDuration,
+            'total_items' => $itemCount
         )
     );
 }
 
-function pss_writeGeneratedPlaylist($playlistName, $sequenceName) {
+function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds = 0) {
     global $settings;
 
     $playlistName = trim((string)$playlistName);
@@ -799,7 +844,7 @@ function pss_writeGeneratedPlaylist($playlistName, $sequenceName) {
         return false;
     }
 
-    $data = pss_generatedPlaylistData($playlistName, $sequenceName);
+    $data = pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds);
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     if ($json === false) {
         pss_logEntry("Unable to encode generated playlist {$playlistName}");
@@ -886,7 +931,8 @@ function pss_syncGeneratedPlaylistsForLeague($league) {
             if ($playlistName === '') {
                 continue;
             }
-            if (pss_writeGeneratedPlaylist($playlistName, $sequence)) {
+            $delaySeconds = pss_teamCelebrationDelay($league, $slot);
+            if (pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds)) {
                 $keepNames[] = $playlistName;
             }
         }
@@ -1287,13 +1333,15 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
     }
 
     $playlist = pss_generatedPlaylistName($league, $suffix, $slot);
-    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $sequence)) {
+    $delaySeconds = pss_teamCelebrationDelay($league, $slot);
+    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $sequence, $delaySeconds)) {
         pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$sequence}");
         return;
     }
 
     if (pss_insertPlaylistImmediate($playlist)) {
-        pss_logEntry("{$logLabel} {$label} detected; inserted {$sequence} using playlist {$playlist}");
+        $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
+        pss_logEntry("{$logLabel} {$label} detected; inserted {$sequence}{$delayText} using playlist {$playlist}");
     } else {
         pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated playlist {$playlist}");
     }
