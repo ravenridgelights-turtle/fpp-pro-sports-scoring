@@ -68,9 +68,7 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
             pss_saveCelebrationDelay($_POST);
             break;
         case 'syncWledCelebrationSetting':
-            if (isset($_POST['setting'])) {
-                pss_syncWledCelebrationSetting((string)$_POST['setting']);
-            }
+            pss_syncWledCelebrationSetting($_POST);
             break;
         case 'saveWledCelebrationDuration':
             pss_saveWledCelebrationDuration($_POST);
@@ -79,9 +77,7 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
             pss_saveGameScheduleEnabled($_POST);
             break;
         case 'syncGameScheduleSetting':
-            if (isset($_POST['setting'])) {
-                pss_syncGameScheduleSetting((string)$_POST['setting']);
-            }
+            pss_syncGameScheduleSetting($_POST);
             break;
         case 'promoteGameSchedulePriority':
             pss_promoteGameSchedulePriority($_POST);
@@ -1970,16 +1966,25 @@ function pss_teamWledDuration($league, $slot = 1) {
     return pss_clampInt(pss_pluginSetting("{$prefix}WledDuration", '5'), 1, 600, 5);
 }
 
-function pss_syncWledCelebrationSetting($setting) {
+function pss_syncWledCelebrationSetting($post) {
     global $pluginSettings;
-    $setting = trim((string)$setting);
+    // FPP's PrintSettingSelect saves its value asynchronously.  Persist the
+    // browser's current value ourselves before rebuilding helper playlists so
+    // a newly-selected model cannot race the schedule rebuild.
+    if (!is_array($post)) {
+        $post = array('setting' => (string)$post);
+    }
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
     if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?WledModel$/', $setting, $matches)) {
-        return false;
+        pss_jsonResponse(false, 'Invalid WLED celebration model setting.');
+    }
+    if (array_key_exists('value', $post)) {
+        pss_setPluginSetting($setting, trim((string)$post['value']));
     }
     $pluginSettings = pss_loadPluginSettings();
     pss_syncGeneratedPlaylistsForLeague($matches[1]);
-    pss_syncGameSchedules(true);
-    return true;
+    $ok = pss_syncGameSchedules(true);
+    pss_jsonResponse($ok, $ok ? 'WLED celebration model saved and game schedules rebuilt.' : 'WLED model saved, but the FPP game schedule could not be rebuilt.');
 }
 
 function pss_saveWledCelebrationDuration($post) {
@@ -2229,9 +2234,19 @@ function pss_writeManagedGamePlaylist($playlistName, $league, $slot, $selection)
     $duration = 0.0;
     $wledEffect = pss_wledEffectFromSelection($selection);
     if ($wledEffect !== '') {
-        $startArgs = pss_gameScheduleWledStartArgs($league, $slot, false);
+        $modelCheck = pss_teamWledModel($league, $slot);
+        if ($modelCheck === '') {
+            pss_logEntry('Cannot build ' . $playlistName . '; no WLED celebration model is selected for ' . pss_teamLogLabel($league, $slot));
+            return false;
+        }
+        $paletteCheck = pss_teamPaletteForSlot($league, $slot);
+        if (!is_array($paletteCheck)) {
+            pss_logEntry('Cannot build ' . $playlistName . '; team palette is unavailable for ' . pss_teamLogLabel($league, $slot));
+            return false;
+        }
+        $startArgs = pss_buildWledEffectArgs($wledEffect, $modelCheck, $paletteCheck);
         if (empty($startArgs)) {
-            pss_logEntry('Cannot build ' . $playlistName . '; scheduled WLED effect needs a WLED celebration model and team palette');
+            pss_logEntry('Cannot build ' . $playlistName . '; FPP returned no usable argument definition for ' . $wledEffect);
             return false;
         }
         $model = (string)$startArgs[0];
@@ -2442,22 +2457,98 @@ function pss_saveGameScheduleEnabled($post) {
     $prefix = pss_teamPrefix($league, $slot);
     pss_setPluginSetting("{$prefix}ScheduleEnabled", $enabled);
     $pluginSettings = pss_loadPluginSettings();
+
+    if ($enabled === 'ON') {
+        $selection = pss_teamGameScheduleSelection($league, $slot);
+        $wledEffect = pss_wledEffectFromSelection($selection);
+        if ($wledEffect !== '') {
+            $model = pss_teamWledModel($league, $slot);
+            if ($model === '') {
+                pss_jsonResponse(false, 'Schedule enabled, but Run WLED Effect needs a WLED model. Select one in the Schedule Helper.');
+            }
+            $palette = pss_teamPaletteForSlot($league, $slot);
+            if (!is_array($palette)) {
+                pss_syncTeamPalettes(true);
+                $palette = pss_teamPaletteForSlot($league, $slot);
+            }
+            if (!is_array($palette)) {
+                pss_jsonResponse(false, 'Schedule enabled, but the selected team palette is not available yet.');
+            }
+            if (empty(pss_buildWledEffectArgs($wledEffect, $model, $palette))) {
+                pss_jsonResponse(false, 'Schedule enabled, but FPP did not return a usable command definition for ' . $wledEffect . '.');
+            }
+        }
+    }
+
     $ok = pss_syncGameSchedules(true);
     pss_jsonResponse($ok, $ok ? 'Game schedule helper updated.' : 'Game schedule helper could not update the FPP schedule.');
 }
 
-function pss_syncGameScheduleSetting($setting) {
+function pss_syncGameScheduleSetting($post) {
     global $pluginSettings;
-    $setting = trim((string)$setting);
-    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?ScheduleSelection$/', $setting, $matches)) return false;
+    // PrintSettingSelect performs its own async save.  The callback can beat
+    // that request, especially for the longer encoded WLED tokens, so save the
+    // exact browser value here before rebuilding the managed playlist/schedule.
+    if (!is_array($post)) {
+        $post = array('setting' => (string)$post);
+    }
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?ScheduleSelection$/', $setting, $matches)) {
+        pss_jsonResponse(false, 'Invalid game schedule selection.');
+    }
     $league = $matches[1];
     $slot = !empty($matches[2]) ? 2 : 1;
-    // If the game overlay is active, stop the old effect before FPP reloads the
-    // newly generated scheduled helper.  This prevents an orphaned old effect.
+
+    // Stop the currently-running scheduled overlay before replacing its helper.
     pss_stopScheduledGameOverlay($league, $slot);
+
+    if (array_key_exists('value', $post)) {
+        pss_setPluginSetting($setting, trim((string)$post['value']));
+    }
     $pluginSettings = pss_loadPluginSettings();
-    pss_syncGameSchedules(true);
-    return true;
+
+    $selection = pss_teamGameScheduleSelection($league, $slot);
+    $wledEffect = pss_wledEffectFromSelection($selection);
+    if ($wledEffect !== '') {
+        $model = pss_teamWledModel($league, $slot);
+        if ($model === '') {
+            pss_jsonResponse(false, 'Run WLED Effect is selected, but this team has no WLED celebration model. Select a model in the Schedule Helper or team settings first.');
+        }
+        $palette = pss_teamPaletteForSlot($league, $slot);
+        if (!is_array($palette)) {
+            pss_syncTeamPalettes(true);
+            $palette = pss_teamPaletteForSlot($league, $slot);
+        }
+        if (!is_array($palette)) {
+            pss_jsonResponse(false, 'The team color palette is not available yet. Re-select the team or refresh its ESPN data, then try again.');
+        }
+        $args = pss_buildWledEffectArgs($wledEffect, $model, $palette);
+        if (empty($args)) {
+            pss_jsonResponse(false, 'FPP did not return a usable command definition for ' . $wledEffect . '. The WLED helper playlist was not created.');
+        }
+    }
+
+    $ok = pss_syncGameSchedules(true);
+    if (!$ok) {
+        pss_jsonResponse(false, 'Could not update the FPP schedule. Check the plugin log.');
+    }
+
+    // If scheduling is enabled for an upcoming/current game, verify that the
+    // managed playlist actually exists so the UI never reports a false success.
+    if (pss_teamGameScheduleEnabled($league, $slot) && $selection !== '') {
+        $window = pss_gameScheduleWindow($league, $slot);
+        $prefix = pss_teamPrefix($league, $slot);
+        if (is_array($window) && ($window['end']->getTimestamp() > time() || pss_pluginSetting("{$prefix}GameStatus", '') === 'in')) {
+            $playlistName = pss_generatedGameSchedulePlaylistName($league, $slot);
+            global $settings;
+            $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+            if ($playlistName !== '' && !is_file($playlistDirectory . '/' . $playlistName . '.json')) {
+                pss_jsonResponse(false, 'FPP schedule rebuilt, but the managed game playlist was not created. Check the plugin log for the exact WLED/model error.');
+            }
+        }
+    }
+
+    pss_jsonResponse(true, $wledEffect !== '' ? 'WLED game helper playlist and schedule rebuilt.' : 'Game schedule helper rebuilt.');
 }
 
 function pss_generatedPlaylistMarker() {
@@ -2820,7 +2911,11 @@ function pss_buildWledEffectArgs($effectName, $model, $palette) {
         if ($effectName === 'WLED - Android') {
             return array($model, 'Enabled', $effectName, 'Horizontal', '128', '128', '128', '* Colors Only', $colors[0], $colors[1]);
         }
-        if ($effectName === 'WLED - Colortwinkles') {
+        if ($effectName === 'WLED - Colortwinkles' || $effectName === 'WLED - Blends') {
+            // Blends and Colortwinkles both expose two effect controls plus the
+            // palette/colors block in FPP 10.  Keep this fallback so scheduling
+            // still works if the per-effect metadata endpoint is temporarily
+            // unavailable while the main effect list remains available.
             return array($model, 'Enabled', $effectName, 'Horizontal', '128', '128', '128', '* Colors Only', $colors[0], $colors[1], $colors[2]);
         }
         return array();
