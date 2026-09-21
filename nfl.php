@@ -24,15 +24,15 @@ function pss_initializePluginDefaults() {
         $defaults["{$league}OppoName"] = '';
         $defaults["{$league}MyScore"] = '0';
         $defaults["{$league}OppoScore"] = '0';
-        $defaults["{$league}WinSequence"] = '';
+        $defaults["{$league}WinPlaylist"] = '';
         $defaults["{$league}LastScoringPlayID"] = '';
         $defaults["{$league}LastCelebratedScore"] = '0';
         $defaults["{$league}LastCompletedEventID"] = '';
         if ($league === 'nfl' || $league === 'ncaa') {
-            $defaults["{$league}TouchdownSequence"] = '';
-            $defaults["{$league}FieldgoalSequence"] = '';
+            $defaults["{$league}TouchdownPlaylist"] = '';
+            $defaults["{$league}FieldgoalPlaylist"] = '';
         } else {
-            $defaults["{$league}ScoreSequence"] = '';
+            $defaults["{$league}ScorePlaylist"] = '';
         }
     }
 

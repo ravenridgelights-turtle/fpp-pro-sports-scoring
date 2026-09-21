@@ -71,12 +71,11 @@ function pss_leagueInfo($league) {
     }
 }
 
-function pss_httpJson($url, $method = 'GET', $body = null) {
-    // ESPN/Akamai can reject a browser User-Agent when the TLS fingerprint is libcurl.
-    // Identify as libcurl instead of pretending to be a browser.
-    $headers = array(
-        'Accept: application/json'
-    );
+function pss_httpRequest($url, $method = 'GET', $body = null, $accept = 'application/json') {
+    $headers = array();
+    if ($accept !== '') {
+        $headers[] = 'Accept: ' . $accept;
+    }
 
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
@@ -87,57 +86,80 @@ function pss_httpJson($url, $method = 'GET', $body = null) {
         $curlInfo = curl_version();
         $curlVersion = isset($curlInfo['version']) ? $curlInfo['version'] : '8.0.0';
         curl_setopt($ch, CURLOPT_USERAGENT, 'curl/' . $curlVersion);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
         curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
 
         if ($body !== null) {
-            $payload = json_encode($body);
             $headers[] = 'Content-Type: application/json';
+            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+        }
+        if (!empty($headers)) {
             curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
         }
 
         $result = curl_exec($ch);
         $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $contentType = (string)curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
         $curlError = curl_error($ch);
         curl_close($ch);
 
-        if ($result === false || $result === '') {
+        if ($result === false) {
             pss_logEntry("HTTP request failed for {$url}: {$curlError}");
-            return null;
+            return array('ok' => false, 'status' => $httpCode, 'body' => '', 'contentType' => $contentType);
         }
 
-        if ($httpCode < 200 || $httpCode >= 300) {
-            pss_logEntry("HTTP {$httpCode} returned for {$url}");
-            return null;
-        }
-    } else {
-        $streamHeaders = $headers;
-        $streamHeaders[] = 'User-Agent: curl/8.0.0';
-        $headerText = implode("\r\n", $streamHeaders) . "\r\n";
-        $options = array(
-            'http' => array(
-                'method' => $method,
-                'timeout' => 10,
-                'ignore_errors' => true,
-                'header' => $headerText
-            )
+        return array(
+            'ok' => ($httpCode >= 200 && $httpCode < 300),
+            'status' => $httpCode,
+            'body' => (string)$result,
+            'contentType' => $contentType
         );
-
-        if ($body !== null) {
-            $options['http']['header'] .= "Content-Type: application/json\r\n";
-            $options['http']['content'] = json_encode($body);
-        }
-
-        $context = stream_context_create($options);
-        $result = @file_get_contents($url, false, $context);
-        if ($result === false || $result === '') {
-            pss_logEntry("HTTP request failed for {$url} using PHP stream fallback");
-            return null;
-        }
     }
 
-    $data = json_decode($result, true);
+    $streamHeaders = $headers;
+    $streamHeaders[] = 'User-Agent: curl/8.0.0';
+    if ($body !== null) {
+        $streamHeaders[] = 'Content-Type: application/json';
+    }
+
+    $options = array(
+        'http' => array(
+            'method' => $method,
+            'timeout' => 10,
+            'ignore_errors' => true,
+            'header' => implode("\r\n", $streamHeaders) . "\r\n"
+        )
+    );
+    if ($body !== null) {
+        $options['http']['content'] = json_encode($body);
+    }
+
+    $context = stream_context_create($options);
+    $result = @file_get_contents($url, false, $context);
+    $status = 0;
+    if (isset($http_response_header[0]) && preg_match('/\\s(\\d{3})\\s/', $http_response_header[0], $matches)) {
+        $status = (int)$matches[1];
+    }
+    if ($result === false) {
+        pss_logEntry("HTTP request failed for {$url} using PHP stream fallback");
+        return array('ok' => false, 'status' => $status, 'body' => '', 'contentType' => '');
+    }
+
+    return array(
+        'ok' => ($status >= 200 && $status < 300),
+        'status' => $status,
+        'body' => (string)$result,
+        'contentType' => ''
+    );
+}
+
+function pss_httpJson($url, $method = 'GET', $body = null) {
+    $response = pss_httpRequest($url, $method, $body, 'application/json');
+    if (!$response['ok']) {
+        pss_logEntry("HTTP {$response['status']} returned for {$url}");
+        return null;
+    }
+
+    $data = json_decode($response['body'], true);
     if (!is_array($data)) {
         pss_logEntry("Invalid JSON returned for {$url}: " . json_last_error_msg());
         return null;
@@ -178,19 +200,39 @@ function pss_getNCAATeams() {
     return pss_getTeams('football', 'ncaa');
 }
 
-function pss_getSequences() {
-    $data = pss_httpJson('http://127.0.0.1/api/sequence/');
-    $sequenceList = array('No Sequence' => '');
-    if (!is_array($data)) {
-        return $sequenceList;
+function pss_getPlaylists() {
+    global $settings;
+
+    $playlistList = array('No Playlist' => '');
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory)) {
+        pss_logEntry("FPP playlist directory not found: {$playlistDirectory}");
+        return $playlistList;
     }
-    foreach ($data as $sequence) {
-        if (is_string($sequence) && $sequence !== '') {
-            $sequenceList[$sequence] = $sequence;
+
+    $files = glob($playlistDirectory . '/*.json');
+    if (!is_array($files)) {
+        return $playlistList;
+    }
+
+    foreach ($files as $file) {
+        $name = pathinfo($file, PATHINFO_FILENAME);
+        $json = @file_get_contents($file);
+        if ($json !== false) {
+            $data = json_decode($json, true);
+            if (is_array($data) && isset($data['name']) && trim((string)$data['name']) !== '') {
+                $name = trim((string)$data['name']);
+            }
+        }
+
+        if ($name !== '') {
+            $playlistList[$name] = $name;
         }
     }
-    ksort($sequenceList, SORT_NATURAL | SORT_FLAG_CASE);
-    return array('No Sequence' => '') + array_diff_key($sequenceList, array('No Sequence' => ''));
+
+    unset($playlistList['No Playlist']);
+    ksort($playlistList, SORT_NATURAL | SORT_FLAG_CASE);
+    return array('No Playlist' => '') + $playlistList;
 }
 
 function pss_getTeamInfo($sport, $league, $team) {
@@ -411,9 +453,9 @@ function pss_processFootballScoring($league, $teamID, $plays) {
         $haystack = $typeText . ' ' . $playText;
 
         if (strpos($haystack, 'touchdown') !== false) {
-            pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown');
+            pss_playConfiguredPlaylist($league, 'TouchdownPlaylist', 'Touchdown');
         } elseif (strpos($haystack, 'field goal') !== false && strpos($haystack, 'no good') === false && strpos($haystack, 'miss') === false) {
-            pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal');
+            pss_playConfiguredPlaylist($league, 'FieldgoalPlaylist', 'Field goal');
         }
     }
 
@@ -426,23 +468,23 @@ function pss_processSimpleScoreIncrease($league, $oldScore, $newScore) {
     $lastCelebrated = (int)pss_pluginSetting("{$league}LastCelebratedScore", '0');
 
     if ($newScore > $oldScore && $newScore > $lastCelebrated) {
-        pss_playConfiguredSequence($league, 'ScoreSequence', 'Score');
+        pss_playConfiguredPlaylist($league, 'ScorePlaylist', 'Score');
         pss_setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
     } elseif ($newScore > $lastCelebrated) {
         pss_setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
     }
 }
 
-function pss_playConfiguredSequence($league, $suffix, $label) {
-    $sequence = pss_pluginSetting("{$league}{$suffix}", '');
-    if ($sequence === '') {
-        pss_logEntry("{$league} {$label} detected but no sequence is selected");
+function pss_playConfiguredPlaylist($league, $suffix, $label) {
+    $playlist = pss_pluginSetting("{$league}{$suffix}", '');
+    if ($playlist === '') {
+        pss_logEntry("{$league} {$label} detected but no playlist is selected");
         return;
     }
-    if (pss_insertPlaylistImmediate($sequence)) {
-        pss_logEntry("{$league} {$label} detected; played {$sequence}");
+    if (pss_insertPlaylistImmediate($playlist)) {
+        pss_logEntry("{$league} {$label} detected; inserted playlist {$playlist}");
     } else {
-        pss_logEntry("{$league} {$label} detected but FPP rejected sequence {$sequence}");
+        pss_logEntry("{$league} {$label} detected but FPP rejected playlist {$playlist}");
     }
 }
 
@@ -534,7 +576,7 @@ function pss_updateTeamStatus($reparseSettings = true) {
             $completed = pss_pluginSetting("{$league}LastCompletedEventID", '');
             if ($completed !== $eventID) {
                 if ($status['myScore'] > $status['oppoScore']) {
-                    pss_playConfiguredSequence($league, 'WinSequence', 'Win');
+                    pss_playConfiguredPlaylist($league, 'WinPlaylist', 'Win');
                 }
                 pss_setPluginSetting("{$league}LastCompletedEventID", $eventID);
             }
@@ -547,23 +589,24 @@ function pss_updateTeamStatus($reparseSettings = true) {
     return min($sleepTimes);
 }
 
-function pss_insertPlaylistImmediate($sequence) {
-    $sequence = trim((string)$sequence);
-    if ($sequence === '') {
+function pss_insertPlaylistImmediate($playlist) {
+    $playlist = trim((string)$playlist);
+    if ($playlist === '') {
         return false;
-    }
-    if (substr($sequence, -5) !== '.fseq') {
-        $sequence .= '.fseq';
     }
 
     $payload = array(
         'command' => 'Insert Playlist Immediate',
         'multisyncCommand' => false,
         'multisyncHosts' => '',
-        'args' => array($sequence, '0', '0', 'false')
+        'args' => array($playlist, '0', '0', 'false')
     );
-    $result = pss_httpJson('http://127.0.0.1/api/command', 'POST', $payload);
-    return $result !== null;
+    $response = pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+    if (!$response['ok']) {
+        pss_logEntry("FPP command failed with HTTP {$response['status']} for playlist {$playlist}");
+        return false;
+    }
+    return true;
 }
 
 function pss_logEntry($message) {

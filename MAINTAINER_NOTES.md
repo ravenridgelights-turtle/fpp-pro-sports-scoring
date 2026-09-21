@@ -15,7 +15,7 @@
 - Worker PID file: `/home/fpp/media/plugins/fpp-nfl/sports-scoring.pid`
 - ESPN team endpoint: `https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams`
 - ESPN game summary: `https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=EVENT_ID`
-- FPP sequences: `http://127.0.0.1/api/sequence/`
+- FPP playlists are read from FPP's configured playlist directory (`$settings['playlistDirectory']`).
 - FPP command API: `POST http://127.0.0.1/api/command`
 
 ## Important design rules
@@ -24,4 +24,8 @@
 - Do not add direct `reboot`, `systemctl restart fppd`, or `killall` calls.
 - Keep runtime logs in the single `plugin-fpp-nfl.log` file.
 - Do not guess football scoring from score deltas. Use ESPN scoring-play IDs so a 7-point touchdown is still recognized as a touchdown and old plays are not repeated.
-- If ESPN changes its schema, fail closed: keep the last known game state and try again later rather than clearing scores or replaying sequences.
+- If ESPN changes its schema, fail closed: keep the last known game state and try again later rather than clearing scores or replaying celebrations.
+
+## Celebration playback
+
+Configured celebration values are FPP playlist names (`TouchdownPlaylist`, `FieldgoalPlaylist`, `ScorePlaylist`, `WinPlaylist`). Playback uses `POST /api/command` with `Insert Playlist Immediate`. FPP may return `text/plain` for a successful command, so command success is based on the HTTP 2xx status rather than JSON parsing.

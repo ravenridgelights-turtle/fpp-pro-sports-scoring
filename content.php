@@ -11,7 +11,7 @@ function pss_currentValue($key, $default = '') {
 ?>
 <div class="container-fluid">
     <h2>Pro Sports Scoring Plugin</h2>
-    <p class="text-muted">Play FPP sequences when your NFL, NCAA Football, NHL, or MLB team scores or wins.</p>
+    <p class="text-muted">Insert FPP celebration playlists when your NFL, NCAA Football, NHL, or MLB team scores or wins. FPP returns to the active show after the inserted playlist finishes.</p>
 
     <div class="card mb-3">
         <div class="card-body">
@@ -41,23 +41,23 @@ function pss_currentValue($key, $default = '') {
 
             <?php if ($meta['sport'] === 'football'): ?>
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Touchdown sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'TouchdownSequence', $league . 'TouchdownSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Touchdown playlist</strong><div class="text-muted small">Saved FPP playlist inserted immediately when your team scores a touchdown.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'TouchdownPlaylist', $league . 'TouchdownPlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
             </div>
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Field goal sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'FieldgoalSequence', $league . 'FieldgoalSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Field goal playlist</strong><div class="text-muted small">Saved FPP playlist inserted immediately for a made field goal.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'FieldgoalPlaylist', $league . 'FieldgoalPlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
             </div>
             <?php else: ?>
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Score sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'ScoreSequence', $league . 'ScoreSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Score playlist</strong><div class="text-muted small">Saved FPP playlist inserted immediately when your team scores.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'ScorePlaylist', $league . 'ScorePlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
             </div>
             <?php endif; ?>
 
             <div class="row mb-3 align-items-center">
-                <div class="col-md-5"><strong>Win sequence</strong></div>
-                <div class="col-md-7"><?php PrintSettingSelect($league . 'WinSequence', $league . 'WinSequence', 0, 0, '', pss_getSequences(), $pluginName, '', ''); ?></div>
+                <div class="col-md-5"><strong>Win playlist</strong><div class="text-muted small">Saved FPP playlist inserted when a completed game is detected as a win.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect($league . 'WinPlaylist', $league . 'WinPlaylist', 0, 0, '', pss_getPlaylists(), $pluginName, '', ''); ?></div>
             </div>
         </div>
     </div>
