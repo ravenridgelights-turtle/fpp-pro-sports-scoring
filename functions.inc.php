@@ -42,6 +42,19 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
             pss_updateTeam('baseball', 'mlb', 2);
             pss_updateTickerOutput(true);
             break;
+        case 'updateTeamSelection':
+            $league = isset($_POST['league']) ? strtolower(trim((string)$_POST['league'])) : '';
+            $slot = (isset($_POST['slot']) && (int)$_POST['slot'] === 2) ? 2 : 1;
+            $teamID = isset($_POST['teamID']) ? trim((string)$_POST['teamID']) : '';
+            $info = pss_leagueInfo($league);
+            if ($info['sport'] !== '') {
+                // Use the value sent by the changed select instead of racing the
+                // FPP settings AJAX request.  This keeps helper-playlist names
+                // on the same team the user just selected on FPP 7-10.
+                pss_updateTeam($info['sport'], $league, $slot, $teamID);
+                pss_updateTickerOutput(true);
+            }
+            break;
         case 'syncSequencePlaylist':
             if (isset($_POST['setting'])) {
                 pss_syncGeneratedPlaylistSetting((string)$_POST['setting']);
@@ -1164,11 +1177,20 @@ function pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo, $slo
     return true;
 }
 
-function pss_updateTeam($sport, $league, $slot = 1) {
+function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     global $pluginSettings;
     $pluginSettings = pss_loadPluginSettings();
     $prefix = pss_teamPrefix($league, $slot);
-    $teamID = pss_pluginSetting("{$prefix}TeamID", '');
+
+    if ($selectedTeamID !== null) {
+        // Team-select callbacks can arrive before FPP's own async setting save
+        // is visible to PHP. Persist and use the value from the browser so the
+        // team metadata and generated playlist name cannot lag one selection.
+        $teamID = trim((string)$selectedTeamID);
+        pss_setPluginSetting("{$prefix}TeamID", $teamID);
+    } else {
+        $teamID = pss_pluginSetting("{$prefix}TeamID", '');
+    }
 
     if ($teamID === '') {
         pss_clearLeagueState($league, true, $slot);

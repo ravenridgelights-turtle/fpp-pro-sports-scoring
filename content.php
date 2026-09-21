@@ -206,8 +206,11 @@ function pss_currentValue($key, $default = '') {
         $teamOptions = pss_getTeams($meta['sport'], $league);
         $prefix1 = pss_teamPrefix($league, 1);
         $prefix2 = pss_teamPrefix($league, 2);
-        $callback1 = 'update' . strtoupper($league) . 'Team';
-        $callback2 = 'update' . strtoupper($league) . 'Team2';
+        // Team changes are handled below with the selected ID sent explicitly.
+        // Leaving the FPP callback empty avoids a race where the plugin reads
+        // the previous TeamID before FPP's own AJAX setting save completes.
+        $callback1 = '';
+        $callback2 = '';
     ?>
     <div class="card mb-3">
         <div class="card-body">
@@ -289,6 +292,37 @@ function pss_currentValue($key, $default = '') {
 </div>
 
 <script>
+function pssTeamSelectionChanged(league, slot, selectElement) {
+    var teamID = selectElement ? selectElement.value : '';
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: {
+            action: 'updateTeamSelection',
+            league: league,
+            slot: slot,
+            teamID: teamID
+        },
+        type: 'post'
+    });
+}
+
+$(function() {
+    var teamSelects = [
+        ['nfl', 1, 'nflTeamID'], ['nfl', 2, 'nfl2TeamID'],
+        ['ncaa', 1, 'ncaaTeamID'], ['ncaa', 2, 'ncaa2TeamID'],
+        ['nhl', 1, 'nhlTeamID'], ['nhl', 2, 'nhl2TeamID'],
+        ['mlb', 1, 'mlbTeamID'], ['mlb', 2, 'mlb2TeamID']
+    ];
+
+    teamSelects.forEach(function(config) {
+        var select = document.getElementById(config[2]);
+        if (!select) return;
+        $(select).off('change.pssTeamSelection').on('change.pssTeamSelection', function() {
+            pssTeamSelectionChanged(config[0], config[1], this);
+        });
+    });
+});
+
 function pssSequenceChanged(setting) {
     $.ajax({
         url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
