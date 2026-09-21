@@ -70,6 +70,12 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
         case 'manualTrigger':
             pss_manualTrigger($_POST);
             break;
+        case 'runTeamEffect':
+            pss_runTeamEffect($_POST);
+            break;
+        case 'stopTeamEffect':
+            pss_stopTeamEffect($_POST);
+            break;
         case 'saveTickerSettings':
             pss_saveTickerSettings($_POST);
             break;
@@ -540,6 +546,181 @@ function pss_syncTeamPalettes($refreshMissing = false) {
     }
 
     return $palettes;
+}
+
+
+function pss_teamEffectPresetDefinition($preset) {
+    $preset = strtolower(trim((string)$preset));
+    $defs = array(
+        'colortwinkles' => array(
+            'key' => 'colortwinkles',
+            'effect' => 'WLED - Colortwinkles',
+            'colorCount' => 3,
+            'control1Label' => 'Fade Speed',
+            'control2Label' => 'Spawn Speed'
+        ),
+        'android' => array(
+            'key' => 'android',
+            'effect' => 'WLED - Android',
+            'colorCount' => 2,
+            'control1Label' => 'Speed',
+            'control2Label' => 'Width'
+        )
+    );
+    return isset($defs[$preset]) ? $defs[$preset] : $defs['colortwinkles'];
+}
+
+function pss_findTeamPalette($paletteID) {
+    $paletteID = strtolower(trim((string)$paletteID));
+    if ($paletteID === '') {
+        return null;
+    }
+    $palettes = pss_syncTeamPalettes(true);
+    return isset($palettes[$paletteID]) && is_array($palettes[$paletteID]) ? $palettes[$paletteID] : null;
+}
+
+function pss_teamEffectCommonPostValues($post) {
+    $model = isset($post['model']) ? trim((string)$post['model']) : '';
+    $paletteID = isset($post['paletteID']) ? strtolower(trim((string)$post['paletteID'])) : '';
+    $preset = isset($post['preset']) ? strtolower(trim((string)$post['preset'])) : 'colortwinkles';
+    $mapping = isset($post['mapping']) ? trim((string)$post['mapping']) : 'Horizontal';
+    if (!in_array($mapping, array('Horizontal', 'Vertical'), true)) {
+        $mapping = 'Horizontal';
+    }
+    $autoEnable = isset($post['autoEnable']) ? trim((string)$post['autoEnable']) : 'Enabled';
+    if (!in_array($autoEnable, array('False', 'Enabled', 'Transparent', 'Transparent RGB'), true)) {
+        $autoEnable = 'Enabled';
+    }
+    $brightness = pss_clampInt(isset($post['brightness']) ? $post['brightness'] : 128, 0, 255, 128);
+    $control1 = pss_clampInt(isset($post['control1']) ? $post['control1'] : 128, 0, 255, 128);
+    $control2 = pss_clampInt(isset($post['control2']) ? $post['control2'] : 128, 0, 255, 128);
+    return array($model, $paletteID, $preset, $mapping, $autoEnable, $brightness, $control1, $control2);
+}
+
+function pss_saveTeamEffectSettings($model, $paletteID, $preset, $mapping, $autoEnable, $brightness, $control1, $control2) {
+    pss_setPluginSetting('TeamEffectModel', $model);
+    pss_setPluginSetting('TeamEffectPaletteID', $paletteID);
+    pss_setPluginSetting('TeamEffectPreset', $preset);
+    pss_setPluginSetting('TeamEffectMapping', $mapping);
+    pss_setPluginSetting('TeamEffectAutoEnable', $autoEnable);
+    pss_setPluginSetting('TeamEffectBrightness', (string)$brightness);
+    pss_setPluginSetting('TeamEffectControl1', (string)$control1);
+    pss_setPluginSetting('TeamEffectControl2', (string)$control2);
+}
+
+function pss_runTeamEffect($post) {
+    list($model, $paletteID, $preset, $mapping, $autoEnable, $brightness, $control1, $control2) = pss_teamEffectCommonPostValues($post);
+
+    if ($model === '') {
+        pss_jsonResponse(false, 'Select a Pixel Overlay Model first.');
+    }
+    $models = pss_getOverlayCommandModels();
+    if (!empty($models) && !in_array($model, $models, true)) {
+        pss_jsonResponse(false, 'The selected Pixel Overlay Model is not currently returned by FPP.');
+    }
+
+    $palette = pss_findTeamPalette($paletteID);
+    if (!is_array($palette)) {
+        pss_jsonResponse(false, 'Select a currently managed sports team palette first.');
+    }
+
+    $def = pss_teamEffectPresetDefinition($preset);
+    $colors = isset($palette['colors']) && is_array($palette['colors']) ? array_values($palette['colors']) : array();
+    while (count($colors) < 3) {
+        $colors[] = '#000000';
+    }
+    $colors = array(
+        pss_normalizeColor($colors[0], '#FFFFFF'),
+        pss_normalizeColor($colors[1], '#000000'),
+        pss_normalizeColor($colors[2], '#808080')
+    );
+
+    // These arrays intentionally mirror the exact fields shown by FPP's
+    // Overlay Model Effect command editor for the two initial team-color effects.
+    // FPP/WLED's "* Colors Only" palette consumes the segment colors supplied
+    // after the palette argument.  Android exposes two colors; Colortwinkles
+    // exposes all three.  The registry still always keeps all three team colors.
+    if ($def['key'] === 'android') {
+        $args = array(
+            $model,
+            $autoEnable,
+            $def['effect'],
+            $mapping,
+            (string)$brightness,
+            (string)$control1,
+            (string)$control2,
+            '* Colors Only',
+            $colors[0],
+            $colors[1]
+        );
+    } else {
+        $args = array(
+            $model,
+            $autoEnable,
+            $def['effect'],
+            $mapping,
+            (string)$brightness,
+            (string)$control1,
+            (string)$control2,
+            '* Colors Only',
+            $colors[0],
+            $colors[1],
+            $colors[2]
+        );
+    }
+
+    $response = pss_runFppCommandExact('Overlay Model Effect', $args);
+    if (!$response['ok']) {
+        $detail = pss_overlayCommandErrorText($response);
+        pss_logEntry(
+            'FPP rejected team palette effect ' . $def['effect'] . ' for ' . $model
+            . ' HTTP ' . $response['status']
+            . ($detail !== '' ? ' response=' . $detail : '')
+            . ' team=' . (isset($palette['name']) ? $palette['name'] : $paletteID)
+        );
+        pss_jsonResponse(false, 'FPP rejected the team effect. Check the plugin log.', array(
+            'httpStatus' => $response['status'],
+            'detail' => $detail
+        ));
+    }
+
+    pss_saveTeamEffectSettings($model, $paletteID, $def['key'], $mapping, $autoEnable, $brightness, $control1, $control2);
+    $teamName = isset($palette['name']) ? (string)$palette['name'] : $paletteID;
+    pss_logEntry(
+        'Started team palette effect ' . $def['effect'] . ' on ' . $model
+        . ' team=' . $teamName
+        . ' palette=* Colors Only colors=' . implode(',', array_slice($colors, 0, (int)$def['colorCount']))
+    );
+    pss_jsonResponse(true, $teamName . ' colors started on ' . $model . ' using ' . $def['effect'] . '.', array(
+        'model' => $model,
+        'team' => $teamName,
+        'effect' => $def['effect'],
+        'palette' => '* Colors Only',
+        'colors' => array_slice($colors, 0, (int)$def['colorCount']),
+        'colorCount' => (int)$def['colorCount']
+    ));
+}
+
+function pss_stopTeamEffect($post) {
+    $model = isset($post['model']) ? trim((string)$post['model']) : trim(pss_pluginSetting('TeamEffectModel', ''));
+    if ($model === '') {
+        pss_jsonResponse(false, 'Select a Pixel Overlay Model first.');
+    }
+
+    // Same Stop Effects selection exposed by FPP's Overlay Model Effect command.
+    $response = pss_runFppCommandExact('Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'));
+    if (!$response['ok']) {
+        $detail = pss_overlayCommandErrorText($response);
+        pss_logEntry(
+            'FPP rejected Stop Effects for team palette model ' . $model
+            . ' HTTP ' . $response['status']
+            . ($detail !== '' ? ' response=' . $detail : '')
+        );
+        pss_jsonResponse(false, 'FPP could not stop the team effect. Check the plugin log.');
+    }
+
+    pss_logEntry('Stopped team palette effects on ' . $model);
+    pss_jsonResponse(true, 'Stopped overlay effects on ' . $model . '.');
 }
 
 function pss_overlayModelDimensions($model) {

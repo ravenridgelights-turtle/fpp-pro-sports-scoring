@@ -150,6 +150,38 @@ function pss_currentValue($key, $default = '') {
     color: rgba(255,255,255,.55);
     padding: 8px 0;
 }
+.pss-team-effect-card .form-control,
+.pss-team-effect-card select,
+.pss-team-effect-card input[type="number"] {
+    width: 100%;
+    max-width: 100%;
+}
+.pss-team-effect-colors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.pss-team-effect-color {
+    min-width: 105px;
+    padding: 6px 9px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 4px;
+    font-family: monospace;
+    text-align: center;
+    color: #fff;
+    text-shadow: 0 1px 2px #000, 0 0 2px #000;
+}
+.pss-team-effect-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.pss-team-effect-message {
+    min-height: 1.4em;
+    margin-top: 8px;
+}
 @media (max-width: 900px) {
     .pss-ticker-team-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
 }
@@ -194,6 +226,96 @@ function pss_currentValue($key, $default = '') {
             <p class="text-muted small mb-2">Automatically managed from the teams selected below. ESPN supplies the first two team colors; the plugin adds a contrasting third accent so FPP/WLED effects can use up to three colors. If an effect only uses two colors, Color 3 is simply ignored.</p>
             <p class="text-muted small">These are plugin-managed named palettes stored as FPP/WLED-compatible <strong>* Colors Only</strong> + Color 1/2/3 values. Only currently selected teams are kept; unselecting a team removes its palette automatically unless that same team is still selected in another slot. FPP's built-in WLED palette list is left untouched so FPP updates cannot overwrite or break this plugin data.</p>
             <div id="pss-team-palette-grid" class="pss-team-palette-grid"></div>
+        </div>
+    </div>
+
+    <div class="card mb-3 pss-team-effect-card">
+        <div class="card-body">
+            <h4 class="card-title">Team Palette Effect Trigger</h4>
+            <p class="text-muted small mb-2">This is the first live use of the managed team palettes. Pick a model and one of the currently selected teams, then run an FPP/WLED overlay effect using <strong>* Colors Only</strong>. The plugin supplies that team's colors automatically.</p>
+            <p class="text-muted small">The first two presets intentionally mirror FPP's own command fields: <strong>WLED - Colortwinkles</strong> uses Color 1/2/3; <strong>WLED - Android</strong> uses only Color 1/2. The team registry still keeps three colors for every team.</p>
+
+            <?php
+                $teamEffectModel = pss_currentValue('TeamEffectModel', pss_currentValue('TickerOverlayModel', ''));
+                $teamEffectPaletteID = pss_currentValue('TeamEffectPaletteID', '');
+                $teamEffectPreset = pss_currentValue('TeamEffectPreset', 'colortwinkles');
+                $teamEffectMapping = pss_currentValue('TeamEffectMapping', 'Horizontal');
+                $teamEffectAutoEnable = pss_currentValue('TeamEffectAutoEnable', 'Enabled');
+            ?>
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong>Models</strong><div class="text-muted small">Same Pixel Overlay model list FPP uses for Overlay Model Effect.</div></div>
+                <div class="col-md-8"><select class="form-control" id="pss-team-effect-model">
+                    <option value="">-- Select model --</option>
+                    <?php foreach ($pssOverlayModels as $overlayModel): ?>
+                    <option value="<?=htmlspecialchars($overlayModel, ENT_QUOTES)?>" <?=$teamEffectModel === $overlayModel ? 'selected' : ''?>><?=htmlspecialchars($overlayModel)?></option>
+                    <?php endforeach; ?>
+                </select></div>
+            </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong>Team Palette</strong><div class="text-muted small">Only teams currently selected in this plugin appear here.</div></div>
+                <div class="col-md-8"><select class="form-control" id="pss-team-effect-palette">
+                    <option value="">-- Select team palette --</option>
+                    <?php foreach ($pssTeamPalettes as $paletteID => $palette): ?>
+                    <option value="<?=htmlspecialchars($paletteID, ENT_QUOTES)?>" <?=$teamEffectPaletteID === $paletteID ? 'selected' : ''?>><?=htmlspecialchars($palette['name'])?> — <?=htmlspecialchars($palette['league'])?></option>
+                    <?php endforeach; ?>
+                </select></div>
+            </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong>Auto Enable/Disable</strong></div>
+                <div class="col-md-8"><select class="form-control" id="pss-team-effect-autoenable">
+                    <?php foreach (array('False','Enabled','Transparent','Transparent RGB') as $v): ?>
+                    <option value="<?=htmlspecialchars($v, ENT_QUOTES)?>" <?=$teamEffectAutoEnable === $v ? 'selected' : ''?>><?=htmlspecialchars($v)?></option>
+                    <?php endforeach; ?>
+                </select></div>
+            </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong>Effect</strong></div>
+                <div class="col-md-8"><select class="form-control" id="pss-team-effect-preset" onchange="pssTeamEffectPresetChanged();">
+                    <option value="colortwinkles" <?=$teamEffectPreset === 'colortwinkles' ? 'selected' : ''?>>WLED - Colortwinkles — 3 team colors</option>
+                    <option value="android" <?=$teamEffectPreset === 'android' ? 'selected' : ''?>>WLED - Android — 2 team colors</option>
+                </select></div>
+            </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong>Buffer Mapping</strong></div>
+                <div class="col-md-8"><select class="form-control" id="pss-team-effect-mapping">
+                    <option value="Horizontal" <?=$teamEffectMapping === 'Horizontal' ? 'selected' : ''?>>Horizontal</option>
+                    <option value="Vertical" <?=$teamEffectMapping === 'Vertical' ? 'selected' : ''?>>Vertical</option>
+                </select></div>
+            </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong>Brightness</strong></div>
+                <div class="col-md-8"><input class="form-control" id="pss-team-effect-brightness" type="number" min="0" max="255" value="<?=htmlspecialchars(pss_currentValue('TeamEffectBrightness', '128'))?>"></div>
+            </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong id="pss-team-effect-control1-label">Fade Speed</strong></div>
+                <div class="col-md-8"><input class="form-control" id="pss-team-effect-control1" type="number" min="0" max="255" value="<?=htmlspecialchars(pss_currentValue('TeamEffectControl1', '128'))?>"></div>
+            </div>
+
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-4"><strong id="pss-team-effect-control2-label">Spawn Speed</strong></div>
+                <div class="col-md-8"><input class="form-control" id="pss-team-effect-control2" type="number" min="0" max="255" value="<?=htmlspecialchars(pss_currentValue('TeamEffectControl2', '128'))?>"></div>
+            </div>
+
+            <div class="row mb-3 align-items-start">
+                <div class="col-md-4"><strong>Palette sent to FPP</strong></div>
+                <div class="col-md-8">
+                    <div><strong>* Colors Only</strong></div>
+                    <div id="pss-team-effect-colors" class="pss-team-effect-colors mt-2"></div>
+                    <div id="pss-team-effect-color-note" class="text-muted small mt-1"></div>
+                </div>
+            </div>
+
+            <div class="pss-team-effect-actions">
+                <button type="button" class="btn btn-primary" onclick="pssRunTeamEffect();">Run Team Effect</button>
+                <button type="button" class="btn btn-secondary" onclick="pssStopTeamEffect();">Stop Effect</button>
+            </div>
+            <div id="pss-team-effect-message" class="pss-team-effect-message text-muted small"></div>
         </div>
     </div>
 
@@ -543,6 +665,117 @@ function pssRenderTeamPalettes(palettes) {
     });
 }
 
+
+function pssTeamEffectSelectedPalette() {
+    var select = document.getElementById('pss-team-effect-palette');
+    if (!select || !select.value) return null;
+    for (var i = 0; i < pssTeamPalettes.length; i++) {
+        if (String(pssTeamPalettes[i].id || '') === String(select.value)) return pssTeamPalettes[i];
+    }
+    return null;
+}
+
+function pssRenderTeamEffectColors() {
+    var root = document.getElementById('pss-team-effect-colors');
+    var note = document.getElementById('pss-team-effect-color-note');
+    if (!root) return;
+    while (root.firstChild) root.removeChild(root.firstChild);
+
+    var palette = pssTeamEffectSelectedPalette();
+    if (!palette) {
+        if (note) note.textContent = 'Select a team palette to preview the colors that will be sent to FPP.';
+        return;
+    }
+
+    var preset = document.getElementById('pss-team-effect-preset');
+    var colorCount = preset && preset.value === 'android' ? 2 : 3;
+    var colors = Array.isArray(palette.colors) ? palette.colors.slice(0, 3) : [];
+    while (colors.length < 3) colors.push('#000000');
+    colors.forEach(function(color, index) {
+        var chip = document.createElement('div');
+        chip.className = 'pss-team-effect-color';
+        chip.style.backgroundColor = /^#[0-9A-Fa-f]{6}$/.test(String(color || '')) ? color : '#000000';
+        chip.textContent = 'Color ' + (index + 1) + '  ' + String(color || '#000000').toUpperCase();
+        if (index >= colorCount) {
+            chip.style.opacity = '.38';
+            chip.title = 'Stored for the team but not sent by this effect preset';
+        }
+        root.appendChild(chip);
+    });
+    if (note) {
+        note.textContent = colorCount === 3
+            ? 'This effect receives Color 1, Color 2, and Color 3.'
+            : 'This effect receives Color 1 and Color 2. Color 3 stays stored for effects that support it.';
+    }
+}
+
+function pssTeamEffectPresetChanged() {
+    var preset = document.getElementById('pss-team-effect-preset');
+    var c1 = document.getElementById('pss-team-effect-control1-label');
+    var c2 = document.getElementById('pss-team-effect-control2-label');
+    var android = preset && preset.value === 'android';
+    if (c1) c1.textContent = android ? 'Speed' : 'Fade Speed';
+    if (c2) c2.textContent = android ? 'Width' : 'Spawn Speed';
+    pssRenderTeamEffectColors();
+}
+
+function pssRunTeamEffect() {
+    var message = document.getElementById('pss-team-effect-message');
+    if (message) {
+        message.className = 'pss-team-effect-message text-muted small';
+        message.textContent = 'Starting team effect...';
+    }
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        type: 'post',
+        dataType: 'json',
+        data: {
+            action: 'runTeamEffect',
+            model: $('#pss-team-effect-model').val() || '',
+            paletteID: $('#pss-team-effect-palette').val() || '',
+            preset: $('#pss-team-effect-preset').val() || 'colortwinkles',
+            mapping: $('#pss-team-effect-mapping').val() || 'Horizontal',
+            autoEnable: $('#pss-team-effect-autoenable').val() || 'Enabled',
+            brightness: $('#pss-team-effect-brightness').val() || '128',
+            control1: $('#pss-team-effect-control1').val() || '128',
+            control2: $('#pss-team-effect-control2').val() || '128'
+        }
+    }).done(function(response) {
+        if (message) {
+            message.className = 'pss-team-effect-message ' + (response && response.ok ? 'text-success' : 'text-danger') + ' small';
+            message.textContent = response && response.message ? response.message : 'Team effect request finished.';
+        }
+    }).fail(function(xhr) {
+        if (message) {
+            message.className = 'pss-team-effect-message text-danger small';
+            message.textContent = 'Team effect request failed. Check the plugin log.';
+        }
+    });
+}
+
+function pssStopTeamEffect() {
+    var message = document.getElementById('pss-team-effect-message');
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        type: 'post',
+        dataType: 'json',
+        data: {
+            action: 'stopTeamEffect',
+            model: $('#pss-team-effect-model').val() || ''
+        }
+    }).done(function(response) {
+        if (message) {
+            message.className = 'pss-team-effect-message ' + (response && response.ok ? 'text-success' : 'text-danger') + ' small';
+            message.textContent = response && response.message ? response.message : 'Stop request finished.';
+        }
+    }).fail(function() {
+        if (message) {
+            message.className = 'pss-team-effect-message text-danger small';
+            message.textContent = 'Stop request failed. Check the plugin log.';
+        }
+    });
+}
+
 function pssTeamSelectionChanged(league, slot, selectElement) {
     var teamID = selectElement ? selectElement.value : '';
     $.ajax({
@@ -557,7 +790,23 @@ function pssTeamSelectionChanged(league, slot, selectElement) {
         dataType: 'json'
     }).done(function(response) {
         if (response && response.teamPalettes) {
-            pssRenderTeamPalettes(response.teamPalettes);
+            pssTeamPalettes = response.teamPalettes;
+            pssRenderTeamPalettes(pssTeamPalettes);
+            var teamSelect = document.getElementById('pss-team-effect-palette');
+            if (teamSelect) {
+                var previous = teamSelect.value;
+                while (teamSelect.options.length > 1) teamSelect.remove(1);
+                pssTeamPalettes.forEach(function(palette) {
+                    var option = document.createElement('option');
+                    option.value = String(palette.id || '');
+                    option.textContent = String(palette.name || 'Team') + ' — ' + String(palette.league || '');
+                    teamSelect.appendChild(option);
+                });
+                if (Array.prototype.some.call(teamSelect.options, function(opt) { return opt.value === previous; })) {
+                    teamSelect.value = previous;
+                }
+                pssRenderTeamEffectColors();
+            }
         }
     });
 }
@@ -577,6 +826,10 @@ $(function() {
             pssTeamSelectionChanged(config[0], config[1], this);
         });
     });
+
+    $('#pss-team-effect-palette').off('change.pssTeamEffect').on('change.pssTeamEffect', pssRenderTeamEffectColors);
+    pssTeamEffectPresetChanged();
+    pssRenderTeamEffectColors();
 });
 
 function pssSequenceChanged(setting) {
