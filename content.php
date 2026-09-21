@@ -146,9 +146,13 @@ function pss_currentValue($key, $default = '') {
 
             <div class="row mb-3 align-items-center">
                 <div class="col-md-5">
-                    <strong>Simultaneous highlight buffers</strong>
-                    <div class="text-muted small">Limits how many videos the browser downloads through FPP at once.</div>
+                    <strong>Highlight storage</strong>
+                    <div class="text-muted small">Highlights are downloaded one at a time into FPP's Video files and played locally.</div>
                 </div>
+                <div class="col-md-7 text-muted small">
+                    The plugin keeps only clips still present in the current ESPN highlight lists. Files use the <code>PSSHL_</code> prefix and are removed automatically when a clip falls off the list, the event changes, or the selected quality changes.
+                </div>
+            </div>
                 <div class="col-md-7">
                     <?php PrintSettingSelect(
                         'HighlightBufferConcurrency',

@@ -3,7 +3,8 @@ $pssKioskMode = isset($_GET['kiosk']) && (string)$_GET['kiosk'] === '1';
 $pssDataMode = isset($_GET['data']) && (string)$_GET['data'] === '1';
 $pssHighlightMode = isset($_GET['highlights']) && (string)$_GET['highlights'] === '1';
 $pssHighlightMediaMode = isset($_GET['highlightmedia']) && (string)$_GET['highlightmedia'] === '1';
-if ($pssDataMode || $pssHighlightMode || $pssHighlightMediaMode) {
+$pssHighlightLocalMode = isset($_GET['highlightlocal']) && (string)$_GET['highlightlocal'] === '1';
+if ($pssDataMode || $pssHighlightMode || $pssHighlightMediaMode || $pssHighlightLocalMode) {
     $skipJSsettings = 1;
 }
 
@@ -512,42 +513,205 @@ function pss_fetchEspnHighlights($league, $eventID, $limit = 6) {
 }
 
 
-function pss_highlightProxyUrl($league, $slot, $clipID, $sourceIndex = 0) {
-    return 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlightmedia=1&league='
-        . rawurlencode((string)$league)
-        . '&slot=' . (int)$slot
-        . '&clip=' . rawurlencode((string)$clipID)
-        . '&source=' . max(0, (int)$sourceIndex);
+function pss_highlightVideoDirectory() {
+    global $videoDirectory;
+    $dir = isset($videoDirectory) && trim((string)$videoDirectory) !== ''
+        ? rtrim((string)$videoDirectory, '/')
+        : '/home/fpp/media/videos';
+    return $dir;
+}
+
+function pss_highlightSafeFilenamePart($value) {
+    return preg_replace('/[^A-Za-z0-9_-]/', '_', (string)$value);
+}
+
+function pss_highlightQualityKey() {
+    $quality = strtolower(trim((string)pss_statusValue('HighlightQuality', 'low')));
+    return in_array($quality, array('low', 'medium', 'best'), true) ? $quality : 'low';
+}
+
+function pss_highlightLocalFilename($league, $slot, $eventID, $clipID) {
+    return 'PSSHL_'
+        . strtoupper(pss_highlightSafeFilenamePart($league))
+        . '_S' . (((int)$slot === 2) ? '2' : '1')
+        . '_' . pss_highlightSafeFilenamePart($eventID)
+        . '_' . pss_highlightSafeFilenamePart($clipID)
+        . '_' . pss_highlightSafeFilenamePart(pss_highlightQualityKey())
+        . '.mp4';
+}
+
+function pss_highlightWorkerState() {
+    $path = '/tmp/fpp-nfl-highlight-download-state.json';
+    if (!is_file($path)) return array();
+    $raw = @file_get_contents($path);
+    if ($raw === false || $raw === '') return array();
+    $state = json_decode($raw, true);
+    if (!is_array($state)) return array();
+
+    $updated = isset($state['updatedAt']) ? (int)$state['updatedAt'] : 0;
+    if ($updated > 0 && (time() - $updated) > 180) {
+        return array();
+    }
+    return $state;
+}
+
+function pss_highlightLocalUrl($filename) {
+    return 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlightlocal=1&file='
+        . rawurlencode((string)$filename);
 }
 
 function pss_prepareHighlightItemsForBrowser($items, $league, $slot) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $eventID = pss_statusValue($prefix . 'TeamNextEventID');
+    $videoDir = pss_highlightVideoDirectory();
+    $workerState = pss_highlightWorkerState();
+
     foreach ($items as &$item) {
         $upstreamSources = isset($item['mediaSources']) && is_array($item['mediaSources'])
             ? $item['mediaSources']
             : array();
 
-        // Keep upstream URLs visible in diagnostics, but hand the browser only
-        // same-origin proxy URLs. This avoids legacy-browser/CSP/hotlink issues.
+        // Keep ESPN source information in the diagnostic JSON, but never ask the
+        // scoreboard browser to download the ESPN video itself.
         $item['upstreamMediaUrl'] = isset($item['mediaUrl']) ? $item['mediaUrl'] : '';
         $item['upstreamMediaSources'] = $upstreamSources;
 
-        $proxied = array();
-        foreach ($upstreamSources as $sourceIndex => $source) {
-            if (!is_array($source) || empty($source['url'])) continue;
-            $proxied[] = array(
-                'url' => pss_highlightProxyUrl($league, $slot, $item['id'], $sourceIndex),
-                'type' => isset($source['type']) ? (string)$source['type'] : '',
-                'path' => isset($source['path']) ? (string)$source['path'] : ''
-            );
+        $filename = pss_highlightLocalFilename($league, $slot, $eventID, $item['id']);
+        $path = $videoDir . '/' . $filename;
+        $partPath = $path . '.part';
+        $ready = is_file($path) && @filesize($path) > 1024;
+        $state = 'queued';
+        $percent = null;
+        $downloadedBytes = 0;
+        $totalBytes = 0;
+
+        if ($ready) {
+            $state = 'ready';
+            $downloadedBytes = (int)@filesize($path);
+            $totalBytes = $downloadedBytes;
+        } elseif (isset($workerState['filename']) && (string)$workerState['filename'] === $filename
+            && isset($workerState['status']) && (string)$workerState['status'] === 'downloading') {
+            $state = 'downloading';
+            $downloadedBytes = isset($workerState['bytes']) ? max(0, (int)$workerState['bytes']) : 0;
+            $totalBytes = isset($workerState['total']) ? max(0, (int)$workerState['total']) : 0;
+            if ($totalBytes > 0) {
+                $percent = max(0, min(100, (int)round(($downloadedBytes / $totalBytes) * 100)));
+            }
+        } elseif (is_file($partPath)) {
+            $state = 'downloading';
+            $downloadedBytes = max(0, (int)@filesize($partPath));
+        } elseif (empty($item['upstreamMediaUrl'])) {
+            $state = 'unavailable';
         }
 
-        $item['mediaSources'] = $proxied;
-        $item['mediaUrl'] = !empty($proxied) ? $proxied[0]['url'] : '';
-        $item['mediaType'] = !empty($proxied) && isset($proxied[0]['type']) ? $proxied[0]['type'] : '';
-        $item['playable'] = !empty($proxied);
+        $item['localFile'] = $filename;
+        $item['localReady'] = $ready;
+        $item['localState'] = $state;
+        $item['localBytes'] = $downloadedBytes;
+        $item['localTotalBytes'] = $totalBytes;
+        $item['localPercent'] = $percent;
+
+        if ($ready) {
+            $localUrl = pss_highlightLocalUrl($filename);
+            $item['mediaUrl'] = $localUrl;
+            $item['mediaType'] = 'mp4';
+            $item['mediaSources'] = array(array(
+                'url' => $localUrl,
+                'type' => 'mp4',
+                'path' => 'fpp.video'
+            ));
+            $item['playable'] = true;
+        } else {
+            $item['mediaUrl'] = '';
+            $item['mediaType'] = '';
+            $item['mediaSources'] = array();
+            $item['playable'] = false;
+        }
     }
     unset($item);
     return $items;
+}
+
+function pss_streamLocalHighlightFile($filename) {
+    $filename = basename((string)$filename);
+    if (!preg_match('/^PSSHL_[A-Z0-9_-]+\.mp4$/', $filename)) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Invalid local highlight file.';
+        exit;
+    }
+
+    $path = pss_highlightVideoDirectory() . '/' . $filename;
+    if (!is_file($path) || @filesize($path) <= 0) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Local highlight file not found.';
+        exit;
+    }
+
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+
+    $size = (int)filesize($path);
+    $start = 0;
+    $end = $size - 1;
+    $status = 200;
+
+    $range = isset($_SERVER['HTTP_RANGE']) ? trim((string)$_SERVER['HTTP_RANGE']) : '';
+    if ($range !== '' && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $m)) {
+        if ($m[1] === '' && $m[2] !== '') {
+            $suffix = min($size, max(0, (int)$m[2]));
+            $start = max(0, $size - $suffix);
+        } else {
+            $start = ($m[1] !== '') ? max(0, (int)$m[1]) : 0;
+            if ($m[2] !== '') {
+                $end = min($end, max($start, (int)$m[2]));
+            }
+        }
+
+        if ($start > $end || $start >= $size) {
+            http_response_code(416);
+            header('Content-Range: bytes */' . $size);
+            exit;
+        }
+        $status = 206;
+    }
+
+    $length = $end - $start + 1;
+    http_response_code($status);
+    header('Content-Type: video/mp4');
+    header('Content-Disposition: inline; filename="' . $filename . '"');
+    header('Accept-Ranges: bytes');
+    header('Content-Length: ' . $length);
+    header('Cache-Control: private, max-age=3600');
+    header('X-Content-Type-Options: nosniff');
+    if ($status === 206) {
+        header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+    }
+
+    $fh = @fopen($path, 'rb');
+    if (!$fh) {
+        http_response_code(500);
+        exit;
+    }
+
+    if ($start > 0) {
+        @fseek($fh, $start);
+    }
+
+    $remaining = $length;
+    while ($remaining > 0 && !feof($fh) && !connection_aborted()) {
+        $chunk = fread($fh, min(262144, $remaining));
+        if ($chunk === false || $chunk === '') break;
+        echo $chunk;
+        $remaining -= strlen($chunk);
+        @flush();
+    }
+    fclose($fh);
+    exit;
 }
 
 function pss_streamHighlightMedia($league, $slot, $clipID, $sourceIndex) {
@@ -786,6 +950,12 @@ function pss_statusSnapshotData() {
 }
 
 
+
+if ($pssHighlightLocalMode) {
+    $filename = isset($_GET['file']) ? (string)$_GET['file'] : '';
+    pss_streamLocalHighlightFile($filename);
+}
+
 if ($pssHighlightMediaMode) {
     $league = isset($_GET['league']) ? strtolower(trim((string)$_GET['league'])) : '';
     $slot = (isset($_GET['slot']) && (int)$_GET['slot'] === 2) ? 2 : 1;
@@ -825,6 +995,8 @@ if ($pssHighlightMode) {
         'league' => $league,
         'slot' => $slot,
         'eventID' => $eventID,
+        'qualityPreference' => pss_highlightQualityKey(),
+        'workerState' => pss_highlightWorkerState(),
         'generatedAt' => date(DATE_ATOM),
         'items' => $items
     ));
@@ -1960,49 +2132,49 @@ function pssKioskFullscreen() {
     if (!panels.length || typeof fetch !== 'function') return;
 
     var activeVideo = null;
-    var highlightBlobCache = {};
-    var highlightBlobPending = {};
-    var highlightFetchQueue = [];
-    var highlightFetchActive = 0;
-    var highlightFetchLimit = <?=max(1, min(2, (int)pss_statusValue('HighlightBufferConcurrency', '1')))?>;
 
-    function playedStorageKey(eventID) {
+    function storageKey(eventID) {
         return 'pss-highlight-played-' + String(eventID || 'none');
     }
 
     function readPlayed(eventID) {
         try {
-            var raw = window.localStorage.getItem(playedStorageKey(eventID));
-            var value = raw ? JSON.parse(raw) : [];
-            return Array.isArray(value) ? value : [];
+            var raw = window.localStorage.getItem(storageKey(eventID));
+            var parsed = raw ? JSON.parse(raw) : {};
+            return parsed && typeof parsed === 'object' ? parsed : {};
         } catch (e) {
-            return [];
+            return {};
         }
-    }
-
-    function hasPlayed(eventID, clipID) {
-        return readPlayed(eventID).indexOf(String(clipID)) !== -1;
     }
 
     function markPlayed(eventID, clipID) {
+        if (!eventID || !clipID) return;
         try {
             var played = readPlayed(eventID);
-            var id = String(clipID);
-            if (played.indexOf(id) === -1) played.push(id);
-            if (played.length > 50) played = played.slice(played.length - 50);
-            window.localStorage.setItem(playedStorageKey(eventID), JSON.stringify(played));
-        } catch (e) {
-            // localStorage can be unavailable in privacy modes. Playback still works;
-            // the in-page newest-ID check prevents duplicate new-item handling during this session.
-        }
+            played[String(clipID)] = true;
+            window.localStorage.setItem(storageKey(eventID), JSON.stringify(played));
+        } catch (e) {}
+    }
+
+    function hasPlayed(eventID, clipID) {
+        var played = readPlayed(eventID);
+        return !!played[String(clipID || '')];
     }
 
     function durationLabel(seconds) {
-        seconds = Math.max(0, parseInt(seconds || 0, 10));
+        seconds = parseInt(seconds || 0, 10);
         if (!seconds) return '';
         var minutes = Math.floor(seconds / 60);
         var remain = seconds % 60;
-        return minutes ? (minutes + ':' + (remain < 10 ? '0' : '') + remain) : (remain + ' sec');
+        return minutes ? (minutes + ':' + String(remain).padStart(2, '0')) : (seconds + ' sec');
+    }
+
+    function formatBytes(bytes) {
+        bytes = Math.max(0, parseInt(bytes || 0, 10));
+        if (!bytes) return '';
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+        if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+        return bytes + ' B';
     }
 
     function setStatus(panel, text) {
@@ -2015,17 +2187,25 @@ function pssKioskFullscreen() {
         if (badge) badge.style.display = show ? '' : 'none';
     }
 
-    function stopOtherVideos(current) {
+    function stopOtherVideos(exceptVideo) {
         var videos = document.querySelectorAll('.pss-highlight-video');
         for (var i = 0; i < videos.length; i++) {
-            if (videos[i] !== current && !videos[i].paused) {
+            if (videos[i] !== exceptVideo) {
                 try { videos[i].pause(); } catch (e) {}
             }
         }
-        if (activeVideo && activeVideo !== current && !activeVideo.paused) {
-            try { activeVideo.pause(); } catch (e) {}
+        activeVideo = exceptVideo || null;
+    }
+
+    function disposeHighlightMedia(panel) {
+        var videos = panel.querySelectorAll('video.pss-highlight-video');
+        for (var i = 0; i < videos.length; i++) {
+            try { videos[i].pause(); } catch (e) {}
+            try {
+                videos[i].removeAttribute('src');
+                videos[i].load();
+            } catch (e) {}
         }
-        activeVideo = current;
     }
 
     function findItem(panel, id) {
@@ -2036,190 +2216,50 @@ function pssKioskFullscreen() {
         return null;
     }
 
-    function playableHighlightSources(item, video) {
-        var sources = [];
-        if (item && Array.isArray(item.mediaSources)) {
-            sources = item.mediaSources.slice(0);
-        } else if (item && item.mediaUrl) {
-            sources = [{url: item.mediaUrl, type: item.mediaType || ''}];
-        }
-
-        var result = [];
-        var seen = {};
-        for (var i = 0; i < sources.length; i++) {
-            var source = sources[i] || {};
-            var url = String(source.url || '');
-            var type = String(source.type || '');
-            if (!url || seen[url]) continue;
-            seen[url] = true;
-
-            if (type === 'hls') {
-                var hlsSupport = '';
-                try {
-                    hlsSupport = video && typeof video.canPlayType === 'function'
-                        ? video.canPlayType('application/vnd.apple.mpegurl')
-                        : '';
-                } catch (e) {}
-                if (!hlsSupport) continue;
+    function itemStateLabel(item) {
+        if (item.localReady) return 'Ready';
+        if (item.localState === 'downloading') {
+            if (item.localPercent !== null && item.localPercent !== undefined) {
+                return 'Downloading ' + item.localPercent + '%';
             }
-            result.push({url: url, type: type});
+            return 'Downloading';
         }
-        return result;
+        if (item.localState === 'unavailable') return 'ESPN link only';
+        return 'Queued';
     }
 
-    function setVideoSource(video, sources, index) {
-        if (!video || !sources || index < 0 || index >= sources.length) return false;
-        video._pssSourceIndex = index;
-        video.src = sources[index].url;
-        try { video.load(); } catch (e) {}
-        return true;
-    }
+    function updatePanelStatus(panel, item) {
+        if (item.localReady) {
+            var size = formatBytes(item.localBytes);
+            setStatus(panel, 'Saved on FPP' + (size ? ' · ' + size : '') + ' · ready to play');
+            return;
+        }
 
-    function highlightCacheKey(panel, item, source) {
-        return String(panel.getAttribute('data-event-id') || 'none') + ':' +
-            String(item && item.id ? item.id : 'none') + ':' +
-            String(source && source.url ? source.url : '');
-    }
-
-    function formatBytes(bytes) {
-        bytes = Math.max(0, parseInt(bytes || 0, 10));
-        if (!bytes) return '';
-        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
-        if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
-        return bytes + ' B';
-    }
-
-    function runHighlightFetchQueue() {
-        while (highlightFetchActive < highlightFetchLimit && highlightFetchQueue.length) {
-            var task = highlightFetchQueue.shift();
-
-            // If the viewer changed clips before this queued task started, skip the
-            // stale transfer instead of wasting Pi/network resources.
-            if (task.panel && task.panel._pssDesiredBufferKey !== task.key) {
-                task.reject(new Error('superseded'));
-                continue;
+        if (item.localState === 'downloading') {
+            var progress = '';
+            if (item.localPercent !== null && item.localPercent !== undefined) {
+                progress = ' ' + item.localPercent + '%';
+            } else if (item.localBytes) {
+                progress = ' · ' + formatBytes(item.localBytes);
             }
-
-            highlightFetchActive++;
-            if (typeof task.onState === 'function') {
-                task.onState('buffering', 0);
-            }
-
-            task.start().then(task.resolve, task.reject).then(function () {
-                highlightFetchActive = Math.max(0, highlightFetchActive - 1);
-                runHighlightFetchQueue();
-            });
+            setStatus(panel, 'Downloading to FPP' + progress + '…');
+            return;
         }
+
+        if (item.localState === 'unavailable') {
+            setStatus(panel, 'No downloadable MP4 from ESPN · use ESPN link');
+            return;
+        }
+
+        setStatus(panel, 'Queued for local download…');
     }
 
-    function prefetchHighlight(panel, item, source, onProgress, onState, priority) {
-        if (!source || !source.url) return Promise.reject(new Error('No media source'));
-        var key = highlightCacheKey(panel, item, source);
-
-        panel._pssDesiredBufferKey = key;
-
-        if (highlightBlobCache[key]) {
-            if (typeof onState === 'function') onState('cached', 0);
-            return Promise.resolve(highlightBlobCache[key]);
-        }
-        if (highlightBlobPending[key]) {
-            if (typeof onState === 'function') onState('queued', 0);
-            return highlightBlobPending[key];
-        }
-
-        var resolvePromise;
-        var rejectPromise;
-        var request = new Promise(function (resolve, reject) {
-            resolvePromise = resolve;
-            rejectPromise = reject;
-        });
-        highlightBlobPending[key] = request;
-
-        function doFetch() {
-            return fetch(source.url, { cache: 'force-cache' })
-                .then(function (response) {
-                    if (!response.ok) throw new Error('HTTP ' + response.status);
-
-                    var total = parseInt(response.headers.get('Content-Length') || '0', 10);
-                    var contentType = response.headers.get('Content-Type') || 'video/mp4';
-
-                    if (response.body && typeof response.body.getReader === 'function') {
-                        var reader = response.body.getReader();
-                        var chunks = [];
-                        var received = 0;
-
-                        function pump() {
-                            return reader.read().then(function (result) {
-                                if (result.done) {
-                                    var blob = new Blob(chunks, { type: contentType });
-                                    var cached = {
-                                        url: URL.createObjectURL(blob),
-                                        bytes: received,
-                                        total: total || received
-                                    };
-                                    highlightBlobCache[key] = cached;
-                                    return cached;
-                                }
-
-                                chunks.push(result.value);
-                                received += result.value.byteLength || result.value.length || 0;
-                                if (typeof onProgress === 'function') {
-                                    onProgress(received, total);
-                                }
-                                return pump();
-                            });
-                        }
-                        return pump();
-                    }
-
-                    return response.blob().then(function (blob) {
-                        var cached = {
-                            url: URL.createObjectURL(blob),
-                            bytes: blob.size || 0,
-                            total: blob.size || total || 0
-                        };
-                        highlightBlobCache[key] = cached;
-                        if (typeof onProgress === 'function') {
-                            onProgress(cached.bytes, cached.total);
-                        }
-                        return cached;
-                    });
-                });
-        }
-
-        var task = {
-            key: key,
-            panel: panel,
-            onState: onState,
-            start: doFetch,
-            resolve: function (cached) {
-                delete highlightBlobPending[key];
-                resolvePromise(cached);
-            },
-            reject: function (error) {
-                delete highlightBlobPending[key];
-                rejectPromise(error);
-            }
-        };
-
-        if (priority) {
-            highlightFetchQueue.unshift(task);
-        } else {
-            highlightFetchQueue.push(task);
-        }
-
-        if (typeof onState === 'function') {
-            onState('queued', highlightFetchQueue.length);
-        }
-        runHighlightFetchQueue();
-        return request;
-    }
-
-    function loadHighlight(panel, item, autoPlay, isNew, userChoice) {
+    function loadHighlight(panel, item, isNew) {
         if (!item) return;
         var body = panel.querySelector('[data-highlight-body="1"]');
         if (!body) return;
 
+        disposeHighlightMedia(panel);
         while (body.firstChild) body.removeChild(body.firstChild);
 
         var stage = document.createElement('div');
@@ -2229,70 +2269,47 @@ function pssKioskFullscreen() {
         media.className = 'pss-highlight-media';
 
         var video = null;
-        var videoSources = [];
-        if (item.mediaUrl || (Array.isArray(item.mediaSources) && item.mediaSources.length)) {
+        if (item.localReady && item.mediaUrl) {
             video = document.createElement('video');
             video.className = 'pss-highlight-video';
             video.controls = true;
-            video.preload = 'auto';
-            video.autoplay = false;
+            video.preload = 'metadata';
             video.playsInline = true;
             if (item.thumbnail) video.poster = item.thumbnail;
+            video.src = item.mediaUrl;
             video.setAttribute('aria-label', item.headline || 'ESPN highlight');
 
-            videoSources = playableHighlightSources(item, video);
-            if (!videoSources.length) {
-                video = null;
-            } else {
-                // Do not point <video> at the proxy yet. Force one continuous full
-                // background fetch first, then play from a local browser Blob URL.
-                // This is more aggressive than preload="auto" and avoids repeated
-                // small range requests through a low-powered FPP box.
-                video.removeAttribute('src');
-                video.addEventListener('play', function () {
-                    stopOtherVideos(video);
-                    markPlayed(panel.getAttribute('data-event-id') || '', item.id);
-                    if (replay) replay.textContent = 'Replay';
-                    showNewBadge(panel, false);
-                    setStatus(panel, 'Playing highlight');
-                });
-                video.addEventListener('loadedmetadata', function () {
-                    setStatus(panel, 'Buffered · ready to play');
-                });
-                video.addEventListener('canplay', function () {
-                    setStatus(panel, 'Ready · tap ' + (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play'));
-                });
-                video.addEventListener('ended', function () {
-                    setStatus(panel, 'Played once · Replay available');
-                });
-                video.addEventListener('error', function () {
-                    if (!video._pssStreamingFallback && videoSources.length) {
-                        video._pssStreamingFallback = true;
-                        if (setVideoSource(video, videoSources, 0)) {
-                            setStatus(panel, 'Buffered copy failed · trying streaming fallback…');
-                            return;
-                        }
-                    }
-                    setStatus(panel, 'Video playback unavailable · use ESPN link');
-                });
-                media.appendChild(video);
-            }
-        }
-        if (!video && item.thumbnail) {
+            video.addEventListener('play', function () {
+                stopOtherVideos(video);
+                markPlayed(panel.getAttribute('data-event-id') || '', item.id);
+                showNewBadge(panel, false);
+                setStatus(panel, 'Playing local FPP video');
+            });
+            video.addEventListener('ended', function () {
+                setStatus(panel, 'Played · Replay available');
+            });
+            video.addEventListener('error', function () {
+                setStatus(panel, 'Local video playback failed · use ESPN link');
+            });
+            media.appendChild(video);
+        } else if (item.thumbnail) {
             var poster = document.createElement('img');
             poster.className = 'pss-highlight-poster';
             poster.src = item.thumbnail;
             poster.alt = item.headline || 'ESPN highlight thumbnail';
             media.appendChild(poster);
-        } else if (!video) {
-            var noMedia = document.createElement('div');
-            noMedia.className = 'pss-highlight-empty';
-            noMedia.textContent = 'ESPN did not provide a browser-playable source for this clip.';
-            media.appendChild(noMedia);
+        } else {
+            var waiting = document.createElement('div');
+            waiting.className = 'pss-highlight-empty';
+            waiting.textContent = item.localState === 'unavailable'
+                ? 'ESPN did not provide a downloadable MP4 for this clip.'
+                : 'This highlight is being prepared in FPP Video storage.';
+            media.appendChild(waiting);
         }
 
         var copy = document.createElement('div');
         copy.className = 'pss-highlight-copy';
+
         var headline = document.createElement('div');
         headline.className = 'pss-highlight-headline';
         headline.textContent = item.headline || 'ESPN game highlight';
@@ -2303,20 +2320,23 @@ function pssKioskFullscreen() {
         var parts = [];
         var duration = durationLabel(item.duration);
         if (duration) parts.push(duration);
-        if (video) parts.push('plays inside scoreboard');
-        else if (item.playable) parts.push('stream format not supported by this browser');
-        else parts.push('ESPN link only');
+        parts.push(itemStateLabel(item));
+        if (item.localReady && item.localBytes) parts.push(formatBytes(item.localBytes));
+        if (item.selectedSourcePath) parts.push(item.selectedSourcePath);
         meta.textContent = parts.join(' · ');
         copy.appendChild(meta);
 
         var actions = document.createElement('div');
         actions.className = 'pss-highlight-actions';
-        var replay = document.createElement('button');
-        replay.type = 'button';
-        replay.className = 'pss-highlight-button';
-        replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-        replay.disabled = !!video;
-        replay.addEventListener('click', function () {
+
+        var play = document.createElement('button');
+        play.type = 'button';
+        play.className = 'pss-highlight-button';
+        play.textContent = item.localReady
+            ? (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play')
+            : (item.localState === 'downloading' ? 'Downloading…' : 'Queued…');
+        play.disabled = !video;
+        play.addEventListener('click', function () {
             if (!video) return;
             stopOtherVideos(video);
             try { video.currentTime = 0; } catch (e) {}
@@ -2325,7 +2345,7 @@ function pssKioskFullscreen() {
                 promise.catch(function () { setStatus(panel, 'Tap the video play control to start'); });
             }
         });
-        actions.appendChild(replay);
+        actions.appendChild(play);
 
         if (item.webUrl) {
             var espnLink = document.createElement('a');
@@ -2336,8 +2356,8 @@ function pssKioskFullscreen() {
             espnLink.textContent = 'Open on ESPN';
             actions.appendChild(espnLink);
         }
-        copy.appendChild(actions);
 
+        copy.appendChild(actions);
         stage.appendChild(media);
         stage.appendChild(copy);
         body.appendChild(stage);
@@ -2346,16 +2366,19 @@ function pssKioskFullscreen() {
         if (items.length > 1) {
             var history = document.createElement('div');
             history.className = 'pss-highlight-history';
+
             for (var i = 0; i < items.length; i++) {
                 if (String(items[i].id) === String(item.id)) continue;
+
                 var historyButton = document.createElement('button');
                 historyButton.type = 'button';
                 historyButton.className = 'pss-highlight-history-button';
                 historyButton.setAttribute('data-highlight-id', String(items[i].id));
-                historyButton.textContent = 'Replay: ' + String(items[i].headline || 'Earlier highlight');
+                historyButton.textContent = itemStateLabel(items[i]) + ': ' +
+                    String(items[i].headline || 'Earlier highlight');
                 historyButton.addEventListener('click', function () {
                     var selected = findItem(panel, this.getAttribute('data-highlight-id'));
-                    if (selected) loadHighlight(panel, selected, false, false, true);
+                    if (selected) loadHighlight(panel, selected, false);
                 });
                 history.appendChild(historyButton);
             }
@@ -2363,62 +2386,18 @@ function pssKioskFullscreen() {
         }
 
         panel._pssCurrentHighlightID = String(item.id || '');
+        panel._pssCurrentLocalState = String(item.localState || '');
+        panel._pssCurrentLocalReady = !!item.localReady;
         showNewBadge(panel, !!isNew);
-
-        if (video && videoSources.length) {
-            replay.textContent = 'Buffering…';
-            replay.disabled = true;
-            setStatus(panel, 'Starting full background buffer…');
-
-            prefetchHighlight(panel, item, videoSources[0], function (received, total) {
-                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
-                if (total > 0) {
-                    var percent = Math.max(0, Math.min(100, Math.round((received / total) * 100)));
-                    setStatus(panel, 'Buffering ' + percent + '% · ' + formatBytes(received) + ' / ' + formatBytes(total));
-                } else {
-                    setStatus(panel, 'Buffering · ' + formatBytes(received));
-                }
-            }, function (state, position) {
-                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
-                if (state === 'queued') {
-                    setStatus(panel, position > 1 ? ('Queued for buffering · position ' + position) : 'Queued for buffering…');
-                } else if (state === 'buffering') {
-                    setStatus(panel, 'Starting buffer…');
-                }
-            }, !!userChoice).then(function (cached) {
-                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
-                video._pssStreamingFallback = false;
-                video.src = cached.url;
-                try { video.load(); } catch (e) {}
-                replay.disabled = false;
-                replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-                setStatus(panel, 'Buffered ' + formatBytes(cached.bytes) + ' · ready to play');
-            }).catch(function (error) {
-                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
-                if (error && error.message === 'superseded') return;
-                // If full-prefetch fails, retain the proven streaming proxy path.
-                video._pssStreamingFallback = true;
-                if (setVideoSource(video, videoSources, 0)) {
-                    replay.disabled = false;
-                    replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-                    setStatus(panel, 'Fast buffer unavailable · streaming fallback ready');
-                } else {
-                    replay.disabled = true;
-                    replay.textContent = 'Unavailable';
-                    setStatus(panel, 'Video playback unavailable · use ESPN link');
-                }
-            });
-        }
-
-        if (!video) {
-            setStatus(panel, isNew ? 'New highlight · ESPN link available' : 'Watch on ESPN');
-        }
+        updatePanelStatus(panel, item);
     }
 
     function renderEmpty(panel) {
         var body = panel.querySelector('[data-highlight-body="1"]');
         if (!body) return;
+        disposeHighlightMedia(panel);
         while (body.firstChild) body.removeChild(body.firstChild);
+
         var empty = document.createElement('div');
         empty.className = 'pss-highlight-empty';
         empty.textContent = 'No ESPN highlights are available for this game yet.';
@@ -2435,7 +2414,6 @@ function pssKioskFullscreen() {
 
         var currentEvent = String(panel.getAttribute('data-event-id') || '');
         if (String(data.eventID || '') !== currentEvent) {
-            // The scoring snapshot will reload the card when the event rolls over.
             return;
         }
 
@@ -2455,22 +2433,31 @@ function pssKioskFullscreen() {
         panel._pssHighlightInitialized = true;
         panel._pssNewestHighlightID = newestID;
 
-        // On initial load or when a new clip arrives, render the newest clip and let
-        // the browser preload it in the background. Playback is always user-initiated.
         if (firstLoad || newArrival) {
-            loadHighlight(panel, newest, false, newArrival, false);
+            loadHighlight(panel, newest, newArrival);
             return;
         }
 
-        // Keep whatever clip the viewer is currently watching/replaying. If nothing
-        // has been rendered yet, restore the newest clip without starting playback.
-        if (!panel._pssCurrentHighlightID) {
-            loadHighlight(panel, newest, false, false, false);
+        if (panel._pssCurrentHighlightID) {
+            var current = findItem(panel, panel._pssCurrentHighlightID);
+            if (current) {
+                var changed = (!!current.localReady !== !!panel._pssCurrentLocalReady)
+                    || String(current.localState || '') !== String(panel._pssCurrentLocalState || '');
+                if (changed) {
+                    loadHighlight(panel, current, false);
+                } else {
+                    updatePanelStatus(panel, current);
+                }
+                return;
+            }
         }
+
+        loadHighlight(panel, newest, false);
     }
 
     function refreshPanel(panel) {
         if (panel._pssHighlightLoading) return;
+
         var league = panel.getAttribute('data-league') || '';
         var slot = panel.getAttribute('data-slot') || '1';
         var url = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlights=1&league=' +
@@ -2492,6 +2479,6 @@ function pssKioskFullscreen() {
     }
 
     refreshAll();
-    window.setInterval(refreshAll, 20000);
+    window.setInterval(refreshAll, 10000);
 })();
 </script>
