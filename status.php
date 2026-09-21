@@ -434,6 +434,10 @@ if ($pssDataMode) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
 }
+/* When kiosk mode has only one active team, let its scoreboard span the full display. */
+.pss-kiosk-page .pss-status-grid > .pss-scoreboard:only-child {
+    grid-column: 1 / -1;
+}
 .pss-kiosk-page .pss-scoreboard {
     background: #171b25;
     border-color: #343b4a;
