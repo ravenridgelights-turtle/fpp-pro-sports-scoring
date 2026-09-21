@@ -2046,8 +2046,6 @@ function pssKioskFullscreen() {
     if (!panels.length || typeof fetch !== 'function') return;
 
     var activeVideo = null;
-    var highlightBlobCache = {};
-    var highlightBlobPending = {};
 
     function playedStorageKey(eventID) {
         return 'pss-highlight-played-' + String(eventID || 'none');
@@ -2158,99 +2156,14 @@ function pssKioskFullscreen() {
         return true;
     }
 
-    function highlightCacheKey(panel, item, source) {
-        return String(panel.getAttribute('data-event-id') || 'none') + ':' +
-            String(item && item.id ? item.id : 'none') + ':' +
-            String(source && source.url ? source.url : '');
-    }
-
-    function formatBytes(bytes) {
-        bytes = Math.max(0, parseInt(bytes || 0, 10));
-        if (!bytes) return '';
-        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
-        if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
-        return bytes + ' B';
-    }
-
-    function prefetchHighlight(panel, item, source, onProgress) {
-        if (!source || !source.url) return Promise.reject(new Error('No media source'));
-        var key = highlightCacheKey(panel, item, source);
-
-        if (highlightBlobCache[key]) {
-            return Promise.resolve(highlightBlobCache[key]);
-        }
-        if (highlightBlobPending[key]) {
-            return highlightBlobPending[key];
-        }
-
-        var request = fetch(source.url, { cache: 'force-cache' })
-            .then(function (response) {
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-
-                var total = parseInt(response.headers.get('Content-Length') || '0', 10);
-                var contentType = response.headers.get('Content-Type') || 'video/mp4';
-
-                // Streaming reader gives us real buffering progress when the browser
-                // supports it. Older browsers fall back to response.blob().
-                if (response.body && typeof response.body.getReader === 'function') {
-                    var reader = response.body.getReader();
-                    var chunks = [];
-                    var received = 0;
-
-                    function pump() {
-                        return reader.read().then(function (result) {
-                            if (result.done) {
-                                var blob = new Blob(chunks, { type: contentType });
-                                var cached = {
-                                    url: URL.createObjectURL(blob),
-                                    bytes: received,
-                                    total: total || received
-                                };
-                                highlightBlobCache[key] = cached;
-                                return cached;
-                            }
-
-                            chunks.push(result.value);
-                            received += result.value.byteLength || result.value.length || 0;
-                            if (typeof onProgress === 'function') {
-                                onProgress(received, total);
-                            }
-                            return pump();
-                        });
-                    }
-                    return pump();
-                }
-
-                return response.blob().then(function (blob) {
-                    var cached = {
-                        url: URL.createObjectURL(blob),
-                        bytes: blob.size || 0,
-                        total: blob.size || total || 0
-                    };
-                    highlightBlobCache[key] = cached;
-                    if (typeof onProgress === 'function') {
-                        onProgress(cached.bytes, cached.total);
-                    }
-                    return cached;
-                });
-            })
-            .then(function (cached) {
-                delete highlightBlobPending[key];
-                return cached;
-            }, function (error) {
-                delete highlightBlobPending[key];
-                throw error;
-            });
-
-        highlightBlobPending[key] = request;
-        return request;
-    }
-
     function loadHighlight(panel, item, autoPlay, isNew) {
         if (!item) return;
         var body = panel.querySelector('[data-highlight-body="1"]');
         if (!body) return;
 
+        // Important on Pi Zero: changing clips must immediately stop the previous
+        // video request before the next UI is created.
+        disposeHighlightMedia(panel);
         while (body.firstChild) body.removeChild(body.firstChild);
 
         var stage = document.createElement('div');
@@ -2265,7 +2178,7 @@ function pssKioskFullscreen() {
             video = document.createElement('video');
             video.className = 'pss-highlight-video';
             video.controls = true;
-            video.preload = 'auto';
+            video.preload = item.cached ? 'metadata' : 'none';
             video.autoplay = false;
             video.playsInline = true;
             if (item.thumbnail) video.poster = item.thumbnail;
@@ -2276,11 +2189,11 @@ function pssKioskFullscreen() {
                 video = null;
             } else {
                 if (item.cached) {
-                    // The daemon already downloaded this clip to FPP before the page
-                    // was opened. Point the player at the local cached file immediately.
+                    // Already on the FPP disk: use the local same-origin file.
                     setVideoSource(video, videoSources, 0);
                 } else {
-                    // Cache miss fallback: keep the working full browser-prefetch path.
+                    // Deliberately do not touch ESPN/the live proxy from the browser.
+                    // The background worker will cache this clip at low priority.
                     video.removeAttribute('src');
                 }
                 video.addEventListener('play', function () {
@@ -2300,14 +2213,7 @@ function pssKioskFullscreen() {
                     setStatus(panel, 'Played once · Replay available');
                 });
                 video.addEventListener('error', function () {
-                    if (!video._pssStreamingFallback && videoSources.length) {
-                        video._pssStreamingFallback = true;
-                        if (setVideoSource(video, videoSources, 0)) {
-                            setStatus(panel, 'Buffered copy failed · trying streaming fallback…');
-                            return;
-                        }
-                    }
-                    setStatus(panel, 'Video playback unavailable · use ESPN link');
+                    setStatus(panel, 'Cached video playback unavailable · use ESPN link');
                 });
                 media.appendChild(video);
             }
@@ -2348,8 +2254,10 @@ function pssKioskFullscreen() {
         var replay = document.createElement('button');
         replay.type = 'button';
         replay.className = 'pss-highlight-button';
-        replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-        replay.disabled = !!video && !item.cached;
+        replay.textContent = item.cached
+            ? (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play')
+            : 'Caching…';
+        replay.disabled = !video || !item.cached;
         replay.addEventListener('click', function () {
             if (!video) return;
             stopOtherVideos(video);
@@ -2399,46 +2307,24 @@ function pssKioskFullscreen() {
         panel._pssCurrentHighlightID = String(item.id || '');
         showNewBadge(panel, !!isNew);
 
+        panel._pssRenderedCached = !!item.cached;
+
         if (video && videoSources.length && item.cached) {
             replay.disabled = false;
             replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
             var cachedLabel = item.cachedBytes ? (' · ' + formatBytes(item.cachedBytes)) : '';
             setStatus(panel, 'Preloaded on FPP' + cachedLabel + ' · ready to play');
         } else if (video && videoSources.length) {
-            replay.textContent = 'Buffering…';
+            // Do not start a second ESPN/PHP transfer from the browser. The low-priority
+            // server cache worker will fetch it once, and the 20-second metadata poll
+            // will switch this card to the local copy when ready.
             replay.disabled = true;
-            setStatus(panel, 'Cache miss · buffering from ESPN…');
-
-            prefetchHighlight(panel, item, videoSources[0], function (received, total) {
-                if (total > 0) {
-                    var percent = Math.max(0, Math.min(100, Math.round((received / total) * 100)));
-                    setStatus(panel, 'Buffering ' + percent + '% · ' + formatBytes(received) + ' / ' + formatBytes(total));
-                } else {
-                    setStatus(panel, 'Buffering · ' + formatBytes(received));
-                }
-            }).then(function (cached) {
-                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
-                video._pssStreamingFallback = false;
-                video.src = cached.url;
-                try { video.load(); } catch (e) {}
-                replay.disabled = false;
-                replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-                setStatus(panel, 'Buffered ' + formatBytes(cached.bytes) + ' · ready to play');
-            }).catch(function () {
-                if (panel._pssCurrentHighlightID !== String(item.id || '')) return;
-                // If full-prefetch fails, retain the proven streaming proxy path.
-                video._pssStreamingFallback = true;
-                if (setVideoSource(video, videoSources, 0)) {
-                    replay.disabled = false;
-                    replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
-                    setStatus(panel, 'Fast buffer unavailable · streaming fallback ready');
-                } else {
-                    replay.disabled = true;
-                    replay.textContent = 'Unavailable';
-                    setStatus(panel, 'Video playback unavailable · use ESPN link');
-                }
-            });
+            replay.textContent = 'Caching…';
+            setStatus(panel, isNew
+                ? 'New highlight · caching safely in background…'
+                : 'Caching safely on FPP…');
         }
+
 
         if (!video) {
             setStatus(panel, isNew ? 'New highlight · ESPN link available' : 'Watch on ESPN');
@@ -2485,8 +2371,18 @@ function pssKioskFullscreen() {
         panel._pssHighlightInitialized = true;
         panel._pssNewestHighlightID = newestID;
 
-        // On initial load or when a new clip arrives, render the newest clip and let
-        // the browser preload it in the background. Playback is always user-initiated.
+        // If the clip currently on screen changed from cache-miss to cached, rebuild
+        // just that clip so Play becomes available without reloading the page.
+        if (panel._pssCurrentHighlightID) {
+            var currentItem = findItem(panel, panel._pssCurrentHighlightID);
+            if (currentItem && !!currentItem.cached !== !!panel._pssRenderedCached) {
+                loadHighlight(panel, currentItem, false, false);
+                return;
+            }
+        }
+
+        // On initial load or when a new clip arrives, render it immediately.
+        // The browser does not download uncached media; the server cache worker owns that job.
         if (firstLoad || newArrival) {
             loadHighlight(panel, newest, false, newArrival);
             return;

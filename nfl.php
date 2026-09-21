@@ -79,10 +79,10 @@ function pss_launchHighlightCacheWorker() {
     $stamp = '/tmp/fpp-nfl-highlight-cache-launch.stamp';
     $now = time();
 
-    // Check every ~20 seconds without tying highlight discovery to the main
-    // score-poll sleep interval. The worker itself also takes a nonblocking lock.
+    // Pi-safe cadence. ESPN clips are not published instantly anyway, and a
+    // 45-second cache check avoids constant PHP/cURL churn on low-power hardware.
     $last = is_file($stamp) ? (int)@filemtime($stamp) : 0;
-    if ($last > 0 && ($now - $last) < 20) {
+    if ($last > 0 && ($now - $last) < 45) {
         return;
     }
     @touch($stamp);
@@ -93,7 +93,11 @@ function pss_launchHighlightCacheWorker() {
         return;
     }
 
-    $command = escapeshellcmd($php) . ' ' . escapeshellarg($worker) . ' >/dev/null 2>&1 &';
+    // Run cache work below FPP's normal workload priority. ionice may not exist on
+    // every image, so use it only when available.
+    $nice = is_executable('/usr/bin/nice') ? '/usr/bin/nice -n 15 ' : '';
+    $ionice = is_executable('/usr/bin/ionice') ? '/usr/bin/ionice -c3 ' : '';
+    $command = $nice . $ionice . escapeshellcmd($php) . ' ' . escapeshellarg($worker) . ' >/dev/null 2>&1 &';
     @exec($command);
 }
 
@@ -101,7 +105,7 @@ function pss_sleepWithHighlightCache($seconds) {
     $remaining = max(1, (int)$seconds);
     while ($remaining > 0) {
         pss_launchHighlightCacheWorker();
-        $chunk = min(20, $remaining);
+        $chunk = min(45, $remaining);
         sleep($chunk);
         $remaining -= $chunk;
     }

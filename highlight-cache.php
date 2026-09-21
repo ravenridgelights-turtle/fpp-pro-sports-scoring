@@ -52,7 +52,7 @@ function pss_hc_download($url, $target) {
     $fh = @fopen($tmp, 'wb');
     if (!$fh) return false;
 
-    $maxBytes = 50 * 1024 * 1024;
+    $maxBytes = 35 * 1024 * 1024;
     $written = 0;
     $tooLarge = false;
 
@@ -76,6 +76,11 @@ function pss_hc_download($url, $target) {
     }
     if (defined('CURLOPT_TCP_NODELAY')) {
         @curl_setopt($ch, CURLOPT_TCP_NODELAY, true);
+    }
+    // Keep video caching from monopolizing a Pi Zero's Wi-Fi/CPU. About 512 KB/s
+    // is fast enough for short ESPN clips while leaving headroom for FPP itself.
+    if (defined('CURLOPT_MAX_RECV_SPEED_LARGE')) {
+        @curl_setopt($ch, CURLOPT_MAX_RECV_SPEED_LARGE, 524288);
     }
 
     curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($curl, $chunk) use ($fh, &$written, &$tooLarge, $maxBytes) {
@@ -159,7 +164,8 @@ if (function_exists('pss_pluginSetting') && pss_pluginSetting('ENABLED', 'OFF') 
 
 $supported = array('nfl', 'ncaa', 'nhl', 'mlb');
 $keepFiles = array();
-$keepPerTeam = 3;
+$keepPerTeam = 2;
+$downloadBudget = 1;
 
 foreach ($supported as $league) {
     foreach (array(1, 2) as $slot) {
@@ -206,7 +212,15 @@ foreach ($supported as $league) {
                 continue;
             }
 
-            pss_hc_log($league . ' slot ' . $slot . ' caching clip ' . $clipID);
+            // Strict serialization on low-power FPP: at most ONE new video is
+            // downloaded per worker invocation. Other missing clips wait until
+            // the next 45-second pass.
+            if ($downloadBudget <= 0) {
+                continue;
+            }
+
+            $downloadBudget--;
+            pss_hc_log($league . ' slot ' . $slot . ' caching clip ' . $clipID . ' at low priority');
             if (pss_hc_download($upstream, $target)) {
                 pss_hc_log($league . ' slot ' . $slot . ' cached clip ' . $clipID . ' (' . filesize($target) . ' bytes)');
             } else {
