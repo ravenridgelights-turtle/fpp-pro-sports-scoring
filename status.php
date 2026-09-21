@@ -99,28 +99,33 @@ function pss_statusSnapshotData() {
 
     $games = array();
     foreach ($leagues as $league) {
-        $teamID = pss_statusValue($league . 'TeamID');
-        if ($teamID === '') {
-            continue;
-        }
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            $teamID = pss_statusValue($prefix . 'TeamID');
+            if ($teamID === '') {
+                continue;
+            }
 
-        $games[$league] = array(
-            'teamID' => $teamID,
-            'teamName' => pss_statusValue($league . 'TeamName', 'Selected team'),
-            'teamAbbr' => pss_statusValue($league . 'TeamAbbreviation', 'TEAM'),
-            'teamLogo' => pss_statusValue($league . 'TeamLogo'),
-            'myScore' => pss_statusValue($league . 'MyScore', '0'),
-            'oppoName' => pss_statusValue($league . 'OppoName', 'Opponent'),
-            'oppoAbbr' => pss_statusValue($league . 'OppoAbbreviation', 'OPP'),
-            'oppoLogo' => pss_statusValue($league . 'OppoLogo'),
-            'oppoScore' => pss_statusValue($league . 'OppoScore', '0'),
-            'eventID' => pss_statusValue($league . 'TeamNextEventID'),
-            'state' => pss_statusValue($league . 'GameStatus'),
-            'stateLabel' => pss_stateLabel(pss_statusValue($league . 'GameStatus')),
-            'detail' => pss_statusValue($league . 'GameDetail'),
-            'start' => pss_statusValue($league . 'Start'),
-            'startFormatted' => pss_formatStart(pss_statusValue($league . 'Start')),
-        );
+            $games[$prefix] = array(
+                'league' => $league,
+                'slot' => $slot,
+                'teamID' => $teamID,
+                'teamName' => pss_statusValue($prefix . 'TeamName', 'Selected team'),
+                'teamAbbr' => pss_statusValue($prefix . 'TeamAbbreviation', 'TEAM'),
+                'teamLogo' => pss_statusValue($prefix . 'TeamLogo'),
+                'myScore' => pss_statusValue($prefix . 'MyScore', '0'),
+                'oppoName' => pss_statusValue($prefix . 'OppoName', 'Opponent'),
+                'oppoAbbr' => pss_statusValue($prefix . 'OppoAbbreviation', 'OPP'),
+                'oppoLogo' => pss_statusValue($prefix . 'OppoLogo'),
+                'oppoScore' => pss_statusValue($prefix . 'OppoScore', '0'),
+                'eventID' => pss_statusValue($prefix . 'TeamNextEventID'),
+                'state' => pss_statusValue($prefix . 'GameStatus'),
+                'stateLabel' => pss_stateLabel(pss_statusValue($prefix . 'GameStatus')),
+                'detail' => pss_statusValue($prefix . 'GameDetail'),
+                'start' => pss_statusValue($prefix . 'Start'),
+                'startFormatted' => pss_formatStart(pss_statusValue($prefix . 'Start')),
+            );
+        }
     }
 
     return array(
@@ -169,6 +174,12 @@ if ($pssDataMode) {
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
+}
+.pss-slot-label {
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    opacity: 0.62;
 }
 .pss-event-id {
     opacity: 0.68;
@@ -532,37 +543,39 @@ body {
     <?php
     $rendered = 0;
     foreach ($leagues as $league):
-        $teamID = pss_statusValue($league . 'TeamID');
-        if ($teamID === '') continue;
-        $rendered++;
+        foreach (array(1, 2) as $slot):
+            $prefix = pss_teamPrefix($league, $slot);
+            $teamID = pss_statusValue($prefix . 'TeamID');
+            if ($teamID === '') continue;
+            $rendered++;
 
-        $label = ($league === 'ncaa') ? 'NCAA Football' : strtoupper($league);
-        $state = pss_statusValue($league . 'GameStatus');
-        $stateClass = ($state === 'in') ? 'pss-state-in' : (($state === 'pre') ? 'pss-state-pre' : (($state === 'post') ? 'pss-state-post' : 'pss-state-wait'));
-        $detail = pss_statusValue($league . 'GameDetail');
+            $label = ($league === 'ncaa') ? 'NCAA Football' : strtoupper($league);
+            $state = pss_statusValue($prefix . 'GameStatus');
+            $stateClass = ($state === 'in') ? 'pss-state-in' : (($state === 'pre') ? 'pss-state-pre' : (($state === 'post') ? 'pss-state-post' : 'pss-state-wait'));
+            $detail = pss_statusValue($prefix . 'GameDetail');
 
-        $myName = pss_statusValue($league . 'TeamName', 'Selected team');
-        $myAbbr = pss_statusValue($league . 'TeamAbbreviation', 'TEAM');
-        $myLogo = pss_statusValue($league . 'TeamLogo');
-        $myScore = pss_statusValue($league . 'MyScore', '0');
+            $myName = pss_statusValue($prefix . 'TeamName', 'Selected team');
+            $myAbbr = pss_statusValue($prefix . 'TeamAbbreviation', 'TEAM');
+            $myLogo = pss_statusValue($prefix . 'TeamLogo');
+            $myScore = pss_statusValue($prefix . 'MyScore', '0');
 
-        $oppoName = pss_statusValue($league . 'OppoName', 'Opponent');
-        $oppoAbbr = pss_statusValue($league . 'OppoAbbreviation', 'OPP');
-        $oppoLogo = pss_statusValue($league . 'OppoLogo');
-        $oppoScore = pss_statusValue($league . 'OppoScore', '0');
+            $oppoName = pss_statusValue($prefix . 'OppoName', 'Opponent');
+            $oppoAbbr = pss_statusValue($prefix . 'OppoAbbreviation', 'OPP');
+            $oppoLogo = pss_statusValue($prefix . 'OppoLogo');
+            $oppoScore = pss_statusValue($prefix . 'OppoScore', '0');
 
-        $eventID = pss_statusValue($league . 'TeamNextEventID');
+            $eventID = pss_statusValue($prefix . 'TeamNextEventID');
     ?>
         <section class="pss-scoreboard"
-                 data-pss-league="<?=htmlspecialchars($league, ENT_QUOTES)?>"
+                 data-pss-key="<?=htmlspecialchars($prefix, ENT_QUOTES)?>"
                  data-event-id="<?=htmlspecialchars($eventID, ENT_QUOTES)?>"
                  data-team-name="<?=htmlspecialchars($myName, ENT_QUOTES)?>"
                  data-opponent-name="<?=htmlspecialchars($oppoName, ENT_QUOTES)?>"
                  data-team-logo="<?=htmlspecialchars($myLogo, ENT_QUOTES)?>"
                  data-opponent-logo="<?=htmlspecialchars($oppoLogo, ENT_QUOTES)?>"
-                 aria-label="<?=htmlspecialchars($label)?> game status">
+                 aria-label="<?=htmlspecialchars($label . ' team ' . $slot)?> game status">
             <div class="pss-scoreboard-head">
-                <span class="pss-league"><?=htmlspecialchars($label)?></span>
+                <span class="pss-league"><?=htmlspecialchars($label)?> <span class="pss-slot-label">· Team <?=$slot?></span></span>
                 <?php if ($eventID !== ''): ?>
                     <span class="pss-event-id" data-pss-field="event-id">ESPN event <?=htmlspecialchars($eventID)?></span>
                 <?php endif; ?>
@@ -586,7 +599,7 @@ body {
                 </div>
 
                 <div class="pss-team pss-team-selected">
-                    <div class="pss-selected-tag">Selected team</div>
+                    <div class="pss-selected-tag">Selected team <?=$slot?></div>
                     <?=pss_teamLogoMarkup($myLogo, $myAbbr, $myName)?>
                     <div class="pss-team-name" data-pss-field="team-name"><?=htmlspecialchars($myName)?></div>
                     <div class="pss-team-abbr" data-pss-field="team-abbr"><?=htmlspecialchars($myAbbr)?></div>
@@ -596,7 +609,7 @@ body {
             <div class="pss-meta">
                 <div class="pss-meta-item">
                     <span class="pss-meta-label">Start</span>
-                    <span class="pss-meta-value" data-pss-field="start"><?=htmlspecialchars(pss_formatStart(pss_statusValue($league . 'Start')))?></span>
+                    <span class="pss-meta-value" data-pss-field="start"><?=htmlspecialchars(pss_formatStart(pss_statusValue($prefix . 'Start')))?></span>
                 </div>
                 <div class="pss-meta-item">
                     <span class="pss-meta-label">Matchup</span>
@@ -604,7 +617,10 @@ body {
                 </div>
             </div>
         </section>
-    <?php endforeach; ?>
+    <?php
+        endforeach;
+    endforeach;
+    ?>
     </div>
 
     <?php if ($rendered === 0): ?>
@@ -655,7 +671,7 @@ function pssKioskFullscreen() {
             return;
         }
 
-        var cards = document.querySelectorAll('.pss-scoreboard[data-pss-league]');
+        var cards = document.querySelectorAll('.pss-scoreboard[data-pss-key]');
         var gameKeys = Object.keys(snapshot.games);
 
         if (cards.length !== gameKeys.length) {
@@ -665,8 +681,8 @@ function pssKioskFullscreen() {
 
         for (var i = 0; i < cards.length; i++) {
             var card = cards[i];
-            var league = card.getAttribute('data-pss-league');
-            var game = snapshot.games[league];
+            var gameKey = card.getAttribute('data-pss-key');
+            var game = snapshot.games[gameKey];
 
             if (!game || identityChanged(card, game)) {
                 window.location.reload();

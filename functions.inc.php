@@ -11,16 +11,28 @@ $pluginSettings = pss_loadPluginSettings();
 if (isset($_POST['action']) && !empty($_POST['action'])) {
     switch ($_POST['action']) {
         case 'updateNFLTeam':
-            pss_updateTeam('football', 'nfl');
+            pss_updateTeam('football', 'nfl', 1);
+            break;
+        case 'updateNFLTeam2':
+            pss_updateTeam('football', 'nfl', 2);
             break;
         case 'updateNCAATeam':
-            pss_updateTeam('football', 'ncaa');
+            pss_updateTeam('football', 'ncaa', 1);
+            break;
+        case 'updateNCAATeam2':
+            pss_updateTeam('football', 'ncaa', 2);
             break;
         case 'updateNHLTeam':
-            pss_updateTeam('hockey', 'nhl');
+            pss_updateTeam('hockey', 'nhl', 1);
+            break;
+        case 'updateNHLTeam2':
+            pss_updateTeam('hockey', 'nhl', 2);
             break;
         case 'updateMLBTeam':
-            pss_updateTeam('baseball', 'mlb');
+            pss_updateTeam('baseball', 'mlb', 1);
+            break;
+        case 'updateMLBTeam2':
+            pss_updateTeam('baseball', 'mlb', 2);
             break;
         case 'syncSequencePlaylist':
             if (isset($_POST['setting'])) {
@@ -28,6 +40,14 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
             }
             break;
     }
+}
+
+function pss_teamPrefix($league, $slot = 1) {
+    return $league . (((int)$slot === 2) ? '2' : '');
+}
+
+function pss_teamLogLabel($league, $slot = 1) {
+    return strtoupper((string)$league) . (((int)$slot === 2) ? ' team 2' : ' team 1');
 }
 
 function pss_loadPluginSettings() {
@@ -259,21 +279,23 @@ function pss_safePlaylistPart($value, $fallback = 'TEAM') {
     return $value !== '' ? $value : $fallback;
 }
 
-function pss_generatedPlaylistName($league, $sequenceSuffix) {
+function pss_generatedPlaylistName($league, $sequenceSuffix, $slot = 1) {
     $kind = pss_generatedPlaylistType($sequenceSuffix);
     if ($kind === '') {
         return '';
     }
 
-    $teamPart = pss_pluginSetting("{$league}TeamAbbreviation", '');
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamPart = pss_pluginSetting("{$prefix}TeamAbbreviation", '');
     if ($teamPart === '') {
-        $teamPart = pss_pluginSetting("{$league}TeamID", '');
+        $teamPart = pss_pluginSetting("{$prefix}TeamID", '');
     }
     if ($teamPart === '') {
         return '';
     }
 
-    return 'PSS_' . pss_safePlaylistPart($league, 'LEAGUE') . '_' . pss_safePlaylistPart($teamPart, 'TEAM') . '_' . $kind;
+    $slotPart = ((int)$slot === 2) ? '_S2' : '';
+    return 'PSS_' . pss_safePlaylistPart($league, 'LEAGUE') . $slotPart . '_' . pss_safePlaylistPart($teamPart, 'TEAM') . '_' . $kind;
 }
 
 function pss_sequenceDuration($sequenceName) {
@@ -432,27 +454,29 @@ function pss_syncGeneratedPlaylistsForLeague($league) {
         return;
     }
 
-    if (pss_pluginSetting("{$league}TeamID", '') === '') {
-        pss_cleanupGeneratedPlaylists($league, array());
-        return;
-    }
-
     $suffixes = ($info['sport'] === 'football')
         ? array('TouchdownSequence', 'FieldgoalSequence', 'WinSequence')
         : array('ScoreSequence', 'WinSequence');
 
     $keepNames = array();
-    foreach ($suffixes as $suffix) {
-        $sequence = pss_pluginSetting("{$league}{$suffix}", '');
-        if ($sequence === '') {
+    foreach (array(1, 2) as $slot) {
+        $prefix = pss_teamPrefix($league, $slot);
+        if (pss_pluginSetting("{$prefix}TeamID", '') === '') {
             continue;
         }
-        $playlistName = pss_generatedPlaylistName($league, $suffix);
-        if ($playlistName === '') {
-            continue;
-        }
-        if (pss_writeGeneratedPlaylist($playlistName, $sequence)) {
-            $keepNames[] = $playlistName;
+
+        foreach ($suffixes as $suffix) {
+            $sequence = pss_pluginSetting("{$prefix}{$suffix}", '');
+            if ($sequence === '') {
+                continue;
+            }
+            $playlistName = pss_generatedPlaylistName($league, $suffix, $slot);
+            if ($playlistName === '') {
+                continue;
+            }
+            if (pss_writeGeneratedPlaylist($playlistName, $sequence)) {
+                $keepNames[] = $playlistName;
+            }
         }
     }
 
@@ -463,10 +487,12 @@ function pss_syncGeneratedPlaylistSetting($setting) {
     global $pluginSettings;
     $pluginSettings = pss_loadPluginSettings();
 
-    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence)$/', (string)$setting, $matches)) {
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence)$/', (string)$setting, $matches)) {
         return false;
     }
 
+    // Rebuild both team slots together so cleaning one team's helper playlists
+    // can never remove the other team's generated playlists.
     pss_syncGeneratedPlaylistsForLeague($matches[1]);
     return true;
 }
@@ -616,7 +642,8 @@ function pss_latestScoringPlayID($plays) {
 }
 
 
-function pss_clearGameSnapshotState($league) {
+function pss_clearGameSnapshotState($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
     $keys = array(
         'OppoID' => '',
         'OppoName' => '',
@@ -631,93 +658,95 @@ function pss_clearGameSnapshotState($league) {
         'GameSnapshotEventID' => ''
     );
     foreach ($keys as $suffix => $value) {
-        pss_setPluginSetting("{$league}{$suffix}", $value);
+        pss_setPluginSetting("{$prefix}{$suffix}", $value);
     }
 }
 
-function pss_baselineGameSnapshot($league, $eventID, $game) {
+function pss_baselineGameSnapshot($league, $eventID, $game, $slot = 1) {
     if (!is_array($game) || empty($game['valid'])) {
         return false;
     }
 
-    pss_applyGameSnapshot($league, $game, true, $eventID);
-    pss_setPluginSetting("{$league}LastScoringPlayID", pss_latestScoringPlayID($game['scoringPlays']));
-    pss_setPluginSetting("{$league}LastCelebratedScore", (string)$game['myScore']);
+    $prefix = pss_teamPrefix($league, $slot);
+    pss_applyGameSnapshot($league, $game, true, $eventID, $slot);
+    pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($game['scoringPlays']));
+    pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$game['myScore']);
 
     // If we discover an already-finished game while repairing or changing events,
     // mark it completed so a historical win sequence is not fired on startup.
     if ($game['state'] === 'post') {
-        pss_setPluginSetting("{$league}LastCompletedEventID", (string)$eventID);
+        pss_setPluginSetting("{$prefix}LastCompletedEventID", (string)$eventID);
     }
 
     return true;
 }
 
-function pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo) {
+function pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo, $slot = 1) {
     if (!is_array($teamInfo) || empty($teamInfo['valid']) || empty($teamInfo['nextEventID'])) {
         return false;
     }
 
+    $prefix = pss_teamPrefix($league, $slot);
     $eventID = (string)$teamInfo['nextEventID'];
 
     // Treat an event change as an atomic game rollover. Clear every game-specific
     // field before writing the new event so old opponent/score/detail data can
     // never be displayed under a new ESPN event ID.
-    pss_setPluginSetting("{$league}TeamNextEventID", $eventID);
-    pss_setPluginSetting("{$league}Start", isset($teamInfo['nextEventDate']) ? (string)$teamInfo['nextEventDate'] : '');
-    pss_setPluginSetting("{$league}GameStatus", isset($teamInfo['nextEventStatus']) ? (string)$teamInfo['nextEventStatus'] : '');
-    pss_clearGameSnapshotState($league);
+    pss_setPluginSetting("{$prefix}TeamNextEventID", $eventID);
+    pss_setPluginSetting("{$prefix}Start", isset($teamInfo['nextEventDate']) ? (string)$teamInfo['nextEventDate'] : '');
+    pss_setPluginSetting("{$prefix}GameStatus", isset($teamInfo['nextEventStatus']) ? (string)$teamInfo['nextEventStatus'] : '');
+    pss_clearGameSnapshotState($league, $slot);
 
     // Fetch one full summary immediately, even when the next game is days away.
-    // This populates the opponent, logo, score, and detail instead of leaving
-    // stale values visible until the normal pregame polling window.
     $game = pss_getGameStatus($sport, $league, $eventID, $teamID);
     if ($game['valid']) {
-        pss_baselineGameSnapshot($league, $eventID, $game);
+        pss_baselineGameSnapshot($league, $eventID, $game, $slot);
     }
 
     return true;
 }
 
-function pss_updateTeam($sport, $league) {
+function pss_updateTeam($sport, $league, $slot = 1) {
     global $pluginSettings;
     $pluginSettings = pss_loadPluginSettings();
-    $teamID = pss_pluginSetting("{$league}TeamID", '');
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamID = pss_pluginSetting("{$prefix}TeamID", '');
 
     if ($teamID === '') {
-        pss_clearLeagueState($league, true);
+        pss_clearLeagueState($league, true, $slot);
         pss_syncGeneratedPlaylistsForLeague($league);
-        pss_logEntry(strtoupper($league) . ' team cleared');
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' cleared');
         return '';
     }
 
     $teamInfo = pss_getTeamInfo($sport, $league, $teamID);
     if (!$teamInfo['valid']) {
-        pss_logEntry("{$league} team update failed; keeping existing state");
-        return pss_pluginSetting("{$league}TeamLogo", '');
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' update failed; keeping existing state');
+        return pss_pluginSetting("{$prefix}TeamLogo", '');
     }
 
-    pss_setPluginSetting("{$league}TeamLogo", $teamInfo['logo']);
-    pss_setPluginSetting("{$league}TeamAbbreviation", $teamInfo['abbreviation']);
-    pss_setPluginSetting("{$league}TeamName", $teamInfo['name']);
-    pss_setPluginSetting("{$league}TeamNextEventID", $teamInfo['nextEventID']);
-    pss_setPluginSetting("{$league}Start", $teamInfo['nextEventDate']);
-    pss_setPluginSetting("{$league}GameStatus", $teamInfo['nextEventStatus']);
-    pss_clearGameSnapshotState($league);
+    pss_setPluginSetting("{$prefix}TeamLogo", $teamInfo['logo']);
+    pss_setPluginSetting("{$prefix}TeamAbbreviation", $teamInfo['abbreviation']);
+    pss_setPluginSetting("{$prefix}TeamName", $teamInfo['name']);
+    pss_setPluginSetting("{$prefix}TeamNextEventID", $teamInfo['nextEventID']);
+    pss_setPluginSetting("{$prefix}Start", $teamInfo['nextEventDate']);
+    pss_setPluginSetting("{$prefix}GameStatus", $teamInfo['nextEventStatus']);
+    pss_clearGameSnapshotState($league, $slot);
 
     if ($teamInfo['nextEventID'] !== '') {
         $game = pss_getGameStatus($sport, $league, $teamInfo['nextEventID'], $teamID);
         if ($game['valid']) {
-            pss_baselineGameSnapshot($league, $teamInfo['nextEventID'], $game);
+            pss_baselineGameSnapshot($league, $teamInfo['nextEventID'], $game, $slot);
         }
     }
 
     pss_syncGeneratedPlaylistsForLeague($league);
-    pss_logEntry("{$league} team updated to {$teamInfo['name']}");
+    pss_logEntry(pss_teamLogLabel($league, $slot) . " updated to {$teamInfo['name']}");
     return $teamInfo['logo'];
 }
 
-function pss_clearLeagueState($league, $clearTeam = false) {
+function pss_clearLeagueState($league, $clearTeam = false, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
     $keys = array(
         'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamNextEventID' => '',
         'Start' => '', 'GameStatus' => '', 'OppoID' => '', 'OppoName' => '', 'OppoAbbreviation' => '',
@@ -729,19 +758,20 @@ function pss_clearLeagueState($league, $clearTeam = false) {
         $keys['TeamID'] = '';
     }
     foreach ($keys as $suffix => $value) {
-        pss_setPluginSetting("{$league}{$suffix}", $value);
+        pss_setPluginSetting("{$prefix}{$suffix}", $value);
     }
 }
 
-function pss_applyGameSnapshot($league, $status, $updateStatus = true, $eventID = '') {
+function pss_applyGameSnapshot($league, $status, $updateStatus = true, $eventID = '', $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
     $oppoLogo = isset($status['oppoLogo']) ? trim((string)$status['oppoLogo']) : '';
 
     // ESPN's game summary does not consistently include team logos in every sport/league.
     // Preserve an already-cached opponent logo, or fetch it once from the team endpoint.
     if ($oppoLogo === '') {
-        $cachedOppoID = pss_pluginSetting("{$league}OppoID", '');
+        $cachedOppoID = pss_pluginSetting("{$prefix}OppoID", '');
         if ((string)$cachedOppoID === (string)$status['oppoID']) {
-            $oppoLogo = pss_pluginSetting("{$league}OppoLogo", '');
+            $oppoLogo = pss_pluginSetting("{$prefix}OppoLogo", '');
         }
     }
     if ($oppoLogo === '' && !empty($status['oppoID'])) {
@@ -754,30 +784,31 @@ function pss_applyGameSnapshot($league, $status, $updateStatus = true, $eventID 
         }
     }
 
-    pss_setPluginSetting("{$league}Start", $status['start']);
-    pss_setPluginSetting("{$league}OppoID", $status['oppoID']);
-    pss_setPluginSetting("{$league}OppoName", $status['oppoName']);
-    pss_setPluginSetting("{$league}OppoAbbreviation", $status['oppoAbbreviation']);
-    pss_setPluginSetting("{$league}OppoLogo", $oppoLogo);
-    pss_setPluginSetting("{$league}GameDetail", isset($status['detail']) ? $status['detail'] : '');
-    pss_setPluginSetting("{$league}MyScore", (string)$status['myScore']);
-    pss_setPluginSetting("{$league}OppoScore", (string)$status['oppoScore']);
+    pss_setPluginSetting("{$prefix}Start", $status['start']);
+    pss_setPluginSetting("{$prefix}OppoID", $status['oppoID']);
+    pss_setPluginSetting("{$prefix}OppoName", $status['oppoName']);
+    pss_setPluginSetting("{$prefix}OppoAbbreviation", $status['oppoAbbreviation']);
+    pss_setPluginSetting("{$prefix}OppoLogo", $oppoLogo);
+    pss_setPluginSetting("{$prefix}GameDetail", isset($status['detail']) ? $status['detail'] : '');
+    pss_setPluginSetting("{$prefix}MyScore", (string)$status['myScore']);
+    pss_setPluginSetting("{$prefix}OppoScore", (string)$status['oppoScore']);
     if ($updateStatus) {
-        pss_setPluginSetting("{$league}GameStatus", $status['state']);
+        pss_setPluginSetting("{$prefix}GameStatus", $status['state']);
     }
     if ($eventID !== '') {
-        pss_setPluginSetting("{$league}GameSnapshotEventID", (string)$eventID);
+        pss_setPluginSetting("{$prefix}GameSnapshotEventID", (string)$eventID);
     }
 }
 
-function pss_processFootballScoring($league, $teamID, $plays) {
-    $lastID = pss_pluginSetting("{$league}LastScoringPlayID", '');
+function pss_processFootballScoring($league, $teamID, $plays, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $lastID = pss_pluginSetting("{$prefix}LastScoringPlayID", '');
     if (!is_array($plays) || count($plays) === 0) {
         return;
     }
 
     if ($lastID === '') {
-        pss_setPluginSetting("{$league}LastScoringPlayID", pss_latestScoringPlayID($plays));
+        pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
         return;
     }
 
@@ -796,8 +827,8 @@ function pss_processFootballScoring($league, $teamID, $plays) {
     }
 
     if (!$seenLast) {
-        pss_setPluginSetting("{$league}LastScoringPlayID", pss_latestScoringPlayID($plays));
-        pss_logEntry("{$league} scoring-play marker was no longer in ESPN response; re-baselined safely");
+        pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' scoring-play marker was no longer in ESPN response; re-baselined safely');
         return;
     }
 
@@ -810,45 +841,49 @@ function pss_processFootballScoring($league, $teamID, $plays) {
         $haystack = $typeText . ' ' . $playText;
 
         if (strpos($haystack, 'touchdown') !== false) {
-            pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown');
+            pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown', $slot);
         } elseif (strpos($haystack, 'field goal') !== false && strpos($haystack, 'no good') === false && strpos($haystack, 'miss') === false) {
-            pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal');
+            pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal', $slot);
         }
     }
 
-    pss_setPluginSetting("{$league}LastScoringPlayID", pss_latestScoringPlayID($plays));
+    pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
 }
 
-function pss_processSimpleScoreIncrease($league, $oldScore, $newScore) {
+function pss_processSimpleScoreIncrease($league, $oldScore, $newScore, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
     $oldScore = (int)$oldScore;
     $newScore = (int)$newScore;
-    $lastCelebrated = (int)pss_pluginSetting("{$league}LastCelebratedScore", '0');
+    $lastCelebrated = (int)pss_pluginSetting("{$prefix}LastCelebratedScore", '0');
 
     if ($newScore > $oldScore && $newScore > $lastCelebrated) {
-        pss_playConfiguredSequence($league, 'ScoreSequence', 'Score');
-        pss_setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
+        pss_playConfiguredSequence($league, 'ScoreSequence', 'Score', $slot);
+        pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$newScore);
     } elseif ($newScore > $lastCelebrated) {
-        pss_setPluginSetting("{$league}LastCelebratedScore", (string)$newScore);
+        pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$newScore);
     }
 }
 
-function pss_playConfiguredSequence($league, $suffix, $label) {
-    $sequence = pss_pluginSetting("{$league}{$suffix}", '');
+function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $sequence = pss_pluginSetting("{$prefix}{$suffix}", '');
+    $logLabel = pss_teamLogLabel($league, $slot);
+
     if ($sequence === '') {
-        pss_logEntry("{$league} {$label} detected but no sequence is selected");
+        pss_logEntry("{$logLabel} {$label} detected but no sequence is selected");
         return;
     }
 
-    $playlist = pss_generatedPlaylistName($league, $suffix);
+    $playlist = pss_generatedPlaylistName($league, $suffix, $slot);
     if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $sequence)) {
-        pss_logEntry("{$league} {$label} detected but helper playlist could not be prepared for {$sequence}");
+        pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$sequence}");
         return;
     }
 
     if (pss_insertPlaylistImmediate($playlist)) {
-        pss_logEntry("{$league} {$label} detected; inserted {$sequence} using playlist {$playlist}");
+        pss_logEntry("{$logLabel} {$label} detected; inserted {$sequence} using playlist {$playlist}");
     } else {
-        pss_logEntry("{$league} {$label} detected but FPP rejected generated playlist {$playlist}");
+        pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated playlist {$playlist}");
     }
 }
 
@@ -858,129 +893,133 @@ function pss_updateTeamStatus($reparseSettings = true) {
         $pluginSettings = pss_loadPluginSettings();
     }
 
-    $sleepTimes = array('nfl' => 600, 'ncaa' => 600, 'nhl' => 600, 'mlb' => 600);
+    $sleepTimes = array(600);
     $logLevel = (int)pss_pluginSetting('logLevel', '4');
 
     foreach ($leagues as $league) {
-        $teamID = pss_pluginSetting("{$league}TeamID", '');
-        if ($teamID === '') {
-            continue;
-        }
-
         $info = pss_leagueInfo($league);
         $sport = $info['sport'];
-        $eventID = pss_pluginSetting("{$league}TeamNextEventID", '');
-        $gameState = pss_pluginSetting("{$league}GameStatus", '');
-        $start = pss_pluginSetting("{$league}Start", '');
-        $snapshotEventID = pss_pluginSetting("{$league}GameSnapshotEventID", '');
-        $status = null;
 
-        if ($eventID === '') {
-            $newInfo = pss_getTeamInfo($sport, $league, $teamID);
-            if ($newInfo['valid'] && $newInfo['nextEventID'] !== '') {
-                pss_activateEventFromTeamInfo($league, $sport, $teamID, $newInfo);
-                $eventID = pss_pluginSetting("{$league}TeamNextEventID", '');
-                $gameState = pss_pluginSetting("{$league}GameStatus", '');
-                $start = pss_pluginSetting("{$league}Start", '');
-                $snapshotEventID = pss_pluginSetting("{$league}GameSnapshotEventID", '');
-            } else {
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            $logLabel = pss_teamLogLabel($league, $slot);
+            $teamID = pss_pluginSetting("{$prefix}TeamID", '');
+            if ($teamID === '') {
                 continue;
             }
-        }
 
-        if ($gameState === 'post') {
-            $newInfo = pss_getTeamInfo($sport, $league, $teamID);
-            if ($newInfo['valid'] && $newInfo['nextEventID'] !== '' && $newInfo['nextEventID'] !== $eventID) {
-                $oldEventID = $eventID;
-                pss_activateEventFromTeamInfo($league, $sport, $teamID, $newInfo);
-                $eventID = pss_pluginSetting("{$league}TeamNextEventID", '');
-                $gameState = pss_pluginSetting("{$league}GameStatus", '');
-                $start = pss_pluginSetting("{$league}Start", '');
-                $snapshotEventID = pss_pluginSetting("{$league}GameSnapshotEventID", '');
-                pss_logEntry("{$league} next event changed from {$oldEventID} to {$eventID}");
-            } else {
-                // A failed summary request during selection used to leave finished games
-                // permanently blank. Repair the snapshot once, then leave the historical
-                // game baselined without firing an old win sequence.
-                if ($snapshotEventID !== $eventID || pss_pluginSetting("{$league}OppoID", '') === '') {
-                    $repair = pss_getGameStatus($sport, $league, $eventID, $teamID);
-                    if ($repair['valid']) {
-                        pss_baselineGameSnapshot($league, $eventID, $repair);
-                        pss_logEntry("{$league} repaired cached snapshot for event {$eventID}");
-                    } else {
-                        $sleepTimes[$league] = 30;
-                    }
-                }
-                continue;
-            }
-        }
+            $teamSleep = 600;
+            $eventID = pss_pluginSetting("{$prefix}TeamNextEventID", '');
+            $gameState = pss_pluginSetting("{$prefix}GameStatus", '');
+            $start = pss_pluginSetting("{$prefix}Start", '');
+            $snapshotEventID = pss_pluginSetting("{$prefix}GameSnapshotEventID", '');
+            $status = null;
 
-        // Existing installs may already contain a new event ID together with opponent,
-        // score, or status text from the previous game. Force one full summary refresh
-        // whenever the cached snapshot does not belong to the active event.
-        if ($snapshotEventID !== $eventID || pss_pluginSetting("{$league}OppoID", '') === '') {
-            $status = pss_getGameStatus($sport, $league, $eventID, $teamID);
-            if ($status['valid']) {
-                pss_baselineGameSnapshot($league, $eventID, $status);
-                $gameState = $status['state'];
-                $start = $status['start'];
-                $snapshotEventID = $eventID;
-                pss_logEntry("{$league} refreshed full snapshot for event {$eventID}");
-            } else {
-                pss_logEntry("{$league} ESPN snapshot refresh failed; keeping event metadata and retrying");
-                $sleepTimes[$league] = 30;
-                continue;
-            }
-        }
-
-        if ($gameState === 'pre' && $start !== '') {
-            try {
-                $gameDate = new DateTime($start);
-                $secondsToGame = $gameDate->getTimestamp() - time();
-                if ($secondsToGame > 1200) {
-                    $sleepTimes[$league] = min(600, max(60, $secondsToGame - 900));
+            if ($eventID === '') {
+                $newInfo = pss_getTeamInfo($sport, $league, $teamID);
+                if ($newInfo['valid'] && $newInfo['nextEventID'] !== '') {
+                    pss_activateEventFromTeamInfo($league, $sport, $teamID, $newInfo, $slot);
+                    $eventID = pss_pluginSetting("{$prefix}TeamNextEventID", '');
+                    $gameState = pss_pluginSetting("{$prefix}GameStatus", '');
+                    $start = pss_pluginSetting("{$prefix}Start", '');
+                    $snapshotEventID = pss_pluginSetting("{$prefix}GameSnapshotEventID", '');
+                } else {
+                    $sleepTimes[] = 60;
                     continue;
                 }
-            } catch (Exception $e) {
-                pss_logEntry("{$league} has invalid start time; polling ESPN for correction");
             }
-        }
 
-        if ($status === null) {
-            $status = pss_getGameStatus($sport, $league, $eventID, $teamID);
-        }
-        if (!$status['valid']) {
-            pss_logEntry("{$league} ESPN game status request failed; keeping existing game state");
-            $sleepTimes[$league] = 30;
-            continue;
-        }
-
-        if ($logLevel >= 5) {
-            pss_logEntry("{$league} poll: state={$status['state']} score={$status['myScore']}-{$status['oppoScore']}");
-        }
-
-        $oldScore = (int)pss_pluginSetting("{$league}MyScore", '0');
-        if ($status['state'] === 'in') {
-            if ($sport === 'football') {
-                pss_processFootballScoring($league, $teamID, $status['scoringPlays']);
-            } else {
-                pss_processSimpleScoreIncrease($league, $oldScore, $status['myScore']);
-            }
-            $sleepTimes[$league] = 10;
-        } elseif ($status['state'] === 'pre') {
-            $sleepTimes[$league] = 30;
-        } elseif ($status['state'] === 'post') {
-            $completed = pss_pluginSetting("{$league}LastCompletedEventID", '');
-            if ($completed !== $eventID) {
-                if ($status['myScore'] > $status['oppoScore']) {
-                    pss_playConfiguredSequence($league, 'WinSequence', 'Win');
+            if ($gameState === 'post') {
+                $newInfo = pss_getTeamInfo($sport, $league, $teamID);
+                if ($newInfo['valid'] && $newInfo['nextEventID'] !== '' && $newInfo['nextEventID'] !== $eventID) {
+                    $oldEventID = $eventID;
+                    pss_activateEventFromTeamInfo($league, $sport, $teamID, $newInfo, $slot);
+                    $eventID = pss_pluginSetting("{$prefix}TeamNextEventID", '');
+                    $gameState = pss_pluginSetting("{$prefix}GameStatus", '');
+                    $start = pss_pluginSetting("{$prefix}Start", '');
+                    $snapshotEventID = pss_pluginSetting("{$prefix}GameSnapshotEventID", '');
+                    pss_logEntry("{$logLabel} next event changed from {$oldEventID} to {$eventID}");
+                } else {
+                    if ($snapshotEventID !== $eventID || pss_pluginSetting("{$prefix}OppoID", '') === '') {
+                        $repair = pss_getGameStatus($sport, $league, $eventID, $teamID);
+                        if ($repair['valid']) {
+                            pss_baselineGameSnapshot($league, $eventID, $repair, $slot);
+                            pss_logEntry("{$logLabel} repaired cached snapshot for event {$eventID}");
+                        } else {
+                            $teamSleep = 30;
+                        }
+                    }
+                    $sleepTimes[] = $teamSleep;
+                    continue;
                 }
-                pss_setPluginSetting("{$league}LastCompletedEventID", $eventID);
             }
-            $sleepTimes[$league] = 600;
-        }
 
-        pss_applyGameSnapshot($league, $status, true, $eventID);
+            if ($snapshotEventID !== $eventID || pss_pluginSetting("{$prefix}OppoID", '') === '') {
+                $status = pss_getGameStatus($sport, $league, $eventID, $teamID);
+                if ($status['valid']) {
+                    pss_baselineGameSnapshot($league, $eventID, $status, $slot);
+                    $gameState = $status['state'];
+                    $start = $status['start'];
+                    $snapshotEventID = $eventID;
+                    pss_logEntry("{$logLabel} refreshed full snapshot for event {$eventID}");
+                } else {
+                    pss_logEntry("{$logLabel} ESPN snapshot refresh failed; keeping event metadata and retrying");
+                    $sleepTimes[] = 30;
+                    continue;
+                }
+            }
+
+            if ($gameState === 'pre' && $start !== '') {
+                try {
+                    $gameDate = new DateTime($start);
+                    $secondsToGame = $gameDate->getTimestamp() - time();
+                    if ($secondsToGame > 1200) {
+                        $teamSleep = min(600, max(60, $secondsToGame - 900));
+                        $sleepTimes[] = $teamSleep;
+                        continue;
+                    }
+                } catch (Exception $e) {
+                    pss_logEntry("{$logLabel} has invalid start time; polling ESPN for correction");
+                }
+            }
+
+            if ($status === null) {
+                $status = pss_getGameStatus($sport, $league, $eventID, $teamID);
+            }
+            if (!$status['valid']) {
+                pss_logEntry("{$logLabel} ESPN game status request failed; keeping existing game state");
+                $sleepTimes[] = 30;
+                continue;
+            }
+
+            if ($logLevel >= 5) {
+                pss_logEntry("{$logLabel} poll: state={$status['state']} score={$status['myScore']}-{$status['oppoScore']}");
+            }
+
+            $oldScore = (int)pss_pluginSetting("{$prefix}MyScore", '0');
+            if ($status['state'] === 'in') {
+                if ($sport === 'football') {
+                    pss_processFootballScoring($league, $teamID, $status['scoringPlays'], $slot);
+                } else {
+                    pss_processSimpleScoreIncrease($league, $oldScore, $status['myScore'], $slot);
+                }
+                $teamSleep = 10;
+            } elseif ($status['state'] === 'pre') {
+                $teamSleep = 30;
+            } elseif ($status['state'] === 'post') {
+                $completed = pss_pluginSetting("{$prefix}LastCompletedEventID", '');
+                if ($completed !== $eventID) {
+                    if ($status['myScore'] > $status['oppoScore']) {
+                        pss_playConfiguredSequence($league, 'WinSequence', 'Win', $slot);
+                    }
+                    pss_setPluginSetting("{$prefix}LastCompletedEventID", $eventID);
+                }
+                $teamSleep = 600;
+            }
+
+            pss_applyGameSnapshot($league, $status, true, $eventID, $slot);
+            $sleepTimes[] = $teamSleep;
+        }
     }
 
     return min($sleepTimes);
