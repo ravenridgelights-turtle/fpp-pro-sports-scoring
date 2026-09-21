@@ -90,13 +90,34 @@ function pss_pluginSetting($key, $default = '') {
 function pss_setPluginSetting($key, $value) {
     global $pluginName, $pluginSettings;
     $value = (string)$value;
-    if (WriteSettingToFile($key, $value, $pluginName)) {
-        if (!is_array($pluginSettings)) {
-            $pluginSettings = array();
-        }
-        $pluginSettings[$key] = $value;
+
+    // FPP versions do not all return the same success value from
+    // WriteSettingToFile().  In particular, older releases can write the
+    // setting successfully while returning null/false.  If we only update
+    // our in-memory cache on a truthy return value, the rest of this request
+    // sees the previous team metadata.  That made generated helper playlist
+    // names lag one team behind the selection.
+    $result = WriteSettingToFile($key, $value, $pluginName);
+
+    if (!is_array($pluginSettings)) {
+        $pluginSettings = array();
+    }
+    $pluginSettings[$key] = $value;
+
+    if ($result === true || $result === 1) {
         return true;
     }
+
+    // Older FPP may not report success.  Verify the on-disk value before
+    // treating it as a failure so we avoid false error logs while keeping the
+    // request-local cache synchronized with what we just wrote.
+    $diskSettings = pss_loadPluginSettings();
+    if (is_array($diskSettings) && array_key_exists($key, $diskSettings)) {
+        if (urldecode((string)$diskSettings[$key]) === $value) {
+            return true;
+        }
+    }
+
     pss_logEntry("Unable to save setting {$key}");
     return false;
 }
