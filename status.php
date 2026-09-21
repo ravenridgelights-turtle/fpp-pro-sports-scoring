@@ -2156,6 +2156,29 @@ function pssKioskFullscreen() {
         return true;
     }
 
+    function formatBytes(bytes) {
+        bytes = Math.max(0, parseInt(bytes || 0, 10));
+        if (!bytes) return '';
+        if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+        if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+        return bytes + ' B';
+    }
+
+    function disposeHighlightMedia(panel) {
+        if (!panel) return;
+        var oldVideos = panel.querySelectorAll('video.pss-highlight-video');
+        for (var i = 0; i < oldVideos.length; i++) {
+            try { oldVideos[i].pause(); } catch (e) {}
+            try {
+                oldVideos[i].removeAttribute('src');
+                while (oldVideos[i].firstChild) {
+                    oldVideos[i].removeChild(oldVideos[i].firstChild);
+                }
+                oldVideos[i].load();
+            } catch (e) {}
+        }
+    }
+
     function loadHighlight(panel, item, autoPlay, isNew) {
         if (!item) return;
         var body = panel.querySelector('[data-highlight-body="1"]');
