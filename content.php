@@ -12,11 +12,42 @@ foreach ($pssOverlayModels as $pssOverlayModelName) {
 $pssOverlayGeometry = pss_getOverlayModels();
 $pssOverlayFonts = pss_getOverlayFonts();
 $pssTeamPalettes = pss_syncTeamPalettes(true);
+$pssWledEffects = pss_getWledEffectNames();
 
 function pss_currentValue($key, $default = '') {
     global $pluginSettings;
     return isset($pluginSettings[$key]) ? urldecode((string)$pluginSettings[$key]) : $default;
 }
+function pss_renderModelChecklist($id, $selectedModels, $allModels, $inputName = '', $setting = '', $onchange = '') {
+    $selectedModels = pss_normalizeOverlayModelSelection($selectedModels);
+    $selectedLookup = array_fill_keys($selectedModels, true);
+    $models = array_values($allModels);
+    foreach ($selectedModels as $saved) {
+        if (!in_array($saved, $models, true)) $models[] = $saved;
+    }
+    natcasesort($models);
+    $models = array_values($models);
+
+    echo '<div class="pss-model-picker" id="' . htmlspecialchars($id, ENT_QUOTES) . '"';
+    if ($setting !== '') echo ' data-pss-setting="' . htmlspecialchars($setting, ENT_QUOTES) . '"';
+    echo '>';
+    if (empty($models)) {
+        echo '<div class="text-warning small p-2">FPP did not return any Pixel Overlay Models.</div>';
+    }
+    foreach ($models as $model) {
+        $checked = isset($selectedLookup[$model]);
+        $savedMissing = $checked && !in_array($model, $allModels, true);
+        echo '<label class="pss-model-picker-row">';
+        echo '<input type="checkbox" value="' . htmlspecialchars($model, ENT_QUOTES) . '"';
+        if ($inputName !== '') echo ' name="' . htmlspecialchars($inputName, ENT_QUOTES) . '"';
+        if ($checked) echo ' checked';
+        if ($onchange !== '') echo ' onchange="' . htmlspecialchars($onchange, ENT_QUOTES) . '"';
+        echo '> <span>' . htmlspecialchars($model) . ($savedMissing ? ' <small class="text-warning">(saved; not currently returned by FPP)</small>' : '') . '</span>';
+        echo '</label>';
+    }
+    echo '</div>';
+}
+
 function pss_scheduleGameDisplay($startRaw) {
     $startRaw = trim((string)$startRaw);
     if ($startRaw === '') return 'Game time not available yet';
@@ -171,6 +202,41 @@ function pss_scheduleGameDisplay($startRaw) {
     width: 100%;
     max-width: 100%;
 }
+.pss-model-picker {
+    max-height: 190px;
+    overflow-y: auto;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 4px;
+    padding: 5px 0;
+    background: rgba(0,0,0,.08);
+}
+.pss-model-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 6px 10px;
+    cursor: pointer;
+    min-width: 0;
+}
+.pss-model-picker-row:hover {
+    background: rgba(255,255,255,.05);
+}
+.pss-model-picker-row input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin: 0;
+}
+.pss-model-picker-row span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.pss-model-picker-compact {
+    min-width: 210px;
+    max-height: 135px;
+}
+.pss-team-effect-control-row.pss-hidden {
+    display: none;
+}
 .pss-team-effect-colors {
     display: flex;
     flex-wrap: wrap;
@@ -247,24 +313,23 @@ function pss_scheduleGameDisplay($startRaw) {
     <div class="card mb-3 pss-team-effect-card">
         <div class="card-body">
             <h4 class="card-title">Team Palette Effect Trigger</h4>
-            <p class="text-muted small mb-2">This is the first live use of the managed team palettes. Pick a model and one of the currently selected teams, then run an FPP/WLED overlay effect using <strong>* Colors Only</strong>. The plugin supplies that team's colors automatically.</p>
-            <p class="text-muted small">The first two presets intentionally mirror FPP's own command fields: <strong>WLED - Colortwinkles</strong> uses Color 1/2/3; <strong>WLED - Android</strong> uses only Color 1/2. The team registry still keeps three colors for every team.</p>
+            <p class="text-muted small mb-2">Pick one or more Pixel Overlay Models and a selected team, then run any WLED effect exposed by this FPP. The plugin applies <strong>* Colors Only</strong> and the team's managed colors to every checked model.</p>
+            <p class="text-muted small">The model box mirrors FPP's multi-model command picker. Android and Colortwinkles keep the two custom controls below; all other WLED effects use FPP's own defaults for effect-specific sliders while still receiving team colors wherever the effect exposes palette/color arguments.</p>
 
             <?php
-                $teamEffectModel = pss_currentValue('TeamEffectModel', pss_currentValue('TickerOverlayModel', ''));
+                $teamEffectModels = pss_normalizeOverlayModelSelection(pss_currentValue('TeamEffectModel', ''));
+                if (empty($teamEffectModels)) $teamEffectModels = pss_normalizeOverlayModelSelection(pss_currentValue('TickerOverlayModel', ''));
                 $teamEffectPaletteID = pss_currentValue('TeamEffectPaletteID', '');
-                $teamEffectPreset = pss_currentValue('TeamEffectPreset', 'colortwinkles');
+                $teamEffectName = pss_currentValue('TeamEffectName', '');
+                if ($teamEffectName === '') $teamEffectName = pss_teamEffectNameFromValue(pss_currentValue('TeamEffectPreset', 'colortwinkles'));
+                if ($teamEffectName !== '' && !in_array($teamEffectName, $pssWledEffects, true)) $pssWledEffects[] = $teamEffectName;
+                natcasesort($pssWledEffects);
                 $teamEffectMapping = pss_currentValue('TeamEffectMapping', 'Horizontal');
                 $teamEffectAutoEnable = pss_currentValue('TeamEffectAutoEnable', 'Enabled');
             ?>
-            <div class="row mb-3 align-items-center">
-                <div class="col-md-4"><strong>Models</strong><div class="text-muted small">Same Pixel Overlay model list FPP uses for Overlay Model Effect.</div></div>
-                <div class="col-md-8"><select class="form-control" id="pss-team-effect-model">
-                    <option value="">-- Select model --</option>
-                    <?php foreach ($pssOverlayModels as $overlayModel): ?>
-                    <option value="<?=htmlspecialchars($overlayModel, ENT_QUOTES)?>" <?=$teamEffectModel === $overlayModel ? 'selected' : ''?>><?=htmlspecialchars($overlayModel)?></option>
-                    <?php endforeach; ?>
-                </select></div>
+            <div class="row mb-3 align-items-start">
+                <div class="col-md-4"><strong>Models</strong><div class="text-muted small">Check every Pixel Overlay Model that should receive the effect.</div></div>
+                <div class="col-md-8"><?php pss_renderModelChecklist('pss-team-effect-models', $teamEffectModels, $pssOverlayModels); ?></div>
             </div>
 
             <div class="row mb-3 align-items-center">
@@ -287,10 +352,11 @@ function pss_scheduleGameDisplay($startRaw) {
             </div>
 
             <div class="row mb-3 align-items-center">
-                <div class="col-md-4"><strong>Effect</strong></div>
+                <div class="col-md-4"><strong>Effect</strong><div class="text-muted small">Live WLED effect list from FPP.</div></div>
                 <div class="col-md-8"><select class="form-control" id="pss-team-effect-preset" onchange="pssTeamEffectPresetChanged();">
-                    <option value="colortwinkles" <?=$teamEffectPreset === 'colortwinkles' ? 'selected' : ''?>>WLED - Colortwinkles — 3 team colors</option>
-                    <option value="android" <?=$teamEffectPreset === 'android' ? 'selected' : ''?>>WLED - Android — 2 team colors</option>
+                    <?php foreach ($pssWledEffects as $effectName): ?>
+                    <option value="<?=htmlspecialchars($effectName, ENT_QUOTES)?>" <?=$teamEffectName === $effectName ? 'selected' : ''?>><?=htmlspecialchars($effectName)?></option>
+                    <?php endforeach; ?>
                 </select></div>
             </div>
 
@@ -307,16 +373,15 @@ function pss_scheduleGameDisplay($startRaw) {
                 <div class="col-md-8"><input class="form-control" id="pss-team-effect-brightness" type="number" min="0" max="255" value="<?=htmlspecialchars(pss_currentValue('TeamEffectBrightness', '128'))?>"></div>
             </div>
 
-            <div class="row mb-3 align-items-center">
+            <div class="row mb-3 align-items-center pss-team-effect-control-row" id="pss-team-effect-control1-row">
                 <div class="col-md-4"><strong id="pss-team-effect-control1-label">Fade Speed</strong></div>
                 <div class="col-md-8"><input class="form-control" id="pss-team-effect-control1" type="number" min="0" max="255" value="<?=htmlspecialchars(pss_currentValue('TeamEffectControl1', '128'))?>"></div>
             </div>
 
-            <div class="row mb-3 align-items-center">
+            <div class="row mb-3 align-items-center pss-team-effect-control-row" id="pss-team-effect-control2-row">
                 <div class="col-md-4"><strong id="pss-team-effect-control2-label">Spawn Speed</strong></div>
                 <div class="col-md-8"><input class="form-control" id="pss-team-effect-control2" type="number" min="0" max="255" value="<?=htmlspecialchars(pss_currentValue('TeamEffectControl2', '128'))?>"></div>
             </div>
-
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4"><strong>Palette sent to FPP</strong></div>
                 <div class="col-md-8">
@@ -351,7 +416,7 @@ function pss_scheduleGameDisplay($startRaw) {
                         $pssScheduleRowCount++;
                         $scheduleTeamName = pss_currentValue($schedulePrefix . 'TeamName', strtoupper($scheduleLeague) . ' Team ' . $scheduleSlot);
                         $scheduleEnabled = pss_currentValue($schedulePrefix . 'ScheduleEnabled', 'OFF') === 'ON';
-                        $scheduleWledModel = pss_currentValue($schedulePrefix . 'WledModel', '');
+                        $scheduleWledModels = pss_normalizeOverlayModelSelection(pss_currentValue($schedulePrefix . 'WledModel', ''));
                         $schedulePriorityRank = pss_gameSchedulePriorityRank($scheduleLeague, $scheduleSlot);
                     ?>
                     <tr>
@@ -359,12 +424,12 @@ function pss_scheduleGameDisplay($startRaw) {
                         <td><label class="mb-0"><input type="checkbox" <?=$scheduleEnabled ? 'checked' : ''?> onchange="pssGameScheduleEnabledChanged('<?=htmlspecialchars($scheduleLeague, ENT_QUOTES)?>', <?=$scheduleSlot?>, this)"> Enabled</label></td>
                         <td><?php PrintSettingSelect($schedulePrefix . 'ScheduleSelection', $schedulePrefix . 'ScheduleSelection', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssGameScheduleSelectionChanged', ''); ?></td>
                         <td>
-                            <select class="form-control form-control-sm" id="pss-schedule-wled-model-<?=htmlspecialchars($scheduleLeague, ENT_QUOTES)?>-<?=$scheduleSlot?>" onchange="pssScheduleWledModelChanged('<?=htmlspecialchars($schedulePrefix . 'WledModel', ENT_QUOTES)?>', this)">
-                                <?php foreach ($pssOverlayModelOptions as $modelLabel => $modelValue): ?>
-                                    <option value="<?=htmlspecialchars($modelValue, ENT_QUOTES)?>" <?=$scheduleWledModel === (string)$modelValue ? 'selected' : ''?>><?=htmlspecialchars($modelLabel)?></option>
-                                <?php endforeach; ?>
-                            </select>
-                            <div class="text-muted small mt-1">Only used for Run WLED Effect.</div>
+                            <?php
+                                $scheduleModelPickerID = 'pss-schedule-wled-model-' . $scheduleLeague . '-' . $scheduleSlot;
+                                $scheduleModelChange = "pssScheduleWledModelsChanged('" . $schedulePrefix . "WledModel','" . $scheduleModelPickerID . "')";
+                                pss_renderModelChecklist($scheduleModelPickerID, $scheduleWledModels, $pssOverlayModels, '', $schedulePrefix . 'WledModel', $scheduleModelChange);
+                            ?>
+                            <div class="text-muted small mt-1">Only used for Run WLED Effect. Check every prop that should receive the game overlay.</div>
                         </td>
                         <td>
                             <?php if ($schedulePriorityRank === 1): ?>
@@ -470,34 +535,20 @@ function pss_scheduleGameDisplay($startRaw) {
                     <div class="col-md-8"><input class="form-control" type="text" value="Overlay Model Effect" readonly></div>
                 </div>
 
-                <div class="row mb-3 align-items-center">
-                    <div class="col-md-4"><strong>Models</strong><div class="text-muted small">Loaded from FPP's command model list. No dimensions or other model metadata are sent.</div></div>
+                <div class="row mb-3 align-items-start">
+                    <div class="col-md-4"><strong>Models</strong><div class="text-muted small">Check every FPP Pixel Overlay Model that should show the ticker. Each model keeps its own FPP/xLights geometry.</div></div>
                     <div class="col-md-8">
-                        <?php $tickerModel = pss_currentValue('TickerOverlayModel', ''); ?>
-                        <select class="form-control" id="pss-ticker-model" name="TickerOverlayModel">
-                            <option value="">-- Select model --</option>
-                            <?php if ($tickerModel !== '' && !in_array($tickerModel, $pssOverlayModels, true)): ?>
-                            <option value="<?=htmlspecialchars($tickerModel, ENT_QUOTES)?>" selected><?=htmlspecialchars($tickerModel)?> — saved model not currently returned by FPP</option>
-                            <?php endif; ?>
-                            <?php foreach ($pssOverlayModels as $overlayModel): ?>
-                            <option value="<?=htmlspecialchars($overlayModel, ENT_QUOTES)?>" <?=$tickerModel === $overlayModel ? 'selected' : ''?>><?=htmlspecialchars($overlayModel)?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <?php if (empty($pssOverlayModels)): ?><div class="text-warning small mt-1">FPP did not return any Pixel Overlay Models from its command model API.</div><?php endif; ?>
+                        <?php $tickerModels = pss_normalizeOverlayModelSelection(pss_currentValue('TickerOverlayModel', '')); ?>
+                        <?php pss_renderModelChecklist('pss-ticker-models', $tickerModels, $pssOverlayModels, 'TickerOverlayModels[]', 'TickerOverlayModel', 'pssUpdateOverlayGeometry()'); ?>
                     </div>
                 </div>
 
                 <div class="row mb-3 align-items-start">
-                    <div class="col-md-4"><strong>FPP Model Geometry</strong><div class="text-muted small">Read-only. FPP/xLights controls how rendered text maps onto the physical pixels.</div></div>
+                    <div class="col-md-4"><strong>FPP Model Geometry</strong><div class="text-muted small">Read-only. One line is shown for every checked model.</div></div>
                     <div class="col-md-8">
-                        <div class="pss-overlay-geometry-panel" id="pss-overlay-geometry-panel">
-                            <span class="pss-overlay-geometry-item">Orientation: <strong id="pss-overlay-geometry-orientation">—</strong></span>
-                            <span class="pss-overlay-geometry-item">Start Corner: <strong id="pss-overlay-geometry-corner">—</strong></span>
-                            <span class="pss-overlay-geometry-item">Size: <strong id="pss-overlay-geometry-size">—</strong></span>
-                            <span class="pss-overlay-geometry-item">Source: <strong id="pss-overlay-geometry-source">—</strong></span>
-                            <span class="pss-overlay-geometry-actions"><a class="btn btn-sm btn-secondary" href="pixeloverlaymodels.php" target="_blank" rel="noopener">Open Pixel Overlay Models</a></span>
-                        </div>
-                        <div id="pss-overlay-geometry-note" class="text-muted small mt-1">If text appears upside down or mirrored, change the selected model's Orientation/Start Corner in FPP. The sports plugin does not alter these values.</div>
+                        <div id="pss-overlay-geometry-list"></div>
+                        <div class="mt-2"><a class="btn btn-sm btn-secondary" href="pixeloverlaymodels.php" target="_blank" rel="noopener">Open Pixel Overlay Models</a></div>
+                        <div id="pss-overlay-geometry-note" class="text-muted small mt-1">If text appears upside down or mirrored on one prop, change that model's Orientation/Start Corner in FPP. The sports plugin does not alter geometry.</div>
                     </div>
                 </div>
 
@@ -646,11 +697,23 @@ function pss_scheduleGameDisplay($startRaw) {
 
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
-                    <strong>WLED celebration model</strong>
-                    <div class="text-muted small pss-config-note">Only used when a celebration dropdown is set to <strong>Run WLED Effect</strong>. The effect runs on this Pixel Overlay Model; normal .fseq selections ignore this setting.</div>
+                    <strong>WLED celebration models</strong>
+                    <div class="text-muted small pss-config-note">Only used when a celebration dropdown is set to <strong>Run WLED Effect</strong>. Check every Pixel Overlay prop that should receive the team-color effect; normal .fseq selections ignore this setting.</div>
                 </div>
-                <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'WledModel', $prefix1 . 'WledModel', 0, 0, '', $pssOverlayModelOptions, $pluginName, 'pssWledModelChanged', ''); ?></div>
-                <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'WledModel', $prefix2 . 'WledModel', 0, 0, '', $pssOverlayModelOptions, $pluginName, 'pssWledModelChanged', ''); ?></div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <?php
+                        $team1WledModels = pss_normalizeOverlayModelSelection(pss_currentValue($prefix1 . 'WledModel', ''));
+                        $team1PickerID = 'pss-wled-models-' . $prefix1;
+                        pss_renderModelChecklist($team1PickerID, $team1WledModels, $pssOverlayModels, '', $prefix1 . 'WledModel', "pssWledModelsChanged('" . $prefix1 . "WledModel','" . $team1PickerID . "')");
+                    ?>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <?php
+                        $team2WledModels = pss_normalizeOverlayModelSelection(pss_currentValue($prefix2 . 'WledModel', ''));
+                        $team2PickerID = 'pss-wled-models-' . $prefix2;
+                        pss_renderModelChecklist($team2PickerID, $team2WledModels, $pssOverlayModels, '', $prefix2 . 'WledModel', "pssWledModelsChanged('" . $prefix2 . "WledModel','" . $team2PickerID . "')");
+                    ?>
+                </div>
             </div>
 
             <div class="row mb-3 align-items-start">
@@ -765,6 +828,47 @@ function pssRenderTeamPalettes(palettes) {
 }
 
 
+function pssSelectedModels(containerId) {
+    var root = document.getElementById(containerId);
+    if (!root) return [];
+    var result = [];
+    root.querySelectorAll('input[type="checkbox"]:checked').forEach(function(input) {
+        var value = String(input.value || '').trim();
+        if (value && result.indexOf(value) === -1) result.push(value);
+    });
+    return result;
+}
+
+function pssSyncModelPickers(setting, models, sourceId) {
+    models = Array.isArray(models) ? models.map(String) : [];
+    document.querySelectorAll('.pss-model-picker[data-pss-setting]').forEach(function(root) {
+        if (String(root.getAttribute('data-pss-setting') || '') !== String(setting || '')) return;
+        if (sourceId && root.id === sourceId) return;
+        root.querySelectorAll('input[type="checkbox"]').forEach(function(input) {
+            input.checked = models.indexOf(String(input.value || '')) !== -1;
+        });
+    });
+}
+
+function pssSaveWledModels(setting, containerId, scheduleMessage) {
+    var models = pssSelectedModels(containerId);
+    var message = scheduleMessage ? $('#pss-game-schedule-message') : null;
+    if (message) message.removeClass('text-danger text-success').addClass('text-muted').text('Saving WLED models and rebuilding helpers...');
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'syncWledCelebrationSetting', setting: setting, models: models, value: JSON.stringify(models) },
+        type: 'post', dataType: 'json',
+        success: function(response) {
+            var ok = response && response.ok;
+            if (ok) pssSyncModelPickers(setting, models, containerId);
+            if (message) message.removeClass('text-muted text-danger text-success').addClass(ok ? 'text-success' : 'text-danger').text(response && response.message ? response.message : (ok ? 'WLED models saved.' : 'Could not save WLED models.'));
+        },
+        error: function() {
+            if (message) message.removeClass('text-muted text-success').addClass('text-danger').text('Could not save WLED models.');
+        }
+    });
+}
+
 function pssTeamEffectSelectedPalette() {
     var select = document.getElementById('pss-team-effect-palette');
     if (!select || !select.value) return null;
@@ -782,12 +886,15 @@ function pssRenderTeamEffectColors() {
 
     var palette = pssTeamEffectSelectedPalette();
     if (!palette) {
-        if (note) note.textContent = 'Select a team palette to preview the colors that will be sent to FPP.';
+        if (note) note.textContent = 'Select a team palette to preview the colors that will be supplied to FPP.';
         return;
     }
 
-    var preset = document.getElementById('pss-team-effect-preset');
-    var colorCount = preset && preset.value === 'android' ? 2 : 3;
+    var effectSelect = document.getElementById('pss-team-effect-preset');
+    var effect = effectSelect ? String(effectSelect.value || '') : '';
+    var android = effect === 'WLED - Android';
+    var generic = effect !== 'WLED - Android' && effect !== 'WLED - Colortwinkles';
+    var colorCount = android ? 2 : 3;
     var colors = Array.isArray(palette.colors) ? palette.colors.slice(0, 3) : [];
     while (colors.length < 3) colors.push('#000000');
     colors.forEach(function(color, index) {
@@ -795,26 +902,37 @@ function pssRenderTeamEffectColors() {
         chip.className = 'pss-team-effect-color';
         chip.style.backgroundColor = /^#[0-9A-Fa-f]{6}$/.test(String(color || '')) ? color : '#000000';
         chip.textContent = 'Color ' + (index + 1) + '  ' + String(color || '#000000').toUpperCase();
-        if (index >= colorCount) {
+        if (!generic && index >= colorCount) {
             chip.style.opacity = '.38';
-            chip.title = 'Stored for the team but not sent by this effect preset';
+            chip.title = 'Stored for the team but not used by this effect';
         }
         root.appendChild(chip);
     });
     if (note) {
-        note.textContent = colorCount === 3
-            ? 'This effect receives Color 1, Color 2, and Color 3.'
-            : 'This effect receives Color 1 and Color 2. Color 3 stays stored for effects that support it.';
+        if (generic) {
+            note.textContent = 'The plugin supplies all three team colors where this FPP effect exposes palette/color inputs. Other effect controls use FPP defaults.';
+        } else if (android) {
+            note.textContent = 'Android receives Color 1 and Color 2. Color 3 stays stored for effects that support it.';
+        } else {
+            note.textContent = 'Colortwinkles receives Color 1, Color 2, and Color 3.';
+        }
     }
 }
 
 function pssTeamEffectPresetChanged() {
     var preset = document.getElementById('pss-team-effect-preset');
+    var effect = preset ? String(preset.value || '') : '';
     var c1 = document.getElementById('pss-team-effect-control1-label');
     var c2 = document.getElementById('pss-team-effect-control2-label');
-    var android = preset && preset.value === 'android';
+    var r1 = document.getElementById('pss-team-effect-control1-row');
+    var r2 = document.getElementById('pss-team-effect-control2-row');
+    var android = effect === 'WLED - Android';
+    var twinkles = effect === 'WLED - Colortwinkles';
+    var showCustom = android || twinkles;
     if (c1) c1.textContent = android ? 'Speed' : 'Fade Speed';
     if (c2) c2.textContent = android ? 'Width' : 'Spawn Speed';
+    if (r1) r1.classList.toggle('pss-hidden', !showCustom);
+    if (r2) r2.classList.toggle('pss-hidden', !showCustom);
     pssRenderTeamEffectColors();
 }
 
@@ -830,9 +948,9 @@ function pssRunTeamEffect() {
         dataType: 'json',
         data: {
             action: 'runTeamEffect',
-            model: $('#pss-team-effect-model').val() || '',
+            models: pssSelectedModels('pss-team-effect-models'),
             paletteID: $('#pss-team-effect-palette').val() || '',
-            preset: $('#pss-team-effect-preset').val() || 'colortwinkles',
+            effect: $('#pss-team-effect-preset').val() || 'WLED - Colortwinkles',
             mapping: $('#pss-team-effect-mapping').val() || 'Horizontal',
             autoEnable: $('#pss-team-effect-autoenable').val() || 'Enabled',
             brightness: $('#pss-team-effect-brightness').val() || '128',
@@ -860,7 +978,7 @@ function pssStopTeamEffect() {
         dataType: 'json',
         data: {
             action: 'stopTeamEffect',
-            model: $('#pss-team-effect-model').val() || ''
+            models: pssSelectedModels('pss-team-effect-models')
         }
     }).done(function(response) {
         if (message) {
@@ -967,22 +1085,8 @@ function pssGameScheduleSelectionChanged(setting) {
     });
 }
 
-function pssScheduleWledModelChanged(setting, select) {
-    var message = $('#pss-game-schedule-message');
-    var value = select ? select.value : '';
-    message.removeClass('text-danger text-success').addClass('text-muted').text('Saving WLED model and rebuilding game schedule...');
-    $.ajax({
-        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
-        data: { action: 'syncWledCelebrationSetting', setting: setting, value: value },
-        type: 'post', dataType: 'json',
-        success: function(response) {
-            var ok = response && response.ok;
-            message.removeClass('text-muted text-danger text-success').addClass(ok ? 'text-success' : 'text-danger').text(response && response.message ? response.message : (ok ? 'WLED model saved.' : 'Could not save WLED model.'));
-        },
-        error: function() {
-            message.removeClass('text-muted text-success').addClass('text-danger').text('Could not save WLED model.');
-        }
-    });
+function pssScheduleWledModelsChanged(setting, containerId) {
+    pssSaveWledModels(setting, containerId, true);
 }
 
 function pssGameSchedulePriority(league, slot, button) {
@@ -1044,14 +1148,8 @@ function pssCelebrationDelayChanged(setting, input) {
     });
 }
 
-function pssWledModelChanged(setting) {
-    var select = document.getElementById(setting);
-    var value = select ? select.value : '';
-    $.ajax({
-        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
-        data: { action: 'syncWledCelebrationSetting', setting: setting, value: value },
-        type: 'post', dataType: 'json'
-    });
+function pssWledModelsChanged(setting, containerId) {
+    pssSaveWledModels(setting, containerId, false);
 }
 
 function pssWledDurationChanged(setting, input) {
@@ -1088,35 +1186,55 @@ function pssOverlayOrientationLabel(value) {
 }
 
 function pssUpdateOverlayGeometry() {
-    var select = document.getElementById('pss-ticker-model');
-    var model = select ? select.value : '';
-    var info = model && pssOverlayGeometry ? pssOverlayGeometry[model] : null;
-    var orientation = document.getElementById('pss-overlay-geometry-orientation');
-    var corner = document.getElementById('pss-overlay-geometry-corner');
-    var size = document.getElementById('pss-overlay-geometry-size');
-    var source = document.getElementById('pss-overlay-geometry-source');
+    var models = pssSelectedModels('pss-ticker-models');
+    var list = document.getElementById('pss-overlay-geometry-list');
     var note = document.getElementById('pss-overlay-geometry-note');
+    if (!list) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
 
-    if (!info) {
-        if (orientation) orientation.textContent = 'Unknown';
-        if (corner) corner.textContent = 'Unknown';
-        if (size) size.textContent = 'Unknown';
-        if (source) source.textContent = 'FPP runtime model';
-        if (note) note.textContent = model
-            ? 'This model is returned by FPP but its saved geometry was not found in model-overlays.json. Open Pixel Overlay Models to inspect it.'
-            : 'Select a model to display its FPP geometry.';
+    if (!models.length) {
+        var empty = document.createElement('div');
+        empty.className = 'pss-overlay-geometry-panel text-muted';
+        empty.textContent = 'Select one or more models to display their FPP geometry.';
+        list.appendChild(empty);
         return;
     }
 
-    if (orientation) orientation.textContent = pssOverlayOrientationLabel(info.orientation);
-    if (corner) corner.textContent = pssOverlayCornerLabel(info.startCorner);
-    if (size) {
-        var w = parseInt(info.width || 0, 10);
-        var h = parseInt(info.height || 0, 10);
-        size.textContent = (w > 0 && h > 0) ? (w + ' × ' + h) : 'Unknown';
-    }
-    if (source) source.textContent = info.xlights ? 'xLights' : 'FPP';
-    if (note) note.textContent = 'Text orientation comes from this FPP model. If text is upside down or mirrored, adjust Orientation/Start Corner in Pixel Overlay Models; the sports plugin leaves geometry unchanged.';
+    models.forEach(function(model) {
+        var info = pssOverlayGeometry ? pssOverlayGeometry[model] : null;
+        var panel = document.createElement('div');
+        panel.className = 'pss-overlay-geometry-panel mb-2';
+        var title = document.createElement('span');
+        title.className = 'pss-overlay-geometry-item';
+        title.innerHTML = '<strong></strong>';
+        title.querySelector('strong').textContent = model;
+        panel.appendChild(title);
+
+        function addItem(label, value) {
+            var span = document.createElement('span');
+            span.className = 'pss-overlay-geometry-item';
+            var labelText = document.createTextNode(label + ': ');
+            var strong = document.createElement('strong');
+            strong.textContent = value;
+            span.appendChild(labelText);
+            span.appendChild(strong);
+            panel.appendChild(span);
+        }
+
+        if (info) {
+            var w = parseInt(info.width || 0, 10);
+            var h = parseInt(info.height || 0, 10);
+            addItem('Orientation', pssOverlayOrientationLabel(info.orientation));
+            addItem('Start Corner', pssOverlayCornerLabel(info.startCorner));
+            addItem('Size', (w > 0 && h > 0) ? (w + ' × ' + h) : 'Unknown');
+            addItem('Source', info.xlights ? 'xLights' : 'FPP');
+        } else {
+            addItem('Geometry', 'Not found in model-overlays.json');
+        }
+        list.appendChild(panel);
+    });
+
+    if (note) note.textContent = 'Each checked model uses its own FPP geometry. If one prop is upside down or mirrored, adjust only that model in Pixel Overlay Models.';
 }
 
 function pssTickerFormData(action) {
@@ -1207,7 +1325,7 @@ function pssClearTicker() {
     pssTickerMessage('Clearing Pixel Overlay ticker…', false);
     $.ajax({
         url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
-        data: { action: 'clearTicker' },
+        data: pssTickerFormData('clearTicker'),
         type: 'post',
         dataType: 'json'
     }).done(function (response) {
@@ -1218,8 +1336,6 @@ function pssClearTicker() {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
-    var modelSelect = document.getElementById('pss-ticker-model');
-    if (modelSelect) modelSelect.addEventListener('change', pssUpdateOverlayGeometry);
     pssUpdateOverlayGeometry();
     pssRenderTeamPalettes(pssTeamPalettes);
 });
