@@ -1911,7 +1911,7 @@ function pssKioskFullscreen() {
             window.localStorage.setItem(playedStorageKey(eventID), JSON.stringify(played));
         } catch (e) {
             // localStorage can be unavailable in privacy modes. Playback still works;
-            // the in-page newest-ID check prevents repeated autoplay during this session.
+            // the in-page newest-ID check prevents duplicate new-item handling during this session.
         }
     }
 
@@ -2012,7 +2012,8 @@ function pssKioskFullscreen() {
             video = document.createElement('video');
             video.className = 'pss-highlight-video';
             video.controls = true;
-            video.preload = 'metadata';
+            video.preload = 'auto';
+            video.autoplay = false;
             video.playsInline = true;
             if (item.thumbnail) video.poster = item.thumbnail;
             video.setAttribute('aria-label', item.headline || 'ESPN highlight');
@@ -2025,13 +2026,17 @@ function pssKioskFullscreen() {
                 video.addEventListener('play', function () {
                     stopOtherVideos(video);
                     markPlayed(panel.getAttribute('data-event-id') || '', item.id);
+                    if (replay) replay.textContent = 'Replay';
                     showNewBadge(panel, false);
                     setStatus(panel, 'Playing highlight');
                 });
                 video.addEventListener('loadedmetadata', function () {
                     var idx = parseInt(video._pssSourceIndex || 0, 10);
                     var label = videoSources[idx] && videoSources[idx].type === 'mp4' ? 'MP4' : 'video';
-                    setStatus(panel, 'Ready · ' + label + ' source');
+                    setStatus(panel, 'Loading ' + label + ' highlight in background…');
+                });
+                video.addEventListener('canplay', function () {
+                    setStatus(panel, 'Ready · tap ' + (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play'));
                 });
                 video.addEventListener('ended', function () {
                     setStatus(panel, 'Played once · Replay available');
@@ -2083,7 +2088,7 @@ function pssKioskFullscreen() {
         var replay = document.createElement('button');
         replay.type = 'button';
         replay.className = 'pss-highlight-button';
-        replay.textContent = 'Replay';
+        replay.textContent = hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay' : 'Play';
         replay.disabled = !video;
         replay.addEventListener('click', function () {
             if (!video) return;
@@ -2134,19 +2139,12 @@ function pssKioskFullscreen() {
         panel._pssCurrentHighlightID = String(item.id || '');
         showNewBadge(panel, !!isNew);
 
-        if (autoPlay && video && !hasPlayed(panel.getAttribute('data-event-id') || '', item.id)) {
-            stopOtherVideos(video);
-            var playPromise = video.play();
-            if (playPromise && typeof playPromise.catch === 'function') {
-                playPromise.catch(function () {
-                    showNewBadge(panel, true);
-                    setStatus(panel, 'New highlight ready · tap Play');
-                });
-            }
-        } else if (isNew) {
-            setStatus(panel, item.playable ? 'New highlight ready' : 'New highlight · ESPN link available');
+        if (isNew) {
+            setStatus(panel, video ? 'New highlight loading in background…' : 'New highlight · ESPN link available');
         } else {
-            setStatus(panel, item.playable ? 'Replay available' : 'Watch on ESPN');
+            setStatus(panel, video
+                ? (hasPlayed(panel.getAttribute('data-event-id') || '', item.id) ? 'Replay available' : 'Ready · tap Play')
+                : 'Watch on ESPN');
         }
     }
 
@@ -2190,16 +2188,15 @@ function pssKioskFullscreen() {
         panel._pssHighlightInitialized = true;
         panel._pssNewestHighlightID = newestID;
 
-        // On initial load, show/play only the newest clip rather than blasting through
-        // a backlog. Later newly published IDs are allowed one autoplay attempt each.
+        // On initial load or when a new clip arrives, render the newest clip and let
+        // the browser preload it in the background. Playback is always user-initiated.
         if (firstLoad || newArrival) {
-            var shouldAutoPlay = !hasPlayed(currentEvent, newestID);
-            loadHighlight(panel, newest, shouldAutoPlay, newArrival || shouldAutoPlay);
+            loadHighlight(panel, newest, false, newArrival);
             return;
         }
 
         // Keep whatever clip the viewer is currently watching/replaying. If nothing
-        // has been rendered yet, restore the newest clip without autoplaying it.
+        // has been rendered yet, restore the newest clip without starting playback.
         if (!panel._pssCurrentHighlightID) {
             loadHighlight(panel, newest, false, false);
         }
