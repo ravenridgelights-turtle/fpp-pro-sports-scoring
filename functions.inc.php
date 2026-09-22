@@ -53,7 +53,11 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
                 // on the same team the user just selected on FPP 7-10.
                 pss_updateTeam($info['sport'], $league, $slot, $teamID);
                 pss_updateTickerOutput(true);
+                pss_jsonResponse(true, 'Team selection updated.', array(
+                    'teamPalettes' => array_values(pss_syncTeamPalettes(false))
+                ));
             }
+            pss_jsonResponse(false, 'Invalid league.');
             break;
         case 'syncSequencePlaylist':
             if (isset($_POST['setting'])) {
@@ -63,17 +67,50 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
         case 'saveCelebrationDelay':
             pss_saveCelebrationDelay($_POST);
             break;
+        case 'syncWledCelebrationSetting':
+            pss_syncWledCelebrationSetting($_POST);
+            break;
+        case 'saveWledCelebrationDuration':
+            pss_saveWledCelebrationDuration($_POST);
+            break;
+        case 'saveGameScheduleEnabled':
+            pss_saveGameScheduleEnabled($_POST);
+            break;
+        case 'syncGameScheduleSetting':
+            pss_syncGameScheduleSetting($_POST);
+            break;
+        case 'promoteGameSchedulePriority':
+            pss_promoteGameSchedulePriority($_POST);
+            break;
+        case 'saveTeamVideoSource':
+            pss_saveTeamVideoSource($_POST);
+            break;
+        case 'startTeamVideoPreview':
+            pss_startTeamVideoPreview($_POST);
+            break;
+        case 'stopTeamVideoPreview':
+            pss_stopTeamVideoPreview($_POST);
+            break;
+        case 'videoPreviewState':
+            pss_videoPreviewState();
+            break;
         case 'manualTrigger':
             pss_manualTrigger($_POST);
+            break;
+        case 'runTeamEffect':
+            pss_runTeamEffect($_POST);
+            break;
+        case 'stopTeamEffect':
+            pss_stopTeamEffect($_POST);
             break;
         case 'saveTickerSettings':
             pss_saveTickerSettings($_POST);
             break;
         case 'testTicker':
-            pss_testTickerOutput();
+            pss_testTickerOutput($_POST);
             break;
         case 'clearTicker':
-            pss_clearConfiguredTickerOutput();
+            pss_clearConfiguredTickerOutput($_POST);
             break;
     }
 }
@@ -101,6 +138,77 @@ function pss_pluginSetting($key, $default = '') {
         return $default;
     }
     return urldecode((string)$pluginSettings[$key]);
+}
+
+function pss_normalizeOverlayModelSelection($value) {
+    if (is_string($value)) {
+        $value = trim($value);
+        if ($value === '') return array();
+        $decoded = json_decode($value, true);
+        if (is_array($decoded)) {
+            $value = $decoded;
+        } else {
+            // Backward compatibility: every older plugin version stored one
+            // plain model name in this setting.
+            $value = array($value);
+        }
+    } elseif (!is_array($value)) {
+        return array();
+    }
+
+    $result = array();
+    $seen = array();
+    foreach ($value as $model) {
+        if (!is_scalar($model)) continue;
+        $model = trim((string)$model);
+        if ($model === '' || isset($seen[$model])) continue;
+        $seen[$model] = true;
+        $result[] = $model;
+    }
+    return $result;
+}
+
+function pss_encodeOverlayModelSelection($models) {
+    $models = pss_normalizeOverlayModelSelection($models);
+    if (empty($models)) return '';
+    // JSON lets us preserve arbitrary FPP model names while remaining backward
+    // compatible with old single-model settings through the parser above.
+    return json_encode(array_values($models), JSON_UNESCAPED_SLASHES);
+}
+
+function pss_pluginOverlayModels($setting, $fallbackSetting = '') {
+    $models = pss_normalizeOverlayModelSelection(pss_pluginSetting($setting, ''));
+    if (empty($models) && $fallbackSetting !== '') {
+        $models = pss_normalizeOverlayModelSelection(pss_pluginSetting($fallbackSetting, ''));
+    }
+    return $models;
+}
+
+function pss_postOverlayModels($post, $arrayKey = 'models', $legacyKey = 'model') {
+    if (is_array($post) && array_key_exists($arrayKey, $post)) {
+        return pss_normalizeOverlayModelSelection($post[$arrayKey]);
+    }
+    if (is_array($post) && $legacyKey !== '' && array_key_exists($legacyKey, $post)) {
+        return pss_normalizeOverlayModelSelection($post[$legacyKey]);
+    }
+    return array();
+}
+
+function pss_overlayModelsExist($models, &$missing = array()) {
+    $models = pss_normalizeOverlayModelSelection($models);
+    $available = pss_getOverlayCommandModels();
+    if (empty($available)) return true;
+    $lookup = array_fill_keys($available, true);
+    $missing = array();
+    foreach ($models as $model) {
+        if (!isset($lookup[$model])) $missing[] = $model;
+    }
+    return empty($missing);
+}
+
+function pss_modelListText($models) {
+    $models = pss_normalizeOverlayModelSelection($models);
+    return implode(', ', $models);
 }
 
 function pss_setPluginSetting($key, $value) {
@@ -250,6 +358,347 @@ function pss_httpJson($url, $method = 'GET', $body = null) {
     return $data;
 }
 
+function pss_videoPreviewSourceName() {
+    return 'PSS Sports Preview';
+}
+
+function pss_videoCapturePluginInstalled() {
+    global $settings;
+    $pluginDirectory = isset($settings['pluginDirectory']) ? rtrim((string)$settings['pluginDirectory'], '/') : '/home/fpp/media/plugins';
+    return is_dir($pluginDirectory . '/fpp-VideoCapture');
+}
+
+function pss_coreVideoPreviewAvailable() {
+    $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources/v4l2-devices');
+    return is_array($data) && isset($data['devices']) && is_array($data['devices']);
+}
+
+function pss_getCoreV4L2Devices() {
+    $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources/v4l2-devices');
+    if (!is_array($data) || !isset($data['devices']) || !is_array($data['devices'])) {
+        return array();
+    }
+    return $data['devices'];
+}
+
+function pss_getVideoCaptureDevices() {
+    $devices = array();
+    $seen = array();
+
+    // FPP 10.1+ knows which /dev/video* nodes are actual single-planar capture
+    // devices and filters out decoder/ISP nodes that cannot produce a picture.
+    foreach (pss_getCoreV4L2Devices() as $device) {
+        if (!is_array($device)) continue;
+        $path = isset($device['device']) ? trim((string)$device['device']) : '';
+        if ($path === '' || !preg_match('#^/dev/video[0-9]+$#', $path)) continue;
+        $name = isset($device['name']) ? trim((string)$device['name']) : '';
+        $bus = isset($device['busInfo']) ? trim((string)$device['busInfo']) : '';
+        $label = ($name !== '' ? $name : 'USB Video Capture') . ' — ' . $path;
+        if ($bus !== '') $label .= ' (' . $bus . ')';
+        $devices[] = array('value' => 'usb:' . $path, 'device' => $path, 'label' => $label, 'source' => 'FPP');
+        $seen[$path] = true;
+    }
+
+    // The official fpp-VideoCapture plugin exposes its own camera list. Use it
+    // as a compatibility fallback, while de-duplicating devices FPP core found.
+    if (pss_videoCapturePluginInstalled()) {
+        $pluginCameras = pss_httpJson('http://127.0.0.1/api/plugin-apis/VideoCapture/Cameras');
+        if (is_array($pluginCameras)) {
+            foreach ($pluginCameras as $path => $name) {
+                $path = trim((string)$path);
+                if ($path === '' || $path === '--Default--' || isset($seen[$path])) continue;
+                if (!preg_match('#^/dev/video[0-9]+$#', $path)) continue;
+                $name = trim((string)$name);
+                $devices[] = array(
+                    'value' => 'usb:' . $path,
+                    'device' => $path,
+                    'label' => ($name !== '' ? $name : 'USB Video Capture') . ' — ' . $path,
+                    'source' => 'fpp-VideoCapture'
+                );
+                $seen[$path] = true;
+            }
+        }
+    }
+
+    usort($devices, function ($a, $b) {
+        return strnatcasecmp((string)$a['label'], (string)$b['label']);
+    });
+    return $devices;
+}
+
+function pss_normalizeVideoSource($value) {
+    $value = trim((string)$value);
+    if ($value === '' || $value === 'url') return $value;
+    if (strpos($value, 'usb:') === 0) {
+        $device = substr($value, 4);
+        if (preg_match('#^/dev/video[0-9]+$#', $device)) return 'usb:' . $device;
+    }
+    return '';
+}
+
+function pss_validateVideoStreamUrl($url) {
+    $url = trim((string)$url);
+    if ($url === '') return '';
+    if (strlen($url) > 2048) return '';
+    $parts = @parse_url($url);
+    if (!is_array($parts) || empty($parts['scheme'])) return '';
+    $scheme = strtolower((string)$parts['scheme']);
+    if (!in_array($scheme, array('rtsp', 'rtsps', 'http', 'https'), true)) return '';
+    return $url;
+}
+
+function pss_teamVideoSourceInfo($league, $slot = 1) {
+    $info = pss_leagueInfo($league);
+    if ($info['sport'] === '') return array('valid' => false, 'source' => '', 'url' => '', 'label' => '');
+    $prefix = pss_teamPrefix($league, $slot);
+    $source = pss_normalizeVideoSource(pss_pluginSetting("{$prefix}VideoSource", ''));
+    $url = pss_validateVideoStreamUrl(pss_pluginSetting("{$prefix}VideoStreamUrl", ''));
+    $label = trim(pss_pluginSetting("{$prefix}VideoSourceLabel", ''));
+    $valid = false;
+    if (strpos($source, 'usb:') === 0) $valid = true;
+    if ($source === 'url' && $url !== '') $valid = true;
+    return array('valid' => $valid, 'source' => $source, 'url' => $url, 'label' => $label);
+}
+
+function pss_saveTeamVideoSource($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    if (pss_leagueInfo($league)['sport'] === '') {
+        pss_jsonResponse(false, 'Invalid league.');
+    }
+
+    $prefix = pss_teamPrefix($league, $slot);
+    $source = pss_normalizeVideoSource(isset($post['source']) ? $post['source'] : '');
+    $urlRaw = isset($post['url']) ? trim((string)$post['url']) : '';
+    $url = ($urlRaw === '') ? '' : pss_validateVideoStreamUrl($urlRaw);
+    $label = isset($post['label']) ? trim((string)$post['label']) : '';
+    if (strlen($label) > 160) $label = substr($label, 0, 160);
+
+    if ($source === 'url' && $urlRaw !== '' && $url === '') {
+        pss_jsonResponse(false, 'Stream URL must use http://, https://, rtsp://, or rtsps://.');
+    }
+    if ($source === 'url') {
+        // Keep credentials/long stream addresses out of the scoreboard markup.
+        // The actual URL stays only in the plugin setting and is read server-side.
+        $label = 'Network / IP stream';
+    }
+    if (strpos($source, 'usb:') === 0) {
+        $device = substr($source, 4);
+        if (!preg_match('#^/dev/video[0-9]+$#', $device)) {
+            pss_jsonResponse(false, 'Invalid USB video capture device.');
+        }
+        $url = '';
+    }
+    if ($source === '') {
+        $url = '';
+        $label = '';
+    }
+
+    pss_setPluginSetting("{$prefix}VideoSource", $source);
+    pss_setPluginSetting("{$prefix}VideoStreamUrl", $url);
+    pss_setPluginSetting("{$prefix}VideoSourceLabel", $label);
+    $pluginSettings = pss_loadPluginSettings();
+
+    if (pss_pluginSetting('ActiveVideoPreviewKey', '') === $prefix) {
+        // A source changed while it was live. Stop the old pipeline so the
+        // scoreboard cannot continue showing a device/URL that is no longer selected.
+        pss_stopVideoPreviewPipeline(false);
+    }
+
+    pss_jsonResponse(true, $source === '' ? 'Team video source cleared.' : 'Team video source saved.', array(
+        'source' => $source,
+        'urlConfigured' => ($source === 'url' && $url !== ''),
+        'label' => $label
+    ));
+}
+
+function pss_getVideoInputSourcesConfig() {
+    $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources');
+    if (!is_array($data)) return null;
+    if (!isset($data['videoInputSources']) || !is_array($data['videoInputSources'])) {
+        $data['videoInputSources'] = array();
+    }
+    return $data;
+}
+
+function pss_removeSportsPreviewSourceFromConfig($data, &$removedID = 0) {
+    if (!is_array($data)) $data = array();
+    if (!isset($data['videoInputSources']) || !is_array($data['videoInputSources'])) {
+        $data['videoInputSources'] = array();
+    }
+    $marker = pss_videoPreviewSourceName();
+    $kept = array();
+    foreach ($data['videoInputSources'] as $src) {
+        if (is_array($src) && isset($src['name']) && (string)$src['name'] === $marker) {
+            if (isset($src['id'])) $removedID = (int)$src['id'];
+            continue;
+        }
+        $kept[] = $src;
+    }
+    $data['videoInputSources'] = $kept;
+    return $data;
+}
+
+function pss_chooseVideoPreviewMode($device, $requestedFps = 5) {
+    $requestedFps = max(1, min(10, (int)$requestedFps));
+    $modes = array();
+    foreach (pss_getCoreV4L2Devices() as $entry) {
+        if (!is_array($entry) || !isset($entry['device']) || (string)$entry['device'] !== (string)$device) continue;
+        if (isset($entry['modes']) && is_array($entry['modes'])) $modes = $entry['modes'];
+        break;
+    }
+    if (empty($modes)) return array('width' => 640, 'height' => 480, 'framerate' => $requestedFps);
+
+    $best = null;
+    $bestScore = PHP_INT_MAX;
+    foreach ($modes as $mode) {
+        if (!is_array($mode)) continue;
+        $w = isset($mode['width']) ? (int)$mode['width'] : 0;
+        $h = isset($mode['height']) ? (int)$mode['height'] : 0;
+        if ($w <= 0 || $h <= 0) continue;
+        $rates = isset($mode['framerates']) && is_array($mode['framerates']) ? $mode['framerates'] : array();
+        $fps = $requestedFps;
+        if (!empty($rates)) {
+            $usable = array_map('intval', $rates);
+            sort($usable, SORT_NUMERIC);
+            $fps = end($usable);
+            foreach ($usable as $candidate) {
+                if ($candidate >= $requestedFps) { $fps = $candidate; break; }
+            }
+            $fps = min($fps, 30);
+        }
+        // Prefer a modest preview capture size near 640x360/480. Very large
+        // modes waste USB bandwidth/CPU for a small scoreboard panel.
+        $pixels = $w * $h;
+        $targetPixels = 640 * 480;
+        $score = abs($pixels - $targetPixels) + (abs($w - 640) * 200);
+        if ($score < $bestScore) {
+            $bestScore = $score;
+            $best = array('width' => $w, 'height' => $h, 'framerate' => $fps);
+        }
+    }
+    return $best ?: array('width' => 640, 'height' => 480, 'framerate' => $requestedFps);
+}
+
+function pss_saveAndApplyVideoInputSources($data) {
+    $save = pss_httpRequest('http://127.0.0.1/api/pipewire/video/input-sources', 'POST', $data, 'application/json');
+    if (!$save['ok']) {
+        return array('ok' => false, 'message' => 'FPP rejected the video input source configuration (HTTP ' . (int)$save['status'] . ').');
+    }
+    $apply = pss_httpRequest('http://127.0.0.1/api/pipewire/video/input-sources/apply', 'POST', null, 'application/json');
+    if (!$apply['ok']) {
+        return array('ok' => false, 'message' => 'FPP saved the source but could not apply it (HTTP ' . (int)$apply['status'] . ').');
+    }
+    return array('ok' => true, 'message' => '');
+}
+
+function pss_stopVideoPreviewPipeline($writeJsonResponse = true) {
+    global $pluginSettings;
+    $data = pss_getVideoInputSourcesConfig();
+    if (!is_array($data)) {
+        if ($writeJsonResponse) pss_jsonResponse(false, 'FPP video input API is unavailable. FPP 10.1 or newer is required for scoreboard live preview.');
+        return false;
+    }
+    $removedID = 0;
+    $updated = pss_removeSportsPreviewSourceFromConfig($data, $removedID);
+    if ($removedID > 0) {
+        $result = pss_saveAndApplyVideoInputSources($updated);
+        if (!$result['ok']) {
+            if ($writeJsonResponse) pss_jsonResponse(false, $result['message']);
+            return false;
+        }
+    }
+    pss_setPluginSetting('ActiveVideoPreviewKey', '');
+    $pluginSettings = pss_loadPluginSettings();
+    if ($writeJsonResponse) pss_jsonResponse(true, 'Live video stopped.');
+    return true;
+}
+
+function pss_startTeamVideoPreview($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    if (pss_leagueInfo($league)['sport'] === '') pss_jsonResponse(false, 'Invalid league.');
+    $prefix = pss_teamPrefix($league, $slot);
+    $sourceInfo = pss_teamVideoSourceInfo($league, $slot);
+    if (empty($sourceInfo['valid'])) {
+        pss_jsonResponse(false, 'Choose a USB video capture device or enter a stream URL for this team first.');
+    }
+
+    $data = pss_getVideoInputSourcesConfig();
+    if (!is_array($data)) {
+        pss_jsonResponse(false, 'FPP video input API is unavailable. FPP 10.1 or newer is required for scoreboard live preview.');
+    }
+
+    $oldID = 0;
+    $data = pss_removeSportsPreviewSourceFromConfig($data, $oldID);
+    $used = array();
+    foreach ($data['videoInputSources'] as $src) {
+        if (is_array($src) && isset($src['id'])) $used[(int)$src['id']] = true;
+    }
+    $sourceID = ($oldID > 0 && !isset($used[$oldID])) ? $oldID : 900001;
+    while (isset($used[$sourceID]) && $sourceID < 900100) $sourceID++;
+    if (isset($used[$sourceID])) pss_jsonResponse(false, 'Unable to reserve an FPP video preview source ID.');
+
+    $previewFps = pss_clampInt(pss_pluginSetting('ScoreboardVideoPreviewFPS', '5'), 1, 10, 5);
+    $entry = array(
+        'id' => $sourceID,
+        'name' => pss_videoPreviewSourceName(),
+        'enabled' => true,
+        'audioEnabled' => false,
+        'width' => 640,
+        'height' => 360,
+        'framerate' => $previewFps
+    );
+
+    if (strpos($sourceInfo['source'], 'usb:') === 0) {
+        $device = substr($sourceInfo['source'], 4);
+        if (!preg_match('#^/dev/video[0-9]+$#', $device)) pss_jsonResponse(false, 'The saved USB capture device is invalid.');
+        $mode = pss_chooseVideoPreviewMode($device, $previewFps);
+        $entry['type'] = 'v4l2src';
+        $entry['device'] = $device;
+        $entry['width'] = (int)$mode['width'];
+        $entry['height'] = (int)$mode['height'];
+        $entry['framerate'] = (int)$mode['framerate'];
+    } else {
+        $url = pss_validateVideoStreamUrl($sourceInfo['url']);
+        if ($url === '') pss_jsonResponse(false, 'The saved stream URL is missing or unsupported.');
+        $scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+        if ($scheme === 'rtsp' || $scheme === 'rtsps') {
+            $entry['type'] = 'rtspsrc';
+            $entry['uri'] = $url;
+            $entry['latency'] = 200;
+        } else {
+            $entry['type'] = 'urisrc';
+            $entry['uri'] = $url;
+            $entry['bufferSec'] = 1.0;
+        }
+    }
+
+    $data['videoInputSources'][] = $entry;
+    $result = pss_saveAndApplyVideoInputSources($data);
+    if (!$result['ok']) pss_jsonResponse(false, $result['message']);
+
+    pss_setPluginSetting('ActiveVideoPreviewKey', $prefix);
+    $pluginSettings = pss_loadPluginSettings();
+    pss_jsonResponse(true, 'Live video started. Starting another team automatically switches the single preview pipeline.', array(
+        'key' => $prefix,
+        'sourceID' => $sourceID,
+        'previewUrl' => 'api/pipewire/video/input-sources/' . $sourceID . '/preview?width=720',
+        'fps' => $previewFps
+    ));
+}
+
+function pss_stopTeamVideoPreview($post) {
+    pss_stopVideoPreviewPipeline(true);
+}
+
+function pss_videoPreviewState() {
+    $key = trim(pss_pluginSetting('ActiveVideoPreviewKey', ''));
+    pss_jsonResponse(true, 'Video preview state.', array('key' => $key));
+}
+
 function pss_getTeams($sport = 'football', $league = 'nfl') {
     $espnLeague = ($league === 'ncaa') ? 'college-football' : $league;
     $suffix = ($league === 'ncaa') ? '?limit=1000' : '';
@@ -282,32 +731,167 @@ function pss_getNCAATeams() {
     return pss_getTeams('football', 'ncaa');
 }
 
-function pss_getSequences() {
-    global $settings;
+function pss_wledSelectionPrefix() {
+    return '__PSS_WLED__';
+}
 
-    $sequenceList = array('No Sequence' => '');
-    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
-    if (!is_dir($sequenceDirectory)) {
-        pss_logEntry("FPP sequence directory not found: {$sequenceDirectory}");
-        return $sequenceList;
+function pss_wledSelectionToken($effectName) {
+    $effectName = trim((string)$effectName);
+    if ($effectName === '') {
+        return '';
+    }
+    $encoded = rtrim(strtr(base64_encode($effectName), '+/', '-_'), '=');
+    return pss_wledSelectionPrefix() . $encoded;
+}
+
+function pss_wledEffectFromSelection($value) {
+    $value = trim((string)$value);
+    $prefix = pss_wledSelectionPrefix();
+    if (strpos($value, $prefix) !== 0) {
+        return '';
+    }
+    $encoded = substr($value, strlen($prefix));
+    if ($encoded === '') {
+        return '';
+    }
+    $encoded = strtr($encoded, '-_', '+/');
+    $pad = strlen($encoded) % 4;
+    if ($pad) {
+        $encoded .= str_repeat('=', 4 - $pad);
+    }
+    $decoded = base64_decode($encoded, true);
+    if ($decoded === false) {
+        return '';
+    }
+    $decoded = trim((string)$decoded);
+    return strpos($decoded, 'WLED - ') === 0 ? $decoded : '';
+}
+
+function pss_isWledSelection($value) {
+    return pss_wledEffectFromSelection($value) !== '';
+}
+
+function pss_collectWledEffectCatalog($node, &$catalog) {
+    if (is_string($node)) {
+        $name = trim($node);
+        if (strpos($name, 'WLED - ') === 0 && !isset($catalog[$name])) {
+            $catalog[$name] = null;
+        }
+        return;
+    }
+    if (!is_array($node)) {
+        return;
     }
 
-    $files = glob($sequenceDirectory . '/*.fseq');
-    if (!is_array($files)) {
-        return $sequenceList;
-    }
-
-    $sequences = array();
-    foreach ($files as $file) {
-        $filename = basename($file);
-        $label = preg_replace('/\.fseq$/i', '', $filename);
-        if ($filename !== '' && $label !== '') {
-            $sequences[$label] = $filename;
+    // Some FPP builds return an associative map keyed by effect name.
+    foreach ($node as $key => $value) {
+        if (is_string($key)) {
+            $name = trim($key);
+            if (strpos($name, 'WLED - ') === 0) {
+                $catalog[$name] = is_array($value) ? $value : (isset($catalog[$name]) ? $catalog[$name] : null);
+            }
         }
     }
 
+    // Other builds return a list of effect objects.
+    foreach (array('name', 'Name', 'effect', 'Effect', 'value', 'label', 'displayName', 'display_name') as $key) {
+        if (isset($node[$key]) && is_scalar($node[$key])) {
+            $name = trim((string)$node[$key]);
+            if (strpos($name, 'WLED - ') === 0) {
+                $catalog[$name] = $node;
+                break;
+            }
+        }
+    }
+
+    foreach ($node as $value) {
+        if (is_array($value) || is_string($value)) {
+            pss_collectWledEffectCatalog($value, $catalog);
+        }
+    }
+}
+
+function pss_getWledEffectCatalog() {
+    static $catalog = null;
+    if (is_array($catalog)) {
+        return $catalog;
+    }
+
+    $catalog = array();
+    $data = pss_httpJson('http://127.0.0.1/api/overlays/effects/');
+    if (!is_array($data)) {
+        $data = pss_httpJson('http://127.0.0.1/api/overlays/effects');
+    }
+    if (is_array($data)) {
+        pss_collectWledEffectCatalog($data, $catalog);
+    }
+
+    // Keep the two effects already proven by the live Team Palette Effect
+    // Trigger available if an older/minimal FPP build does not expose the list.
+    foreach (array('WLED - Android', 'WLED - Colortwinkles') as $fallback) {
+        if (!isset($catalog[$fallback])) {
+            $catalog[$fallback] = null;
+        }
+    }
+
+    ksort($catalog, SORT_NATURAL | SORT_FLAG_CASE);
+    return $catalog;
+}
+
+function pss_getWledEffectNames() {
+    return array_keys(pss_getWledEffectCatalog());
+}
+
+function pss_getSequences() {
+    global $settings;
+
+    $sequenceList = array('No Sequence / Effect' => '');
+    $sequences = array();
+    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
+    if (is_dir($sequenceDirectory)) {
+        $files = glob($sequenceDirectory . '/*.fseq');
+        if (is_array($files)) {
+            foreach ($files as $file) {
+                $filename = basename($file);
+                $label = preg_replace('/\.fseq$/i', '', $filename);
+                if ($filename !== '' && $label !== '') {
+                    $sequences[$label] = $filename;
+                }
+            }
+        }
+    } else {
+        pss_logEntry("FPP sequence directory not found: {$sequenceDirectory}");
+    }
     ksort($sequences, SORT_NATURAL | SORT_FLAG_CASE);
-    return $sequenceList + $sequences;
+
+    // WLED choices live in the SAME touchdown/field-goal/score/win selects as
+    // normal .fseq files.  The stored token is deliberately not a filename so
+    // the existing sequence path remains completely unchanged for old choices.
+    $wledNames = pss_getWledEffectNames();
+
+    // Keep already-selected WLED values visible even if the local effect API is
+    // temporarily unavailable while the page is loading.
+    global $pluginSettings;
+    if (is_array($pluginSettings)) {
+        foreach ($pluginSettings as $settingKey => $settingValue) {
+            if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence|ScheduleSelection)$/', (string)$settingKey)) {
+                continue;
+            }
+            $selectedEffect = pss_wledEffectFromSelection(urldecode((string)$settingValue));
+            if ($selectedEffect !== '' && !in_array($selectedEffect, $wledNames, true)) {
+                $wledNames[] = $selectedEffect;
+            }
+        }
+    }
+    natcasesort($wledNames);
+
+    $wledOptions = array();
+    foreach ($wledNames as $effectName) {
+        $shortName = preg_replace('/^WLED\s*-\s*/i', '', $effectName);
+        $wledOptions['Run WLED Effect - ' . $shortName] = pss_wledSelectionToken($effectName);
+    }
+
+    return $sequenceList + $sequences + $wledOptions;
 }
 
 function pss_jsonResponse($ok, $message, $extra = array()) {
@@ -342,6 +926,358 @@ function pss_normalizeColor($value, $default = '#FFFFFF') {
         return '#' . $value;
     }
     return $default;
+}
+
+function pss_normalizeTeamColor($value, $default = '') {
+    $value = strtoupper(trim((string)$value));
+    if ($value === '') {
+        return $default;
+    }
+    if ($value[0] !== '#') {
+        $value = '#' . $value;
+    }
+    return preg_match('/^#[0-9A-F]{6}$/', $value) ? $value : $default;
+}
+
+function pss_colorRgb($color) {
+    $color = pss_normalizeTeamColor($color, '#000000');
+    return array(
+        hexdec(substr($color, 1, 2)),
+        hexdec(substr($color, 3, 2)),
+        hexdec(substr($color, 5, 2))
+    );
+}
+
+function pss_colorDistance($a, $b) {
+    $aa = pss_colorRgb($a);
+    $bb = pss_colorRgb($b);
+    $dr = $aa[0] - $bb[0];
+    $dg = $aa[1] - $bb[1];
+    $db = $aa[2] - $bb[2];
+    return sqrt(($dr * $dr) + ($dg * $dg) + ($db * $db));
+}
+
+function pss_teamPaletteThirdColor($primary, $secondary) {
+    // ESPN normally gives a primary and alternate team color.  WLED/FPP can
+    // expose three segment colors, so choose a neutral third accent that is as
+    // visually distinct as possible from both official colors.  Include gray so
+    // black/white teams still get three distinct colors.  An effect that only
+    // consumes Color 1/2 simply ignores Color 3.
+    $candidates = array('#FFFFFF', '#000000', '#808080');
+    $best = '#808080';
+    $bestScore = -1;
+    foreach ($candidates as $candidate) {
+        if (strcasecmp($candidate, $primary) === 0 || strcasecmp($candidate, $secondary) === 0) {
+            continue;
+        }
+        $score = min(pss_colorDistance($candidate, $primary), pss_colorDistance($candidate, $secondary));
+        if ($score > $bestScore) {
+            $bestScore = $score;
+            $best = $candidate;
+        }
+    }
+    return $best;
+}
+
+function pss_teamPaletteColorsFromEspn($teamData) {
+    $primary = pss_normalizeTeamColor(isset($teamData['color']) ? $teamData['color'] : '', '#FFFFFF');
+    $secondary = pss_normalizeTeamColor(isset($teamData['alternateColor']) ? $teamData['alternateColor'] : '', '');
+
+    if ($secondary === '' || strcasecmp($secondary, $primary) === 0) {
+        $secondary = (pss_colorDistance($primary, '#000000') >= pss_colorDistance($primary, '#FFFFFF'))
+            ? '#000000' : '#FFFFFF';
+    }
+
+    $third = pss_teamPaletteThirdColor($primary, $secondary);
+    return array($primary, $secondary, $third);
+}
+
+function pss_teamPaletteRegistryPath() {
+    global $settings, $pluginName;
+    $configDir = isset($settings['configDirectory']) ? rtrim((string)$settings['configDirectory'], '/') : '/home/fpp/media/config';
+    return $configDir . '/plugin.' . $pluginName . '.team-palettes.json';
+}
+
+function pss_storeTeamPaletteSettings($league, $slot, $teamInfo) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $colors = isset($teamInfo['paletteColors']) && is_array($teamInfo['paletteColors'])
+        ? $teamInfo['paletteColors'] : array('#FFFFFF', '#000000', '#FFFFFF');
+
+    pss_setPluginSetting("{$prefix}TeamPaletteName", isset($teamInfo['name']) ? (string)$teamInfo['name'] : '');
+    pss_setPluginSetting("{$prefix}TeamColor1", isset($colors[0]) ? pss_normalizeTeamColor($colors[0], '#FFFFFF') : '#FFFFFF');
+    pss_setPluginSetting("{$prefix}TeamColor2", isset($colors[1]) ? pss_normalizeTeamColor($colors[1], '#000000') : '#000000');
+    pss_setPluginSetting("{$prefix}TeamColor3", isset($colors[2]) ? pss_normalizeTeamColor($colors[2], '#FFFFFF') : '#FFFFFF');
+}
+
+function pss_buildSelectedTeamPalettes($refreshMissing = false) {
+    global $leagues;
+    $palettes = array();
+
+    foreach ($leagues as $league) {
+        $leagueInfo = pss_leagueInfo($league);
+        if ($leagueInfo['sport'] === '') {
+            continue;
+        }
+
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            $teamID = trim(pss_pluginSetting("{$prefix}TeamID", ''));
+            if ($teamID === '') {
+                continue;
+            }
+
+            $name = trim(pss_pluginSetting("{$prefix}TeamPaletteName", pss_pluginSetting("{$prefix}TeamName", '')));
+            $c1 = pss_normalizeTeamColor(pss_pluginSetting("{$prefix}TeamColor1", ''), '');
+            $c2 = pss_normalizeTeamColor(pss_pluginSetting("{$prefix}TeamColor2", ''), '');
+            $c3 = pss_normalizeTeamColor(pss_pluginSetting("{$prefix}TeamColor3", ''), '');
+
+            if ($refreshMissing && ($name === '' || $c1 === '' || $c2 === '' || $c3 === '')) {
+                $teamInfo = pss_getTeamInfo($leagueInfo['sport'], $league, $teamID);
+                if ($teamInfo['valid']) {
+                    pss_storeTeamPaletteSettings($league, $slot, $teamInfo);
+                    $name = trim((string)$teamInfo['name']);
+                    $colors = $teamInfo['paletteColors'];
+                    $c1 = $colors[0];
+                    $c2 = $colors[1];
+                    $c3 = $colors[2];
+                }
+            }
+
+            // Never keep a stale palette under a newly selected TeamID.  If ESPN
+            // is temporarily unavailable, the palette appears on the next sync
+            // after the team metadata/colors can be refreshed.
+            if ($name === '' || $c1 === '' || $c2 === '' || $c3 === '') {
+                continue;
+            }
+
+            $key = strtolower((string)$league) . ':' . (string)$teamID;
+            $palettes[$key] = array(
+                'id' => $key,
+                'name' => $name,
+                'league' => strtoupper((string)$league),
+                'teamID' => (string)$teamID,
+                'palette' => '* Colors Only',
+                'colors' => array($c1, $c2, $c3)
+            );
+        }
+    }
+
+    uasort($palettes, function ($a, $b) {
+        return strnatcasecmp((string)$a['name'], (string)$b['name']);
+    });
+    return $palettes;
+}
+
+function pss_readTeamPaletteRegistry() {
+    $path = pss_teamPaletteRegistryPath();
+    if (!is_file($path)) {
+        return array();
+    }
+    $raw = @file_get_contents($path);
+    $data = ($raw !== false) ? json_decode($raw, true) : null;
+    if (!is_array($data) || !isset($data['palettes']) || !is_array($data['palettes'])) {
+        return array();
+    }
+    return $data['palettes'];
+}
+
+function pss_syncTeamPalettes($refreshMissing = false) {
+    global $pluginName;
+    $path = pss_teamPaletteRegistryPath();
+    $palettes = pss_buildSelectedTeamPalettes($refreshMissing);
+
+    if (empty($palettes)) {
+        if (is_file($path)) {
+            @unlink($path);
+            pss_logEntry('Removed sports team palette registry because no teams are selected');
+        }
+        return array();
+    }
+
+    $payload = array(
+        'version' => 1,
+        'managedBy' => (string)$pluginName,
+        'paletteMode' => '* Colors Only',
+        'palettes' => $palettes
+    );
+    $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) {
+        pss_logEntry('Could not encode sports team palette registry');
+        return $palettes;
+    }
+    $json .= "\n";
+
+    $oldJson = is_file($path) ? @file_get_contents($path) : false;
+    if ($oldJson !== $json) {
+        $tmp = $path . '.tmp.' . getmypid();
+        if (@file_put_contents($tmp, $json, LOCK_EX) !== false && @rename($tmp, $path)) {
+            @chmod($path, 0664);
+            pss_logEntry('Synced ' . count($palettes) . ' selected sports team palette' . (count($palettes) === 1 ? '' : 's'));
+        } else {
+            @unlink($tmp);
+            pss_logEntry('Could not write sports team palette registry ' . $path);
+        }
+    }
+
+    return $palettes;
+}
+
+
+function pss_teamEffectNameFromValue($value) {
+    $value = trim((string)$value);
+    if ($value === '') return 'WLED - Colortwinkles';
+    if (strcasecmp($value, 'android') === 0) return 'WLED - Android';
+    if (strcasecmp($value, 'colortwinkles') === 0) return 'WLED - Colortwinkles';
+    if (stripos($value, 'WLED - ') === 0) return $value;
+    return 'WLED - ' . $value;
+}
+
+function pss_findTeamPalette($paletteID) {
+    $paletteID = strtolower(trim((string)$paletteID));
+    if ($paletteID === '') {
+        return null;
+    }
+    $palettes = pss_syncTeamPalettes(true);
+    return isset($palettes[$paletteID]) && is_array($palettes[$paletteID]) ? $palettes[$paletteID] : null;
+}
+
+function pss_teamEffectCommonPostValues($post) {
+    $models = pss_postOverlayModels($post, 'models', 'model');
+    $paletteID = isset($post['paletteID']) ? strtolower(trim((string)$post['paletteID'])) : '';
+    $effectValue = isset($post['effect']) ? $post['effect'] : (isset($post['preset']) ? $post['preset'] : 'WLED - Colortwinkles');
+    $effectName = pss_teamEffectNameFromValue($effectValue);
+    $mapping = isset($post['mapping']) ? trim((string)$post['mapping']) : 'Horizontal';
+    if (!in_array($mapping, array('Horizontal', 'Vertical'), true)) {
+        $mapping = 'Horizontal';
+    }
+    $autoEnable = isset($post['autoEnable']) ? trim((string)$post['autoEnable']) : 'Enabled';
+    if (!in_array($autoEnable, array('False', 'Enabled', 'Transparent', 'Transparent RGB'), true)) {
+        $autoEnable = 'Enabled';
+    }
+    $brightness = pss_clampInt(isset($post['brightness']) ? $post['brightness'] : 128, 0, 255, 128);
+    $control1 = pss_clampInt(isset($post['control1']) ? $post['control1'] : 128, 0, 255, 128);
+    $control2 = pss_clampInt(isset($post['control2']) ? $post['control2'] : 128, 0, 255, 128);
+    return array($models, $paletteID, $effectName, $mapping, $autoEnable, $brightness, $control1, $control2);
+}
+
+function pss_saveTeamEffectSettings($models, $paletteID, $effectName, $mapping, $autoEnable, $brightness, $control1, $control2) {
+    pss_setPluginSetting('TeamEffectModel', pss_encodeOverlayModelSelection($models));
+    pss_setPluginSetting('TeamEffectPaletteID', $paletteID);
+    pss_setPluginSetting('TeamEffectName', $effectName);
+    // Keep this key populated for older plugin builds that still read it.
+    pss_setPluginSetting('TeamEffectPreset', $effectName);
+    pss_setPluginSetting('TeamEffectMapping', $mapping);
+    pss_setPluginSetting('TeamEffectAutoEnable', $autoEnable);
+    pss_setPluginSetting('TeamEffectBrightness', (string)$brightness);
+    pss_setPluginSetting('TeamEffectControl1', (string)$control1);
+    pss_setPluginSetting('TeamEffectControl2', (string)$control2);
+}
+
+function pss_buildTeamTriggerWledArgs($effectName, $model, $palette, $mapping, $autoEnable, $brightness, $control1, $control2) {
+    $effectName = pss_teamEffectNameFromValue($effectName);
+    $colors = isset($palette['colors']) && is_array($palette['colors']) ? array_values($palette['colors']) : array();
+    while (count($colors) < 3) $colors[] = '#000000';
+    $colors = array(
+        pss_normalizeColor($colors[0], '#FFFFFF'),
+        pss_normalizeColor($colors[1], '#000000'),
+        pss_normalizeColor($colors[2], '#808080')
+    );
+
+    // Preserve the two hand-tuned controls the original trigger already exposed.
+    if ($effectName === 'WLED - Android') {
+        return array($model, $autoEnable, $effectName, $mapping, (string)$brightness, (string)$control1, (string)$control2, '* Colors Only', $colors[0], $colors[1]);
+    }
+    if ($effectName === 'WLED - Colortwinkles') {
+        return array($model, $autoEnable, $effectName, $mapping, (string)$brightness, (string)$control1, (string)$control2, '* Colors Only', $colors[0], $colors[1], $colors[2]);
+    }
+
+    // Every other WLED effect comes from FPP's live effect catalog.  Team colors
+    // replace its palette/color args and FPP defaults are used for effect-specific
+    // sliders.  Mapping/brightness are overridden when those args exist.
+    $args = pss_buildWledEffectArgs($effectName, $model, $palette, array(
+        'mapping' => $mapping,
+        'brightness' => (string)$brightness
+    ));
+    if (!empty($args) && isset($args[1])) $args[1] = $autoEnable;
+    return $args;
+}
+
+function pss_runTeamEffect($post) {
+    list($models, $paletteID, $effectName, $mapping, $autoEnable, $brightness, $control1, $control2) = pss_teamEffectCommonPostValues($post);
+
+    if (empty($models)) {
+        pss_jsonResponse(false, 'Select at least one Pixel Overlay Model first.');
+    }
+    $missing = array();
+    if (!pss_overlayModelsExist($models, $missing)) {
+        pss_jsonResponse(false, 'These Pixel Overlay Models are not currently returned by FPP: ' . implode(', ', $missing));
+    }
+
+    $effectNames = pss_getWledEffectNames();
+    if (!empty($effectNames) && !in_array($effectName, $effectNames, true)) {
+        pss_jsonResponse(false, 'The selected WLED effect is not currently returned by FPP.');
+    }
+
+    $palette = pss_findTeamPalette($paletteID);
+    if (!is_array($palette)) {
+        pss_jsonResponse(false, 'Select a currently managed sports team palette first.');
+    }
+
+    $failures = array();
+    $started = array();
+    foreach ($models as $model) {
+        $args = pss_buildTeamTriggerWledArgs($effectName, $model, $palette, $mapping, $autoEnable, $brightness, $control1, $control2);
+        if (empty($args)) {
+            $failures[] = $model . ' (no usable FPP effect definition)';
+            continue;
+        }
+        $response = pss_runFppCommandExact('Overlay Model Effect', $args);
+        if (!$response['ok']) {
+            $detail = pss_overlayCommandErrorText($response);
+            $failures[] = $model . ' (HTTP ' . $response['status'] . ($detail !== '' ? ': ' . $detail : '') . ')';
+            pss_logEntry('FPP rejected team palette effect ' . $effectName . ' for ' . $model . ' HTTP ' . $response['status'] . ($detail !== '' ? ' response=' . $detail : ''));
+            continue;
+        }
+        $started[] = $model;
+    }
+
+    pss_saveTeamEffectSettings($models, $paletteID, $effectName, $mapping, $autoEnable, $brightness, $control1, $control2);
+    if (!empty($failures)) {
+        pss_jsonResponse(false, 'Effect started on ' . count($started) . ' model(s), but failed on: ' . implode('; ', $failures), array('startedModels' => $started, 'failedModels' => $failures));
+    }
+
+    $teamName = isset($palette['name']) ? (string)$palette['name'] : $paletteID;
+    pss_logEntry('Started team palette effect ' . $effectName . ' on ' . pss_modelListText($models) . ' team=' . $teamName . ' palette=* Colors Only');
+    pss_jsonResponse(true, $teamName . ' colors started on ' . count($models) . ' model(s) using ' . $effectName . '.', array(
+        'models' => $models,
+        'team' => $teamName,
+        'effect' => $effectName,
+        'palette' => '* Colors Only'
+    ));
+}
+
+function pss_stopTeamEffect($post) {
+    $models = pss_postOverlayModels($post, 'models', 'model');
+    if (empty($models)) $models = pss_pluginOverlayModels('TeamEffectModel');
+    if (empty($models)) {
+        pss_jsonResponse(false, 'Select at least one Pixel Overlay Model first.');
+    }
+
+    $failures = array();
+    foreach ($models as $model) {
+        $response = pss_runFppCommandExact('Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'));
+        if (!$response['ok']) {
+            $detail = pss_overlayCommandErrorText($response);
+            $failures[] = $model;
+            pss_logEntry('FPP rejected Stop Effects for team palette model ' . $model . ' HTTP ' . $response['status'] . ($detail !== '' ? ' response=' . $detail : ''));
+        }
+    }
+    if (!empty($failures)) {
+        pss_jsonResponse(false, 'FPP could not stop effects on: ' . implode(', ', $failures) . '. Check the plugin log.');
+    }
+
+    pss_logEntry('Stopped team palette effects on ' . pss_modelListText($models));
+    pss_jsonResponse(true, 'Stopped overlay effects on ' . count($models) . ' model(s).');
 }
 
 function pss_overlayModelDimensions($model) {
@@ -415,15 +1351,88 @@ function pss_getOverlayModels() {
             continue;
         }
         list($width, $height) = pss_overlayModelDimensions($model);
+        $orientation = isset($model['Orientation']) ? trim((string)$model['Orientation']) : '';
+        $startCorner = isset($model['StartCorner']) ? trim((string)$model['StartCorner']) : '';
         $result[$name] = array(
             'name' => $name,
             'width' => $width,
-            'height' => $height
+            'height' => $height,
+            'orientation' => $orientation,
+            'startCorner' => $startCorner,
+            'xlights' => !empty($model['xLights'])
         );
     }
 
     ksort($result, SORT_NATURAL | SORT_FLAG_CASE);
     return $result;
+}
+
+function pss_getOverlayCommandModels() {
+    $models = array();
+    $data = pss_httpJson('http://127.0.0.1/api/models?simple=true&all=true');
+    if (is_array($data)) {
+        foreach ($data as $entry) {
+            if (is_string($entry)) {
+                $name = trim($entry);
+            } elseif (is_array($entry) && isset($entry['name'])) {
+                $name = trim((string)$entry['name']);
+            } elseif (is_array($entry) && isset($entry['Name'])) {
+                $name = trim((string)$entry['Name']);
+            } else {
+                $name = '';
+            }
+            if ($name === '' || $name === '--All Models--') {
+                continue;
+            }
+            $models[$name] = $name;
+        }
+    }
+
+    // Fall back to model-overlays.json if the live command API is unavailable.
+    if (empty($models)) {
+        foreach (pss_getOverlayModels() as $name => $info) {
+            $name = trim((string)$name);
+            if ($name !== '') {
+                $models[$name] = $name;
+            }
+        }
+    }
+
+    ksort($models, SORT_NATURAL | SORT_FLAG_CASE);
+    return array_values($models);
+}
+
+function pss_getOverlayFonts() {
+    $fonts = array();
+    $data = pss_httpJson('http://127.0.0.1/api/overlays/fonts');
+    if (is_array($data) && isset($data['fonts']) && is_array($data['fonts'])) {
+        $data = $data['fonts'];
+    }
+    if (is_array($data)) {
+        foreach ($data as $entry) {
+            $font = '';
+            if (is_string($entry)) {
+                $font = trim($entry);
+            } elseif (is_array($entry)) {
+                foreach (array('value', 'name', 'Name', 'font', 'label', 'path') as $key) {
+                    if (isset($entry[$key]) && is_scalar($entry[$key])) {
+                        $font = trim((string)$entry[$key]);
+                        if ($font !== '') break;
+                    }
+                }
+            }
+            if ($font !== '') {
+                $fonts[$font] = $font;
+            }
+        }
+    }
+
+    // The FPP command window on this player has already confirmed this alias.
+    if (empty($fonts)) {
+        $fonts['C059-Bdlta'] = 'C059-Bdlta';
+    }
+    ksort($fonts, SORT_NATURAL | SORT_FLAG_CASE);
+    return array_values($fonts);
 }
 
 function pss_tickerIncludeSetting($league, $slot) {
@@ -561,46 +1570,468 @@ function pss_runFppCommand($command, $args) {
     return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
 }
 
-function pss_clearOverlayModel($model) {
-    $model = trim((string)$model);
-    if ($model === '') {
+// Pixel Overlay command-window compatible request.  FPP's own Pixel Overlay UI
+// posts only {command,args}; do not add multisync fields or model geometry.
+function pss_runFppCommandExact($command, $args) {
+    $payload = array(
+        'command' => (string)$command,
+        'args' => is_array($args) ? array_values($args) : array()
+    );
+    return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+}
+
+// FPP 10 also exposes commands through /api/command/<command>/<arg...>.
+// Pixel Overlay commands are sent through this route because FPP 10.1.2's
+// generic POST /api/command path can return HTTP 500 for overlay commands on
+// some players even though the same command succeeds from FPP's command UI.
+function pss_runFppCommandPath($command, $args) {
+    $parts = array(rawurlencode((string)$command));
+    if (is_array($args)) {
+        foreach ($args as $arg) {
+            $parts[] = rawurlencode((string)$arg);
+        }
+    }
+
+    $url = 'http://127.0.0.1/api/command/' . implode('/', $parts);
+    return pss_httpRequest($url, 'GET', null, 'text/plain, application/json');
+}
+
+function pss_legacyOverlayTickerPaths() {
+    return array(
+        'script' => '/tmp/fpp-pro-sports-scoring-overlay-ticker.php',
+        'pid' => '/tmp/fpp-pro-sports-scoring-overlay-ticker.pid'
+    );
+}
+
+function pss_legacyOverlayTickerProcessMatches($pid) {
+    $pid = (int)$pid;
+    if ($pid <= 1 || !is_dir('/proc/' . $pid)) {
         return false;
     }
-    $response = pss_runFppCommand('Overlay Model Clear', array($model));
-    if (!$response['ok']) {
-        pss_logEntry("FPP rejected Overlay Model Clear for {$model} with HTTP {$response['status']}");
+    $cmdline = @file_get_contents('/proc/' . $pid . '/cmdline');
+    return is_string($cmdline)
+        && strpos($cmdline, 'fpp-pro-sports-scoring-overlay-ticker.php') !== false;
+}
+
+function pss_legacyOverlayTickerPid() {
+    $paths = pss_legacyOverlayTickerPaths();
+    if (!is_file($paths['pid'])) {
+        return 0;
+    }
+    $pid = (int)trim((string)@file_get_contents($paths['pid']));
+    if (!pss_legacyOverlayTickerProcessMatches($pid)) {
+        @unlink($paths['pid']);
+        return 0;
+    }
+    return $pid;
+}
+
+function pss_legacyOverlayTickerIsRunning() {
+    return pss_legacyOverlayTickerPid() > 1;
+}
+
+function pss_stopLegacyOverlayTicker() {
+    $paths = pss_legacyOverlayTickerPaths();
+    $pid = pss_legacyOverlayTickerPid();
+    if ($pid > 1) {
+        if (function_exists('posix_kill')) {
+            @posix_kill($pid, 15);
+        } elseif (function_exists('exec')) {
+            @exec('kill -TERM ' . (int)$pid . ' >/dev/null 2>&1');
+        }
+
+        for ($i = 0; $i < 20 && pss_legacyOverlayTickerProcessMatches($pid); $i++) {
+            usleep(25000);
+        }
+        if (pss_legacyOverlayTickerProcessMatches($pid)) {
+            if (function_exists('posix_kill')) {
+                @posix_kill($pid, 9);
+            } elseif (function_exists('exec')) {
+                @exec('kill -KILL ' . (int)$pid . ' >/dev/null 2>&1');
+            }
+        }
+    }
+    @unlink($paths['pid']);
+}
+
+function pss_findPhpCli() {
+    $candidates = array();
+    if (defined('PHP_BINARY') && PHP_BINARY !== '') {
+        $candidates[] = PHP_BINARY;
+    }
+    $candidates[] = '/usr/bin/php';
+    $candidates[] = '/usr/local/bin/php';
+    foreach ($candidates as $candidate) {
+        if (is_string($candidate) && $candidate !== '' && is_executable($candidate)) {
+            return $candidate;
+        }
+    }
+    return '';
+}
+
+function pss_writeLegacyOverlayTickerHelper() {
+    $paths = pss_legacyOverlayTickerPaths();
+    $script = <<<'PHPHELPER'
+#!/usr/bin/php
+<?php
+// FPP 10 direct shared-memory sports ticker fallback.
+// This intentionally does not depend on FPP::MemoryMap, GD, or ImageMagick.
+
+if (PHP_SAPI !== 'cli') {
+    fwrite(STDERR, "CLI PHP required\n");
+    exit(2);
+}
+
+function fail($msg, $code = 2) {
+    fwrite(STDERR, $msg . "\n");
+    exit($code);
+}
+
+function loadModel($name) {
+    $file = '/home/fpp/media/config/model-overlays.json';
+    $raw = @file_get_contents($file);
+    if ($raw === false) fail("Cannot read {$file}");
+    $json = json_decode($raw, true);
+    if (!is_array($json)) fail("Invalid model-overlays.json");
+    $models = isset($json['models']) && is_array($json['models']) ? $json['models'] : $json;
+    foreach ($models as $m) {
+        if (is_array($m) && isset($m['Name']) && (string)$m['Name'] === $name) return $m;
+    }
+    fail("Pixel Overlay model not found in model-overlays.json: {$name}");
+}
+
+function sharedDataPath($name) {
+    $exact = '/dev/shm/FPP-Model-Data-' . $name;
+    if (is_file($exact)) return $exact;
+    foreach ((array)glob('/dev/shm/FPP-Model-Data-*') as $path) {
+        if (substr($path, strlen('/dev/shm/FPP-Model-Data-')) === $name) return $path;
+    }
+    return '';
+}
+
+function rgbFromHex($hex) {
+    $hex = ltrim(trim((string)$hex), '#');
+    if (strlen($hex) === 3) {
+        $hex = $hex[0].$hex[0].$hex[1].$hex[1].$hex[2].$hex[2];
+    }
+    if (!preg_match('/^[0-9a-fA-F]{6}$/', $hex)) $hex = 'FFFFFF';
+    return array(hexdec(substr($hex,0,2)), hexdec(substr($hex,2,2)), hexdec(substr($hex,4,2)));
+}
+
+function fontMap() {
+    // Compact 5x7 bitmap font. Each glyph is seven 5-bit rows.
+    return array(
+        ' '=>array(0,0,0,0,0,0,0),'!'=>array(4,4,4,4,4,0,4),'"'=>array(10,10,10,0,0,0,0),
+        '#'=>array(10,31,10,10,31,10,0),'$'=>array(4,15,20,14,5,30,4),'%'=>array(24,25,2,4,8,19,3),
+        '&'=>array(12,18,20,8,21,18,13),"'"=>array(4,4,8,0,0,0,0),'('=>array(2,4,8,8,8,4,2),')'=>array(8,4,2,2,2,4,8),
+        '*'=>array(0,4,21,14,21,4,0),'+'=>array(0,4,4,31,4,4,0),','=>array(0,0,0,0,4,4,8),'-'=>array(0,0,0,31,0,0,0),
+        '.'=>array(0,0,0,0,0,12,12),'/'=>array(1,2,2,4,8,8,16),
+        '0'=>array(14,17,19,21,25,17,14),'1'=>array(4,12,4,4,4,4,14),'2'=>array(14,17,1,2,4,8,31),
+        '3'=>array(30,1,1,14,1,1,30),'4'=>array(2,6,10,18,31,2,2),'5'=>array(31,16,16,30,1,1,30),
+        '6'=>array(14,16,16,30,17,17,14),'7'=>array(31,1,2,4,8,8,8),'8'=>array(14,17,17,14,17,17,14),
+        '9'=>array(14,17,17,15,1,1,14),':'=>array(0,12,12,0,12,12,0),';'=>array(0,12,12,0,12,4,8),
+        '<'=>array(2,4,8,16,8,4,2),'='=>array(0,31,0,31,0,0,0),'>'=>array(8,4,2,1,2,4,8),'?'=>array(14,17,1,2,4,0,4),
+        '@'=>array(14,17,23,21,23,16,14),
+        'A'=>array(14,17,17,31,17,17,17),'B'=>array(30,17,17,30,17,17,30),'C'=>array(14,17,16,16,16,17,14),
+        'D'=>array(28,18,17,17,17,18,28),'E'=>array(31,16,16,30,16,16,31),'F'=>array(31,16,16,30,16,16,16),
+        'G'=>array(14,17,16,23,17,17,15),'H'=>array(17,17,17,31,17,17,17),'I'=>array(14,4,4,4,4,4,14),
+        'J'=>array(7,2,2,2,2,18,12),'K'=>array(17,18,20,24,20,18,17),'L'=>array(16,16,16,16,16,16,31),
+        'M'=>array(17,27,21,21,17,17,17),'N'=>array(17,25,21,19,17,17,17),'O'=>array(14,17,17,17,17,17,14),
+        'P'=>array(30,17,17,30,16,16,16),'Q'=>array(14,17,17,17,21,18,13),'R'=>array(30,17,17,30,20,18,17),
+        'S'=>array(15,16,16,14,1,1,30),'T'=>array(31,4,4,4,4,4,4),'U'=>array(17,17,17,17,17,17,14),
+        'V'=>array(17,17,17,17,17,10,4),'W'=>array(17,17,17,21,21,21,10),'X'=>array(17,17,10,4,10,17,17),
+        'Y'=>array(17,17,10,4,4,4,4),'Z'=>array(31,1,2,4,8,16,31),'['=>array(14,8,8,8,8,8,14),
+        '\\'=>array(16,8,8,4,2,2,1),']'=>array(14,2,2,2,2,2,14),'^'=>array(4,10,17,0,0,0,0),'_'=>array(0,0,0,0,0,0,31),
+        '|'=>array(4,4,4,4,4,4,4)
+    );
+}
+
+function logicalToPhysicalMap($m, $w, $h, $cpp) {
+    $orientation = strtolower(isset($m['Orientation']) ? (string)$m['Orientation'] : 'vertical');
+    $corner = strtoupper(isset($m['StartCorner']) ? (string)$m['StartCorner'] : 'TL');
+    $map = array_fill(0, $w * $h, 0);
+
+    if ($orientation === 'horizontal') {
+        $startTop = strpos($corner, 'T') !== false;
+        $startLeft = strpos($corner, 'L') !== false;
+        for ($y = 0; $y < $h; $y++) {
+            $strand = $startTop ? $y : ($h - 1 - $y);
+            $forward = (($strand % 2) === 0) ? $startLeft : !$startLeft;
+            for ($x = 0; $x < $w; $x++) {
+                $within = $forward ? $x : ($w - 1 - $x);
+                $map[$y * $w + $x] = ($strand * $w + $within) * $cpp;
+            }
+        }
+    } else {
+        $startLeft = strpos($corner, 'L') !== false;
+        $startTop = strpos($corner, 'T') !== false;
+        for ($x = 0; $x < $w; $x++) {
+            $strand = $startLeft ? $x : ($w - 1 - $x);
+            $forward = (($strand % 2) === 0) ? $startTop : !$startTop;
+            for ($y = 0; $y < $h; $y++) {
+                $within = $forward ? $y : ($h - 1 - $y);
+                $map[$y * $w + $x] = ($strand * $h + $within) * $cpp;
+            }
+        }
+    }
+    return $map;
+}
+
+$name = isset($argv[1]) ? (string)$argv[1] : '';
+$msg = isset($argv[2]) ? (string)$argv[2] : 'PRO SPORTS SCORING';
+$color = isset($argv[3]) ? (string)$argv[3] : '#FFFFFF';
+$fontSize = isset($argv[4]) ? max(4, min(100, (int)$argv[4])) : 16;
+$direction = isset($argv[5]) && $argv[5] === 'L2R' ? 'L2R' : 'R2L';
+$speed = isset($argv[6]) ? max(1, min(200, (int)$argv[6])) : 10;
+if ($name === '') fail('Missing Pixel Overlay model');
+
+$m = loadModel($name);
+$cpp = max(3, isset($m['ChannelCountPerNode']) ? (int)$m['ChannelCountPerNode'] : 3);
+$channels = isset($m['ChannelCount']) ? (int)$m['ChannelCount'] : 0;
+$nodes = $channels > 0 ? intdiv($channels, $cpp) : 0;
+$strands = max(1, (int)(isset($m['StringCount']) ? $m['StringCount'] : 1) * (int)(isset($m['StrandsPerString']) ? $m['StrandsPerString'] : 1));
+$orientation = strtolower(isset($m['Orientation']) ? (string)$m['Orientation'] : 'vertical');
+if ($nodes <= 0 || $strands <= 0 || ($nodes % $strands) !== 0) fail('Unsupported Pixel Overlay matrix dimensions');
+if ($orientation === 'horizontal') {
+    $h = $strands;
+    $w = intdiv($nodes, $strands);
+} else {
+    $w = $strands;
+    $h = intdiv($nodes, $strands);
+}
+if ($w <= 0 || $h <= 0) fail('Invalid Pixel Overlay dimensions');
+
+$path = '';
+for ($i = 0; $i < 30; $i++) {
+    $path = sharedDataPath($name);
+    if ($path !== '') break;
+    usleep(100000);
+}
+if ($path === '') fail('FPP shared model buffer not found for ' . $name);
+$fh = @fopen($path, 'r+b');
+if (!$fh) fail('Cannot open FPP shared model buffer: ' . $path);
+
+$map = logicalToPhysicalMap($m, $w, $h, $cpp);
+$font = fontMap();
+$msg = strtoupper($msg);
+$scale = max(1, min(4, (int)round($fontSize / 7)));
+$glyphW = 5 * $scale;
+$cellW = 6 * $scale;
+$textW = max(1, strlen($msg) * $cellW);
+$textH = 7 * $scale;
+$y0 = max(0, intdiv($h - $textH, 2));
+list($red,$green,$blue) = rgbFromHex($color);
+$frameLen = $nodes * $cpp;
+$fps = 20.0;
+$step = $speed / $fps;
+if ($step < 0.25) $step = 0.25;
+$pos = ($direction === 'R2L') ? (float)$w : (float)(-$textW);
+$frameDelay = (int)round(1000000.0 / $fps);
+
+while (true) {
+    $frame = str_repeat("\0", $frameLen);
+    $left = (int)floor($pos);
+    for ($x = 0; $x < $w; $x++) {
+        $tx = $x - $left;
+        if ($tx < 0 || $tx >= $textW) continue;
+        $charIndex = intdiv($tx, $cellW);
+        $charX = $tx % $cellW;
+        if ($charX >= $glyphW || $charIndex < 0 || $charIndex >= strlen($msg)) continue;
+        $ch = $msg[$charIndex];
+        $rows = isset($font[$ch]) ? $font[$ch] : $font['?'];
+        $glyphX = intdiv($charX, $scale);
+        $mask = 1 << (4 - $glyphX);
+        for ($gy = 0; $gy < 7; $gy++) {
+            if (($rows[$gy] & $mask) === 0) continue;
+            for ($sy = 0; $sy < $scale; $sy++) {
+                $y = $y0 + $gy * $scale + $sy;
+                if ($y < 0 || $y >= $h) continue;
+                $off = $map[$y * $w + $x];
+                if ($off + 2 >= $frameLen) continue;
+                $frame[$off] = chr($red);
+                $frame[$off + 1] = chr($green);
+                $frame[$off + 2] = chr($blue);
+            }
+        }
+    }
+
+    @fseek($fh, 0);
+    $written = @fwrite($fh, $frame);
+    @fflush($fh);
+    if ($written === false || $written <= 0) fail('Lost write access to FPP shared model buffer');
+
+    if ($direction === 'R2L') {
+        $pos -= $step;
+        if ($pos < -$textW - $w) $pos = (float)$w;
+    } else {
+        $pos += $step;
+        if ($pos > $w + $textW) $pos = (float)(-$textW);
+    }
+    usleep($frameDelay);
+}
+PHPHELPER;
+
+    $tmp = $paths['script'] . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $script) === false) {
+        return false;
+    }
+    @chmod($tmp, 0700);
+    if (!@rename($tmp, $paths['script'])) {
+        @unlink($tmp);
         return false;
     }
     return true;
 }
 
-function pss_sendOverlayTickerText($text, $force = false) {
-    static $lastSignature = '';
-    static $lastModel = '';
+function pss_startLegacyOverlayTicker($model, $text, $color, $fontSize, $direction, $speed) {
+    global $logFile;
 
-    if (pss_pluginSetting('TickerEnabled', 'OFF') !== 'ON' || pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
-        if ($lastModel !== '') {
-            pss_clearOverlayModel($lastModel);
-            $lastModel = '';
-            $lastSignature = '';
-        }
+    if (!function_exists('exec')) {
+        pss_logEntry('FPP shared-memory ticker fallback is unavailable because PHP exec() is disabled');
+        return false;
+    }
+    $php = pss_findPhpCli();
+    if ($php === '') {
+        pss_logEntry('FPP shared-memory ticker fallback is unavailable because PHP CLI was not found');
         return false;
     }
 
-    $model = trim(pss_pluginSetting('TickerOverlayModel', ''));
+    pss_stopLegacyOverlayTicker();
+
+    // The direct model-data buffer only drives output while the model is enabled.
+    $stateResponse = pss_runFppCommandPath('Overlay Model State', array($model, 'Enabled', '0', '100'));
+    if (!is_array($stateResponse) || !$stateResponse['ok']) {
+        $status = is_array($stateResponse) && isset($stateResponse['status']) ? $stateResponse['status'] : 0;
+        pss_logEntry("Could not enable Pixel Overlay model {$model} for shared-memory ticker fallback (HTTP {$status})");
+        return false;
+    }
+
+    if (!pss_writeLegacyOverlayTickerHelper()) {
+        pss_logEntry('Could not write the FPP shared-memory ticker helper under /tmp');
+        return false;
+    }
+
+    $paths = pss_legacyOverlayTickerPaths();
+    $legacyDirection = ($direction === 'Left to Right') ? 'L2R' : 'R2L';
+    $legacySpeed = max(1, min(200, (int)$speed));
+    $legacySize = max(4, min(100, (int)$fontSize));
+    $helperLog = '/tmp/fpp-pro-sports-scoring-overlay-ticker-helper.log';
+    @file_put_contents($helperLog, '');
+
+    $cmd = escapeshellarg($php)
+        . ' ' . escapeshellarg($paths['script'])
+        . ' ' . escapeshellarg((string)$model)
+        . ' ' . escapeshellarg((string)$text)
+        . ' ' . escapeshellarg((string)$color)
+        . ' ' . escapeshellarg((string)$legacySize)
+        . ' ' . escapeshellarg($legacyDirection)
+        . ' ' . escapeshellarg((string)$legacySpeed)
+        . ' >> ' . escapeshellarg($helperLog) . ' 2>&1 & echo $!';
+
+    $output = array();
+    $rc = 0;
+    @exec($cmd, $output, $rc);
+    $pid = !empty($output) ? (int)trim((string)end($output)) : 0;
+    if ($rc !== 0 || $pid <= 1) {
+        pss_logEntry("Could not launch FPP shared-memory ticker fallback for {$model}");
+        return false;
+    }
+
+    @file_put_contents($paths['pid'], (string)$pid);
+    usleep(250000);
+    if (!pss_legacyOverlayTickerProcessMatches($pid)) {
+        @unlink($paths['pid']);
+        $detail = trim((string)@file_get_contents($helperLog));
+        if (strlen($detail) > 500) $detail = substr($detail, -500);
+        pss_logEntry("FPP shared-memory ticker fallback exited immediately for {$model}" . ($detail !== '' ? ": {$detail}" : ''));
+        return false;
+    }
+
+    pss_logEntry("Using FPP shared-memory ticker fallback for {$model} (pid {$pid})");
+    return true;
+}
+
+function pss_clearOverlayModel($model) {
+    $model = trim((string)$model);
     if ($model === '') {
         return false;
     }
 
-    $color = pss_normalizeColor(pss_pluginSetting('TickerTextColor', '#FFFFFF'));
-    $font = trim(pss_pluginSetting('TickerFont', 'Helvetica'));
-    if ($font === '') $font = 'Helvetica';
-    $fontSize = pss_clampInt(pss_pluginSetting('TickerFontSize', '16'), 6, 128, 16);
-    $direction = pss_pluginSetting('TickerDirection', 'Right to Left');
-    if ($direction !== 'Left to Right' && $direction !== 'Right to Left') {
-        $direction = 'Right to Left';
+    // Stop any helper left behind by older plugin builds, then issue only the
+    // same Overlay Model Clear command available in FPP's command window.
+    pss_stopLegacyOverlayTicker();
+    $response = pss_runFppCommandExact('Overlay Model Clear', array($model));
+    if (!$response['ok']) {
+        $detail = pss_overlayCommandErrorText($response);
+        pss_logEntry(
+            "FPP rejected Overlay Model Clear for {$model} with HTTP {$response['status']}"
+            . ($detail !== '' ? " response={$detail}" : '')
+        );
+        return false;
     }
-    $speed = pss_clampInt(pss_pluginSetting('TickerScrollSpeed', '10'), 1, 100, 10);
+    return true;
+}
+
+function pss_resolveOverlayFont($requestedFont) {
+    $requestedFont = trim((string)$requestedFont);
+
+    // IMPORTANT: FPP's Text effect expects the font value shown by its own
+    // Overlay Model Effect -> Text dropdown.  Do not translate those names to
+    // filesystem paths here.  On FPP 10.1.2 the player can advertise both
+    // ImageMagick font aliases and font-file paths, but the alias C059-Bdlta is
+    // confirmed to start and scroll Text successfully on this player while the
+    // previously forced Lato-Bold.ttf path returns "Could not start effect: Text".
+    //
+    // Older plugin builds stored "Helvetica" and then rewrote it to a Lato
+    // path.  Keep existing settings compatible by mapping that historical value
+    // (and the Lato path we previously injected) to the known-good FPP alias.
+    if ($requestedFont === ''
+        || strcasecmp($requestedFont, 'Helvetica') === 0
+        || strcasecmp($requestedFont, 'Lato-Bold') === 0
+        || strcasecmp($requestedFont, 'Lato-Bold.ttf') === 0
+        || $requestedFont === '/usr/share/fonts/truetype/lato/Lato-Bold.ttf') {
+        return 'C059-Bdlta';
+    }
+
+    // Otherwise preserve exactly what the user entered/selected.  FPP owns
+    // font discovery and validation; changing a valid FPP alias here can turn a
+    // working command into a 500 before TextEffect ever begins scrolling.
+    return $requestedFont;
+}
+
+function pss_overlayCommandErrorText($response) {
+    if (!is_array($response)) return '';
+    $body = isset($response['body']) ? trim((string)$response['body']) : '';
+    if ($body === '') return '';
+    if (strlen($body) > 600) {
+        $body = substr($body, 0, 600) . '...';
+    }
+    return preg_replace('/\s+/', ' ', $body);
+}
+
+function pss_runExactOverlayTextCommand($model, $autoEnable, $color, $font, $fontSize, $antiAlias, $position, $speed, $duration, $text) {
+    $model = trim((string)$model);
+    if ($model === '') {
+        return false;
+    }
+
+    $allowedAutoEnable = array('False', 'Enabled', 'Transparent', 'Transparent RGB');
+    if (!in_array($autoEnable, $allowedAutoEnable, true)) {
+        $autoEnable = 'Enabled';
+    }
+    $color = pss_normalizeColor($color, '#FFFFFF');
+    $font = trim((string)$font);
+    if ($font === '') {
+        $font = 'C059-Bdlta';
+    }
+    $fontSize = pss_clampInt($fontSize, 4, 100, 20);
+    $antiAlias = $antiAlias ? 'true' : 'false';
+    $allowedPositions = array('Center', 'Right to Left', 'Left to Right', 'Bottom to Top', 'Top to Bottom');
+    if (!in_array($position, $allowedPositions, true)) {
+        $position = 'Right to Left';
+    }
+    $speed = pss_clampInt($speed, 0, 200, 10);
+    $duration = pss_clampInt($duration, -1, 2000, 0);
     $text = trim((string)$text);
     if ($text === '') {
         $text = 'PRO SPORTS SCORING';
@@ -609,35 +2040,107 @@ function pss_sendOverlayTickerText($text, $force = false) {
         $text = substr($text, 0, 1200);
     }
 
-    $signature = md5(implode('|', array($model, $color, $font, $fontSize, $direction, $speed, $text)));
-    if (!$force && $signature === $lastSignature) {
-        return true;
-    }
-
-    if ($lastModel !== '' && $lastModel !== $model) {
-        pss_clearOverlayModel($lastModel);
-    }
-
-    // This command signature has been supported by FPP since the older FPP 3.x/4.x command system
-    // and remains the most compatible path for FPP 7/8/9 while also working on current FPP.
+    // EXACT FPP Overlay Model Effect -> Text argument order. Nothing else is
+    // appended: no width, height, orientation, channel count, or model geometry.
     $args = array(
         $model,
+        $autoEnable,
+        'Text',
         $color,
         $font,
         (string)$fontSize,
-        'false',
-        $direction,
+        $antiAlias,
+        $position,
         (string)$speed,
-        'true',
+        (string)$duration,
         $text
     );
-    $response = pss_runFppCommand('Overlay Model Text', $args);
+
+    $response = pss_runFppCommandExact('Overlay Model Effect', $args);
     if (!$response['ok']) {
-        pss_logEntry("FPP rejected sports ticker text for model {$model} with HTTP {$response['status']}");
+        $detail = pss_overlayCommandErrorText($response);
+        pss_logEntry(
+            "FPP Overlay Model Effect/Text rejected for {$model} HTTP {$response['status']}"
+            . ($detail !== '' ? " response={$detail}" : '')
+            . " autoEnable={$autoEnable} color={$color} font={$font} fontSize={$fontSize}"
+            . " antiAlias={$antiAlias} position={$position} speed={$speed} duration={$duration}"
+            . " textLength=" . strlen($text)
+        );
         return false;
     }
 
-    $lastModel = $model;
+    pss_logEntry(
+        "FPP Overlay Model Effect/Text started for {$model}"
+        . " font={$font} fontSize={$fontSize} position={$position} speed={$speed}"
+        . " duration={$duration} textLength=" . strlen($text)
+    );
+    return true;
+}
+
+function pss_clearOverlayModels($models) {
+    $models = pss_normalizeOverlayModelSelection($models);
+    $ok = true;
+    foreach ($models as $model) {
+        if (!pss_clearOverlayModel($model)) $ok = false;
+    }
+    return $ok;
+}
+
+function pss_sendOverlayTickerText($text, $force = false) {
+    static $lastSignature = '';
+    static $lastModels = array();
+
+    if (pss_pluginSetting('TickerEnabled', 'OFF') !== 'ON' || pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
+        if (!empty($lastModels)) {
+            pss_clearOverlayModels($lastModels);
+            $lastModels = array();
+            $lastSignature = '';
+        }
+        return false;
+    }
+
+    $models = pss_pluginOverlayModels('TickerOverlayModel');
+    if (empty($models)) return false;
+
+    $autoEnable = pss_pluginSetting('TickerOverlayAutoEnable', 'Enabled');
+    $color = pss_pluginSetting('TickerTextColor', '#FFFFFF');
+    $font = trim(pss_pluginSetting('TickerFont', 'C059-Bdlta'));
+    $fontSize = pss_pluginSetting('TickerFontSize', '20');
+    $antiAlias = (pss_pluginSetting('TickerFontAntiAlias', 'OFF') === 'ON');
+    $position = pss_pluginSetting('TickerDirection', 'Right to Left');
+    $speed = pss_pluginSetting('TickerScrollSpeed', '10');
+    $duration = pss_pluginSetting('TickerDuration', '0');
+
+    $text = trim((string)$text);
+    if ($text === '') $text = 'PRO SPORTS SCORING';
+    if (strlen($text) > 1200) $text = substr($text, 0, 1200);
+
+    $signature = md5(implode('|', array(
+        implode("\x1f", $models), $autoEnable, $color, $font, $fontSize,
+        $antiAlias ? 'true' : 'false', $position, $speed, $duration, $text
+    )));
+    if (!$force && $signature === $lastSignature) return true;
+
+    // Clear models that were targeted by the previous configuration but are no
+    // longer selected. Each FPP model keeps its own geometry and effect state.
+    $removed = array_values(array_diff($lastModels, $models));
+    if (!empty($removed)) pss_clearOverlayModels($removed);
+
+    pss_stopLegacyOverlayTicker();
+    $failed = array();
+    foreach ($models as $model) {
+        $ok = pss_runExactOverlayTextCommand(
+            $model, $autoEnable, $color, $font, $fontSize,
+            $antiAlias, $position, $speed, $duration, $text
+        );
+        if (!$ok) $failed[] = $model;
+    }
+    if (!empty($failed)) {
+        pss_logEntry('Pixel ticker failed on model(s): ' . implode(', ', $failed));
+        return false;
+    }
+
+    $lastModels = $models;
     $lastSignature = $signature;
     return true;
 }
@@ -649,21 +2152,32 @@ function pss_updateTickerOutput($force = false) {
     return pss_sendOverlayTickerText(pss_buildTickerText(true), $force);
 }
 
-function pss_clearConfiguredTickerOutput() {
-    $model = trim(pss_pluginSetting('TickerOverlayModel', ''));
-    $ok = ($model !== '') ? pss_clearOverlayModel($model) : true;
-    pss_jsonResponse($ok, $ok ? 'Pixel Overlay ticker cleared.' : 'FPP could not clear the selected Pixel Overlay Model.');
+function pss_clearConfiguredTickerOutput($post = array()) {
+    $models = (is_array($post) && array_key_exists('TickerOverlayModels', $post))
+        ? pss_normalizeOverlayModelSelection($post['TickerOverlayModels'])
+        : pss_pluginOverlayModels('TickerOverlayModel');
+    $ok = empty($models) ? true : pss_clearOverlayModels($models);
+    pss_jsonResponse($ok, $ok ? 'Pixel Overlay ticker cleared on all selected models.' : 'FPP could not clear one or more selected Pixel Overlay Models.');
 }
 
 function pss_saveTickerSettings($post) {
-    $oldModel = trim(pss_pluginSetting('TickerOverlayModel', ''));
+    $oldModels = pss_pluginOverlayModels('TickerOverlayModel');
     $oldActive = (pss_pluginSetting('TickerEnabled', 'OFF') === 'ON' && pss_pluginSetting('TickerOverlayEnabled', 'OFF') === 'ON');
 
     $style = isset($post['TickerStyle']) ? strtolower(trim((string)$post['TickerStyle'])) : 'normal';
     if (!in_array($style, array('compact', 'normal', 'detailed'), true)) $style = 'normal';
 
     $direction = isset($post['TickerDirection']) ? trim((string)$post['TickerDirection']) : 'Right to Left';
-    if ($direction !== 'Left to Right' && $direction !== 'Right to Left') $direction = 'Right to Left';
+    $allowedPositions = array('Center', 'Right to Left', 'Left to Right', 'Bottom to Top', 'Top to Bottom');
+    if (!in_array($direction, $allowedPositions, true)) $direction = 'Right to Left';
+
+    $autoEnable = isset($post['TickerOverlayAutoEnable']) ? trim((string)$post['TickerOverlayAutoEnable']) : 'Enabled';
+    $allowedAutoEnable = array('False', 'Enabled', 'Transparent', 'Transparent RGB');
+    if (!in_array($autoEnable, $allowedAutoEnable, true)) $autoEnable = 'Enabled';
+
+    $postedModels = array_key_exists('TickerOverlayModels', $post)
+        ? pss_normalizeOverlayModelSelection($post['TickerOverlayModels'])
+        : pss_normalizeOverlayModelSelection(isset($post['TickerOverlayModel']) ? $post['TickerOverlayModel'] : '');
 
     $values = array(
         'TickerEnabled' => (isset($post['TickerEnabled']) && (string)$post['TickerEnabled'] === 'ON') ? 'ON' : 'OFF',
@@ -673,14 +2187,15 @@ function pss_saveTickerSettings($post) {
         'TickerWebFontSize' => (string)pss_clampInt(isset($post['TickerWebFontSize']) ? $post['TickerWebFontSize'] : 18, 12, 48, 18),
         'TickerSpacing' => (string)pss_clampInt(isset($post['TickerSpacing']) ? $post['TickerSpacing'] : 4, 1, 12, 4),
         'TickerOverlayEnabled' => (isset($post['TickerOverlayEnabled']) && (string)$post['TickerOverlayEnabled'] === 'ON') ? 'ON' : 'OFF',
-        'TickerOverlayModel' => isset($post['TickerOverlayModel']) ? trim((string)$post['TickerOverlayModel']) : '',
-        'TickerWidth' => (string)pss_clampInt(isset($post['TickerWidth']) ? $post['TickerWidth'] : 128, 1, 4096, 128),
-        'TickerHeight' => (string)pss_clampInt(isset($post['TickerHeight']) ? $post['TickerHeight'] : 32, 1, 4096, 32),
-        'TickerFont' => isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'Helvetica',
-        'TickerFontSize' => (string)pss_clampInt(isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 16, 6, 128, 16),
+        'TickerOverlayModel' => pss_encodeOverlayModelSelection($postedModels),
+        'TickerOverlayAutoEnable' => $autoEnable,
+        'TickerFont' => isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'C059-Bdlta',
+        'TickerFontSize' => (string)pss_clampInt(isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 20, 4, 100, 20),
+        'TickerFontAntiAlias' => (isset($post['TickerFontAntiAlias']) && (string)$post['TickerFontAntiAlias'] === 'ON') ? 'ON' : 'OFF',
         'TickerTextColor' => pss_normalizeColor(isset($post['TickerTextColor']) ? $post['TickerTextColor'] : '#FFFFFF'),
         'TickerDirection' => $direction,
-        'TickerScrollSpeed' => (string)pss_clampInt(isset($post['TickerScrollSpeed']) ? $post['TickerScrollSpeed'] : 10, 1, 100, 10)
+        'TickerScrollSpeed' => (string)pss_clampInt(isset($post['TickerScrollSpeed']) ? $post['TickerScrollSpeed'] : 10, 0, 200, 10),
+        'TickerDuration' => (string)pss_clampInt(isset($post['TickerDuration']) ? $post['TickerDuration'] : 0, -1, 2000, 0)
     );
 
     global $leagues;
@@ -688,58 +2203,71 @@ function pss_saveTickerSettings($post) {
         foreach (array(1, 2) as $slot) {
             $key = pss_tickerIncludeSetting($league, $slot);
             $values[$key] = (isset($post[$key]) && (string)$post[$key] === 'ON') ? 'ON' : 'OFF';
-
             $colorKey = pss_tickerColorSetting($league, $slot);
             $values[$colorKey] = pss_normalizeColor(isset($post[$colorKey]) ? $post[$colorKey] : '#FFFFFF');
         }
     }
-
-    if ($values['TickerFont'] === '') $values['TickerFont'] = 'Helvetica';
-
-    foreach ($values as $key => $value) {
-        pss_setPluginSetting($key, $value);
-    }
+    if ($values['TickerFont'] === '') $values['TickerFont'] = 'C059-Bdlta';
+    foreach ($values as $key => $value) pss_setPluginSetting($key, $value);
 
     $newActive = ($values['TickerEnabled'] === 'ON' && $values['TickerOverlayEnabled'] === 'ON');
-    $newModel = $values['TickerOverlayModel'];
-    if ($oldActive && $oldModel !== '' && (!$newActive || $oldModel !== $newModel)) {
-        pss_clearOverlayModel($oldModel);
+    if ($oldActive) {
+        $removed = $newActive ? array_values(array_diff($oldModels, $postedModels)) : $oldModels;
+        if (!empty($removed)) pss_clearOverlayModels($removed);
     }
 
     $message = 'Ticker settings saved.';
     if ($newActive) {
-        if ($newModel === '') {
-            $message .= ' Select a Pixel Overlay Model before enabling matrix output.';
+        if (empty($postedModels)) {
+            $message .= ' Select at least one Pixel Overlay Model before enabling matrix output.';
         } else {
             $ok = pss_updateTickerOutput(true);
-            $message .= $ok ? ' Pixel Overlay ticker updated.' : ' Pixel Overlay output did not start; check the plugin log.';
+            $message .= $ok ? ' Pixel Overlay ticker updated on ' . count($postedModels) . ' model(s).' : ' Pixel Overlay output did not start on one or more models; check the plugin log.';
         }
     }
 
     pss_jsonResponse(true, $message, array(
         'tickerText' => pss_buildTickerText(false),
+        'overlayTickerText' => pss_buildTickerText(true),
         'tickerItems' => pss_buildTickerItems(false),
         'tickerSpacing' => pss_tickerSpacing(),
-        'tickerWebFontSize' => pss_clampInt(pss_pluginSetting('TickerWebFontSize', '18'), 12, 48, 18)
+        'tickerWebFontSize' => pss_clampInt(pss_pluginSetting('TickerWebFontSize', '18'), 12, 48, 18),
+        'overlayModels' => $postedModels
     ));
 }
 
-function pss_testTickerOutput() {
-    if (pss_pluginSetting('TickerOverlayEnabled', 'OFF') !== 'ON') {
-        pss_jsonResponse(false, 'Enable Pixel Overlay output and save the ticker settings first.');
+function pss_testTickerOutput($post = array()) {
+    if (!isset($post['TickerOverlayEnabled']) || (string)$post['TickerOverlayEnabled'] !== 'ON') {
+        pss_jsonResponse(false, 'Enable Pixel Overlay output first.');
     }
-    $model = trim(pss_pluginSetting('TickerOverlayModel', ''));
-    if ($model === '') {
-        pss_jsonResponse(false, 'Select a Pixel Overlay Model and save the ticker settings first.');
-    }
+    $models = array_key_exists('TickerOverlayModels', $post)
+        ? pss_normalizeOverlayModelSelection($post['TickerOverlayModels'])
+        : pss_normalizeOverlayModelSelection(isset($post['TickerOverlayModel']) ? $post['TickerOverlayModel'] : '');
+    if (empty($models)) pss_jsonResponse(false, 'Select at least one Pixel Overlay Model first.');
 
-    $text = pss_buildTickerText(true);
-    if ($text === 'PRO SPORTS SCORING | NO SELECTED TEAMS') {
-        $text = 'PRO SPORTS SCORING | PIXEL OVERLAY TEST | ' . date('g:i A');
-    }
+    $autoEnable = isset($post['TickerOverlayAutoEnable']) ? trim((string)$post['TickerOverlayAutoEnable']) : 'Enabled';
+    $color = isset($post['TickerTextColor']) ? (string)$post['TickerTextColor'] : '#FFFFFF';
+    $font = isset($post['TickerFont']) ? trim((string)$post['TickerFont']) : 'C059-Bdlta';
+    $fontSize = isset($post['TickerFontSize']) ? $post['TickerFontSize'] : 20;
+    $antiAlias = isset($post['TickerFontAntiAlias']) && (string)$post['TickerFontAntiAlias'] === 'ON';
+    $position = isset($post['TickerDirection']) ? trim((string)$post['TickerDirection']) : 'Right to Left';
+    $speed = isset($post['TickerScrollSpeed']) ? $post['TickerScrollSpeed'] : 10;
+    $duration = isset($post['TickerDuration']) ? $post['TickerDuration'] : 0;
+    $text = isset($post['TickerCommandText']) ? trim((string)$post['TickerCommandText']) : pss_buildTickerText(true);
+    if ($text === '') $text = pss_buildTickerText(true);
 
-    $ok = pss_sendOverlayTickerText($text, true);
-    pss_jsonResponse($ok, $ok ? 'Test ticker sent to ' . $model . '.' : 'FPP rejected the test ticker. Check the plugin log.');
+    pss_stopLegacyOverlayTicker();
+    $failed = array();
+    foreach ($models as $model) {
+        if (!pss_runExactOverlayTextCommand($model, $autoEnable, $color, $font, $fontSize, $antiAlias, $position, $speed, $duration, $text)) {
+            $failed[] = $model;
+        }
+    }
+    $ok = empty($failed);
+    pss_jsonResponse($ok,
+        $ok ? 'Exact FPP Text command sent to ' . count($models) . ' model(s).' : 'FPP rejected the Text command on: ' . implode(', ', $failed) . '. Check the plugin log.',
+        array('models' => $models, 'failedModels' => $failed)
+    );
 }
 
 function pss_manualTrigger($post) {
@@ -786,7 +2314,7 @@ function pss_manualTrigger($post) {
     $label = $map[$trigger]['label'];
     $sequence = trim(pss_pluginSetting("{$prefix}{$suffix}", ''));
     if ($sequence === '') {
-        pss_jsonResponse(false, "No {$label} sequence is configured for this team.");
+        pss_jsonResponse(false, "No {$label} sequence/effect is configured for this team.");
     }
 
     $teamName = trim(pss_pluginSetting("{$prefix}TeamName", ''));
@@ -839,6 +2367,642 @@ function pss_saveCelebrationDelay($post) {
     $pluginSettings = pss_loadPluginSettings();
     pss_syncGeneratedPlaylistsForLeague($matches[1]);
     pss_jsonResponse(true, 'Celebration delay saved.', array('value' => $delay));
+}
+
+function pss_teamWledModels($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return pss_pluginOverlayModels("{$prefix}WledModel");
+}
+
+function pss_teamWledModel($league, $slot = 1) {
+    // Backward-compatible convenience for code that needs one representative
+    // model. New overlay commands should use pss_teamWledModels().
+    $models = pss_teamWledModels($league, $slot);
+    return empty($models) ? '' : (string)$models[0];
+}
+
+function pss_teamWledDuration($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return pss_clampInt(pss_pluginSetting("{$prefix}WledDuration", '5'), 1, 600, 5);
+}
+
+function pss_syncWledCelebrationSetting($post) {
+    global $pluginSettings;
+    // FPP's PrintSettingSelect saves its value asynchronously.  Persist the
+    // browser's current value ourselves before rebuilding helper playlists so
+    // a newly-selected model cannot race the schedule rebuild.
+    if (!is_array($post)) {
+        $post = array('setting' => (string)$post);
+    }
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?WledModel$/', $setting, $matches)) {
+        pss_jsonResponse(false, 'Invalid WLED celebration model setting.');
+    }
+    if (array_key_exists('models', $post) || array_key_exists('value', $post)) {
+        $models = array_key_exists('models', $post)
+            ? pss_normalizeOverlayModelSelection($post['models'])
+            : pss_normalizeOverlayModelSelection($post['value']);
+        pss_setPluginSetting($setting, pss_encodeOverlayModelSelection($models));
+    }
+    $pluginSettings = pss_loadPluginSettings();
+    pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    $ok = pss_syncGameSchedules(true);
+    pss_jsonResponse($ok, $ok ? 'WLED celebration model saved and game schedules rebuilt.' : 'WLED model saved, but the FPP game schedule could not be rebuilt.');
+}
+
+function pss_saveWledCelebrationDuration($post) {
+    global $pluginSettings;
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
+    $value = isset($post['value']) ? $post['value'] : 5;
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?WledDuration$/', $setting, $matches)) {
+        pss_jsonResponse(false, 'Invalid WLED celebration duration setting.');
+    }
+    $duration = pss_clampInt($value, 1, 600, 5);
+    if (!pss_setPluginSetting($setting, (string)$duration)) {
+        pss_jsonResponse(false, 'Unable to save WLED celebration duration.');
+    }
+    $pluginSettings = pss_loadPluginSettings();
+    pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    pss_jsonResponse(true, 'WLED celebration duration saved.', array('value' => $duration));
+}
+
+function pss_teamGameScheduleEnabled($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return pss_pluginSetting("{$prefix}ScheduleEnabled", 'OFF') === 'ON';
+}
+
+function pss_teamGameScheduleSelection($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return trim(pss_pluginSetting("{$prefix}ScheduleSelection", ''));
+}
+
+function pss_gameSchedulePriorityKey($league, $slot = 1) {
+    $league = strtolower(trim((string)$league));
+    if (!in_array($league, array('nfl', 'ncaa', 'nhl', 'mlb'), true)) return '';
+    return $league . ':' . (((int)$slot === 2) ? '2' : '1');
+}
+
+function pss_gameSchedulePriorityOrder() {
+    $raw = trim(pss_pluginSetting('GameSchedulePriorityOrder', ''));
+    if ($raw === '') return array();
+    $parts = preg_split('/\s*,\s*/', $raw, -1, PREG_SPLIT_NO_EMPTY);
+    $result = array();
+    $seen = array();
+    foreach ($parts as $part) {
+        $part = strtolower(trim((string)$part));
+        if (!preg_match('/^(nfl|ncaa|nhl|mlb):([12])$/', $part)) continue;
+        if (isset($seen[$part])) continue;
+        $seen[$part] = true;
+        $result[] = $part;
+    }
+    return $result;
+}
+
+function pss_gameSchedulePriorityRank($league, $slot = 1) {
+    $key = pss_gameSchedulePriorityKey($league, $slot);
+    if ($key === '') return 0;
+    $order = pss_gameSchedulePriorityOrder();
+    $index = array_search($key, $order, true);
+    return ($index === false) ? 0 : ($index + 1);
+}
+
+function pss_pruneGameSchedulePriorityOrder() {
+    global $leagues;
+    $order = pss_gameSchedulePriorityOrder();
+    $valid = array();
+    foreach ($leagues as $league) {
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            if (trim(pss_pluginSetting("{$prefix}TeamID", '')) === '') continue;
+            $valid[pss_gameSchedulePriorityKey($league, $slot)] = true;
+        }
+    }
+    $clean = array();
+    foreach ($order as $key) {
+        if (isset($valid[$key])) $clean[] = $key;
+    }
+    $newRaw = implode(',', $clean);
+    $oldRaw = implode(',', $order);
+    if ($newRaw !== $oldRaw) pss_setPluginSetting('GameSchedulePriorityOrder', $newRaw);
+    return $clean;
+}
+
+function pss_promoteGameSchedulePriority($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    $key = pss_gameSchedulePriorityKey($league, $slot);
+    if ($key === '') pss_jsonResponse(false, 'Invalid team for schedule priority.');
+
+    $prefix = pss_teamPrefix($league, $slot);
+    if (trim(pss_pluginSetting("{$prefix}TeamID", '')) === '') {
+        pss_jsonResponse(false, 'Select a team before setting schedule priority.');
+    }
+
+    $order = pss_gameSchedulePriorityOrder();
+    $order = array_values(array_filter($order, function($item) use ($key) { return $item !== $key; }));
+    array_unshift($order, $key);
+    pss_setPluginSetting('GameSchedulePriorityOrder', implode(',', $order));
+    $pluginSettings = pss_loadPluginSettings();
+    pss_pruneGameSchedulePriorityOrder();
+    $pluginSettings = pss_loadPluginSettings();
+    $ok = pss_syncGameSchedules(true);
+    $teamName = trim(pss_pluginSetting("{$prefix}TeamName", ''));
+    if ($teamName === '') $teamName = strtoupper($league) . ' team ' . $slot;
+    pss_jsonResponse($ok, $ok ? $teamName . ' moved to the top of Pro Sports Scoring schedules.' : 'Could not update the FPP schedule priority.');
+}
+
+function pss_gameScheduleSafetySeconds() {
+    // FPP needs a concrete end time.  Eight hours is intentionally a generous
+    // safety ceiling for delayed/overtime games.  The daemon removes the entry
+    // and stops a scheduled WLED overlay as soon as ESPN reports the game post.
+    return 8 * 60 * 60;
+}
+
+function pss_gameSchedulePlaylistPrefix() {
+    return 'PSS_SPORTS_GAME_';
+}
+
+function pss_generatedGameSchedulePlaylistName($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamPart = trim(pss_pluginSetting("{$prefix}TeamAbbreviation", ''));
+    if ($teamPart === '') $teamPart = trim(pss_pluginSetting("{$prefix}TeamID", ''));
+    if ($teamPart === '') return '';
+    $slotPart = ((int)$slot === 2) ? '_S2' : '';
+    return pss_gameSchedulePlaylistPrefix()
+        . pss_safePlaylistPart($league, 'LEAGUE')
+        . $slotPart . '_'
+        . pss_safePlaylistPart($teamPart, 'TEAM');
+}
+
+function pss_gameScheduleWindow($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $startRaw = trim(pss_pluginSetting("{$prefix}Start", ''));
+    if ($startRaw === '') return null;
+    try {
+        $start = new DateTime($startRaw);
+        $start->setTimezone(new DateTimeZone(date_default_timezone_get()));
+    } catch (Exception $e) {
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' schedule helper has invalid game start: ' . $startRaw);
+        return null;
+    }
+    $end = clone $start;
+    $end->modify('+' . pss_gameScheduleSafetySeconds() . ' seconds');
+
+    // If ESPN still says the game is live beyond the safety ceiling, keep the
+    // schedule alive for another two hours instead of dropping a live overlay.
+    if (pss_pluginSetting("{$prefix}GameStatus", '') === 'in' && time() >= $end->getTimestamp()) {
+        $end = new DateTime('now', new DateTimeZone(date_default_timezone_get()));
+        $end->modify('+2 hours');
+    }
+    return array('start' => $start, 'end' => $end);
+}
+
+function pss_gameScheduleWindowIsActive($league, $slot = 1) {
+    if (!pss_teamGameScheduleEnabled($league, $slot)) return false;
+    $prefix = pss_teamPrefix($league, $slot);
+    if (pss_pluginSetting("{$prefix}GameStatus", '') === 'post') return false;
+    $window = pss_gameScheduleWindow($league, $slot);
+    if (!is_array($window)) return false;
+    $now = time();
+    return $now >= $window['start']->getTimestamp() && $now < $window['end']->getTimestamp();
+}
+
+function pss_gameScheduleWledStartArgsList($league, $slot = 1, $requireActiveWindow = false) {
+    if (!pss_teamGameScheduleEnabled($league, $slot)) return array();
+    if ($requireActiveWindow && !pss_gameScheduleWindowIsActive($league, $slot)) return array();
+    $selection = pss_teamGameScheduleSelection($league, $slot);
+    $effectName = pss_wledEffectFromSelection($selection);
+    if ($effectName === '') return array();
+    $models = pss_teamWledModels($league, $slot);
+    $palette = pss_teamPaletteForSlot($league, $slot);
+    if (empty($models) || !is_array($palette)) return array();
+
+    $result = array();
+    foreach ($models as $model) {
+        $args = pss_buildWledEffectArgs($effectName, $model, $palette);
+        if (!empty($args)) $result[] = $args;
+    }
+    return $result;
+}
+
+function pss_gameScheduleWledStartArgs($league, $slot = 1, $requireActiveWindow = false) {
+    // Legacy helper: return the first command when older callers expect one.
+    $list = pss_gameScheduleWledStartArgsList($league, $slot, $requireActiveWindow);
+    return empty($list) ? array() : $list[0];
+}
+
+function pss_stopScheduledGameOverlay($league, $slot = 1) {
+    $selection = pss_teamGameScheduleSelection($league, $slot);
+    if (pss_wledEffectFromSelection($selection) === '') return false;
+    $models = pss_teamWledModels($league, $slot);
+    if (empty($models)) return false;
+
+    $ok = true;
+    foreach ($models as $model) {
+        $response = pss_runFppCommand('Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'));
+        if (!$response['ok']) {
+            pss_logEntry(pss_teamLogLabel($league, $slot) . ' could not stop scheduled WLED overlay on ' . $model . ' HTTP ' . $response['status']);
+            $ok = false;
+        }
+    }
+    return $ok;
+}
+
+function pss_scheduleOverlaySuspendResumeEntries($league, $slot = 1, $celebrationSuffix = '') {
+    // A win ends the game, so never restart the game-long overlay after the win
+    // celebration. Score/TD/FG helpers suspend every selected model and restore
+    // the same effect to every selected model afterward.
+    if ($celebrationSuffix === 'WinSequence') return array('before' => array(), 'after' => array());
+    $startArgsList = pss_gameScheduleWledStartArgsList($league, $slot, true);
+    if (empty($startArgsList)) return array('before' => array(), 'after' => array());
+
+    $before = array();
+    $after = array();
+    foreach ($startArgsList as $startArgs) {
+        $model = isset($startArgs[0]) ? (string)$startArgs[0] : '';
+        if ($model === '') continue;
+        $before[] = pss_playlistCommandEntry(
+            'Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'),
+            'Suspend game-time WLED overlay for sports celebration'
+        );
+        $after[] = pss_playlistCommandEntry(
+            'Overlay Model Effect', $startArgs,
+            'Resume game-time WLED overlay after sports celebration'
+        );
+    }
+    return array('before' => $before, 'after' => $after);
+}
+
+function pss_scheduleFilePath() {
+    global $settings;
+    if (isset($settings['scheduleJsonFile']) && trim((string)$settings['scheduleJsonFile']) !== '') {
+        return (string)$settings['scheduleJsonFile'];
+    }
+    $configDir = isset($settings['configDirectory']) ? rtrim((string)$settings['configDirectory'], '/') : '/home/fpp/media/config';
+    return $configDir . '/schedule.json';
+}
+
+function pss_isManagedGameScheduleEntry($entry) {
+    return is_array($entry)
+        && isset($entry['playlist'])
+        && strpos((string)$entry['playlist'], pss_gameSchedulePlaylistPrefix()) === 0;
+}
+
+function pss_reloadFppSchedule() {
+    global $settings;
+    if (!function_exists('exec')) {
+        pss_logEntry('Schedule helper wrote schedule.json but PHP exec() is disabled; FPP schedule reload was not requested');
+        return false;
+    }
+    $root = isset($settings['fppDir']) ? rtrim((string)$settings['fppDir'], '/') : '/opt/fpp';
+    $candidates = array($root . '/src/fpp', '/opt/fpp/src/fpp', '/usr/bin/fpp');
+    foreach ($candidates as $bin) {
+        if (!is_file($bin) || !is_executable($bin)) continue;
+        $output = array();
+        $rc = 0;
+        @exec(escapeshellarg($bin) . ' -R 2>&1', $output, $rc);
+        if ($rc === 0) return true;
+    }
+    pss_logEntry('Schedule helper could not find/execute the FPP schedule reload utility');
+    return false;
+}
+
+function pss_writeManagedGamePlaylist($playlistName, $league, $slot, $selection) {
+    global $settings;
+    $playlistName = trim((string)$playlistName);
+    $selection = trim((string)$selection);
+    if ($playlistName === '' || $selection === '') return false;
+
+    $mainPlaylist = array();
+    $duration = 0.0;
+    $wledEffect = pss_wledEffectFromSelection($selection);
+    if ($wledEffect !== '') {
+        $modelChecks = pss_teamWledModels($league, $slot);
+        if (empty($modelChecks)) {
+            pss_logEntry('Cannot build ' . $playlistName . '; no WLED celebration models are selected for ' . pss_teamLogLabel($league, $slot));
+            return false;
+        }
+        $paletteCheck = pss_teamPaletteForSlot($league, $slot);
+        if (!is_array($paletteCheck)) {
+            pss_logEntry('Cannot build ' . $playlistName . '; team palette is unavailable for ' . pss_teamLogLabel($league, $slot));
+            return false;
+        }
+        $startArgsList = array();
+        foreach ($modelChecks as $modelCheck) {
+            $args = pss_buildWledEffectArgs($wledEffect, $modelCheck, $paletteCheck);
+            if (empty($args)) {
+                pss_logEntry('Cannot build ' . $playlistName . '; FPP returned no usable argument definition for ' . $wledEffect . ' on ' . $modelCheck);
+                return false;
+            }
+            $startArgsList[] = $args;
+        }
+        $teamName = isset($paletteCheck['name']) ? (string)$paletteCheck['name'] : pss_teamLogLabel($league, $slot);
+        foreach ($startArgsList as $startArgs) {
+            $mainPlaylist[] = pss_playlistCommandEntry(
+                'Overlay Model Effect', $startArgs,
+                'Start game-time ' . $wledEffect . ' using ' . $teamName . ' colors'
+            );
+        }
+        // Leave a one-minute margin so the explicit Stop Effects items normally
+        // run before the schedule safety end even after short inserted plays.
+        $duration = max(60, pss_gameScheduleSafetySeconds() - 60);
+        $mainPlaylist[] = array(
+            'type' => 'pause', 'enabled' => 1, 'playOnce' => 0,
+            'duration' => $duration,
+            'note' => 'Hold game-time WLED overlay until game end/safety timeout',
+            'displayMode' => 'argsOnly'
+        );
+        foreach ($modelChecks as $model) {
+            $mainPlaylist[] = pss_playlistCommandEntry(
+                'Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'),
+                'Stop game-time WLED overlay'
+            );
+        }
+    } else {
+        $filename = basename($selection);
+        $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
+        if ($filename === '' || !is_file($sequenceDirectory . '/' . $filename)) {
+            pss_logEntry('Cannot build ' . $playlistName . '; scheduled sequence not found: ' . $filename);
+            return false;
+        }
+        $duration = pss_sequenceDuration($filename);
+        $mainPlaylist[] = array(
+            'type' => 'sequence', 'enabled' => 1, 'playOnce' => 0,
+            'sequenceName' => $filename, 'displayMode' => 'argsOnly',
+            'timecode' => 'Default', 'duration' => $duration
+        );
+    }
+
+    $data = array(
+        'name' => $playlistName,
+        'version' => 4,
+        'repeat' => 0,
+        'loopCount' => 0,
+        'desc' => pss_generatedPlaylistMarker(),
+        'random' => 0,
+        'globalPauseBetweenSequencesMS' => 0,
+        'empty' => false,
+        'leadIn' => array(),
+        'mainPlaylist' => $mainPlaylist,
+        'leadOut' => array(),
+        'playlistInfo' => array(
+            'leadIn_duration' => 0, 'leadIn_items' => 0,
+            'mainPlaylist_duration' => $duration,
+            'mainPlaylist_items' => count($mainPlaylist),
+            'leadOut_duration' => 0, 'leadOut_items' => 0,
+            'total_duration' => $duration, 'total_items' => count($mainPlaylist)
+        )
+    );
+
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory) || !is_writable($playlistDirectory)) return false;
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) return false;
+    $json .= "\n";
+    $path = $playlistDirectory . '/' . $playlistName . '.json';
+    $existing = is_file($path) ? @file_get_contents($path) : false;
+    if ($existing === $json) return true;
+    $tmp = $path . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false || !@rename($tmp, $path)) {
+        @unlink($tmp);
+        return false;
+    }
+    @chmod($path, 0664);
+    pss_logEntry('Generated game schedule helper playlist ' . $playlistName);
+    return true;
+}
+
+function pss_cleanupManagedGamePlaylists($keepNames) {
+    global $settings;
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory)) return;
+    $files = glob($playlistDirectory . '/' . pss_gameSchedulePlaylistPrefix() . '*.json');
+    if (!is_array($files)) return;
+    $keep = array_fill_keys($keepNames, true);
+    foreach ($files as $path) {
+        $name = pathinfo($path, PATHINFO_FILENAME);
+        if (isset($keep[$name])) continue;
+        if (pss_isManagedGeneratedPlaylist($path) && @unlink($path)) {
+            pss_logEntry('Removed stale game schedule helper playlist ' . $name);
+        }
+    }
+}
+
+function pss_syncGameSchedules($logChanges = true) {
+    global $pluginSettings, $leagues;
+    $path = pss_scheduleFilePath();
+    $existing = array();
+    if (is_file($path)) {
+        $raw = @file_get_contents($path);
+        $decoded = ($raw !== false) ? json_decode($raw, true) : null;
+        if (is_array($decoded)) $existing = $decoded;
+    }
+
+    $userEntries = array();
+    foreach ($existing as $entry) {
+        if (!pss_isManagedGameScheduleEntry($entry)) $userEntries[] = $entry;
+    }
+
+    $managedEntries = array();
+    $keepPlaylists = array();
+    foreach ($leagues as $league) {
+        foreach (array(1, 2) as $slot) {
+            $prefix = pss_teamPrefix($league, $slot);
+            if (!pss_teamGameScheduleEnabled($league, $slot)) continue;
+            if (trim(pss_pluginSetting("{$prefix}TeamID", '')) === '') continue;
+            $selection = pss_teamGameScheduleSelection($league, $slot);
+            if ($selection === '') continue;
+            if (pss_pluginSetting("{$prefix}GameStatus", '') === 'post') continue;
+            if (trim(pss_pluginSetting("{$prefix}TeamNextEventID", '')) === '') continue;
+            $window = pss_gameScheduleWindow($league, $slot);
+            if (!is_array($window)) continue;
+            if ($window['end']->getTimestamp() <= time() && pss_pluginSetting("{$prefix}GameStatus", '') !== 'in') continue;
+
+            $playlist = pss_generatedGameSchedulePlaylistName($league, $slot);
+            if ($playlist === '' || !pss_writeManagedGamePlaylist($playlist, $league, $slot, $selection)) continue;
+            $keepPlaylists[] = $playlist;
+
+            $isWled = pss_wledEffectFromSelection($selection) !== '';
+            $managedEntries[] = array(
+                '_pssPriorityKey' => pss_gameSchedulePriorityKey($league, $slot),
+                '_pssDefaultOrder' => count($managedEntries),
+                'enabled' => 1,
+                'sequence' => 0,
+                'playlist' => $playlist,
+                'day' => 7,
+                'startTime' => $window['start']->format('H:i:s'),
+                'startTimeOffset' => 0,
+                'endTime' => $window['end']->format('H:i:s'),
+                'endTimeOffset' => 0,
+                // Normal sequences repeat for the game window.  A WLED helper
+                // stays inside one long playlist pause so inserted scoring
+                // playlists can return to it without constantly restarting FX.
+                'repeat' => $isWled ? 0 : 1,
+                'startDate' => $window['start']->format('Y-m-d'),
+                'startDateOffset' => 0,
+                // FPP represents a cross-midnight time span with the same anchor
+                // date and an endTime earlier than startTime.
+                'endDate' => $window['start']->format('Y-m-d'),
+                'endDateOffset' => 0,
+                'stopType' => 1
+            );
+        }
+    }
+
+    // FPP schedule priority follows the schedule-row ordering.  Keep every
+    // non-plugin schedule exactly where it was relative to other user entries,
+    // then order only PSS_SPORTS_GAME_* rows using the user's Priority buttons.
+    // Clicking Priority moves that team to rank #1 while preserving the prior
+    // order of the remaining plugin-created game schedules.
+    $priorityOrder = pss_pruneGameSchedulePriorityOrder();
+    $priorityMap = array();
+    foreach ($priorityOrder as $idx => $key) $priorityMap[$key] = $idx;
+    usort($managedEntries, function($a, $b) use ($priorityMap) {
+        $ak = isset($a['_pssPriorityKey']) ? (string)$a['_pssPriorityKey'] : '';
+        $bk = isset($b['_pssPriorityKey']) ? (string)$b['_pssPriorityKey'] : '';
+        $ai = isset($priorityMap[$ak]) ? $priorityMap[$ak] : 1000 + (isset($a['_pssDefaultOrder']) ? (int)$a['_pssDefaultOrder'] : 0);
+        $bi = isset($priorityMap[$bk]) ? $priorityMap[$bk] : 1000 + (isset($b['_pssDefaultOrder']) ? (int)$b['_pssDefaultOrder'] : 0);
+        if ($ai === $bi) return 0;
+        return ($ai < $bi) ? -1 : 1;
+    });
+    foreach ($managedEntries as &$managedEntry) {
+        unset($managedEntry['_pssPriorityKey'], $managedEntry['_pssDefaultOrder']);
+    }
+    unset($managedEntry);
+
+    $newSchedule = array_merge($userEntries, $managedEntries);
+    $oldJson = json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    $newJson = json_encode($newSchedule, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    $changed = ($oldJson !== $newJson);
+    if ($changed) {
+        $dir = dirname($path);
+        if (!is_dir($dir) || !is_writable($dir)) {
+            pss_logEntry('Schedule helper cannot write FPP schedule directory: ' . $dir);
+            return false;
+        }
+        $tmp = $path . '.pss.' . getmypid();
+        if (@file_put_contents($tmp, $newJson, LOCK_EX) === false || !@rename($tmp, $path)) {
+            @unlink($tmp);
+            pss_logEntry('Schedule helper could not update ' . $path);
+            return false;
+        }
+        @chmod($path, 0664);
+        pss_reloadFppSchedule();
+        if ($logChanges) pss_logEntry('Updated FPP game schedule helper entries: ' . count($managedEntries));
+    }
+    pss_cleanupManagedGamePlaylists($keepPlaylists);
+    return true;
+}
+
+function pss_saveGameScheduleEnabled($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    $enabled = (isset($post['enabled']) && (string)$post['enabled'] === 'ON') ? 'ON' : 'OFF';
+    if (!in_array($league, array('nfl','ncaa','nhl','mlb'), true)) {
+        pss_jsonResponse(false, 'Invalid league for schedule helper.');
+    }
+    if ($enabled === 'OFF') pss_stopScheduledGameOverlay($league, $slot);
+    $prefix = pss_teamPrefix($league, $slot);
+    pss_setPluginSetting("{$prefix}ScheduleEnabled", $enabled);
+    $pluginSettings = pss_loadPluginSettings();
+
+    if ($enabled === 'ON') {
+        $selection = pss_teamGameScheduleSelection($league, $slot);
+        $wledEffect = pss_wledEffectFromSelection($selection);
+        if ($wledEffect !== '') {
+            $models = pss_teamWledModels($league, $slot);
+            if (empty($models)) {
+                pss_jsonResponse(false, 'Schedule enabled, but Run WLED Effect needs at least one WLED model. Select one or more in the Schedule Helper.');
+            }
+            $palette = pss_teamPaletteForSlot($league, $slot);
+            if (!is_array($palette)) {
+                pss_syncTeamPalettes(true);
+                $palette = pss_teamPaletteForSlot($league, $slot);
+            }
+            if (!is_array($palette)) {
+                pss_jsonResponse(false, 'Schedule enabled, but the selected team palette is not available yet.');
+            }
+            foreach ($models as $model) {
+                if (empty(pss_buildWledEffectArgs($wledEffect, $model, $palette))) {
+                    pss_jsonResponse(false, 'Schedule enabled, but FPP did not return a usable command definition for ' . $wledEffect . ' on ' . $model . '.');
+                }
+            }
+        }
+    }
+
+    $ok = pss_syncGameSchedules(true);
+    pss_jsonResponse($ok, $ok ? 'Game schedule helper updated.' : 'Game schedule helper could not update the FPP schedule.');
+}
+
+function pss_syncGameScheduleSetting($post) {
+    global $pluginSettings;
+    // PrintSettingSelect performs its own async save.  The callback can beat
+    // that request, especially for the longer encoded WLED tokens, so save the
+    // exact browser value here before rebuilding the managed playlist/schedule.
+    if (!is_array($post)) {
+        $post = array('setting' => (string)$post);
+    }
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
+    if (!preg_match('/^(nfl|ncaa|nhl|mlb)(2)?ScheduleSelection$/', $setting, $matches)) {
+        pss_jsonResponse(false, 'Invalid game schedule selection.');
+    }
+    $league = $matches[1];
+    $slot = !empty($matches[2]) ? 2 : 1;
+
+    // Stop the currently-running scheduled overlay before replacing its helper.
+    pss_stopScheduledGameOverlay($league, $slot);
+
+    if (array_key_exists('value', $post)) {
+        pss_setPluginSetting($setting, trim((string)$post['value']));
+    }
+    $pluginSettings = pss_loadPluginSettings();
+
+    $selection = pss_teamGameScheduleSelection($league, $slot);
+    $wledEffect = pss_wledEffectFromSelection($selection);
+    if ($wledEffect !== '') {
+        $models = pss_teamWledModels($league, $slot);
+        if (empty($models)) {
+            pss_jsonResponse(false, 'Run WLED Effect is selected, but this team has no WLED celebration models. Select one or more in the Schedule Helper or team settings first.');
+        }
+        $palette = pss_teamPaletteForSlot($league, $slot);
+        if (!is_array($palette)) {
+            pss_syncTeamPalettes(true);
+            $palette = pss_teamPaletteForSlot($league, $slot);
+        }
+        if (!is_array($palette)) {
+            pss_jsonResponse(false, 'The team color palette is not available yet. Re-select the team or refresh its ESPN data, then try again.');
+        }
+        foreach ($models as $model) {
+            $args = pss_buildWledEffectArgs($wledEffect, $model, $palette);
+            if (empty($args)) {
+                pss_jsonResponse(false, 'FPP did not return a usable command definition for ' . $wledEffect . ' on ' . $model . '. The WLED helper playlist was not created.');
+            }
+        }
+    }
+
+    $ok = pss_syncGameSchedules(true);
+    if (!$ok) {
+        pss_jsonResponse(false, 'Could not update the FPP schedule. Check the plugin log.');
+    }
+
+    // If scheduling is enabled for an upcoming/current game, verify that the
+    // managed playlist actually exists so the UI never reports a false success.
+    if (pss_teamGameScheduleEnabled($league, $slot) && $selection !== '') {
+        $window = pss_gameScheduleWindow($league, $slot);
+        $prefix = pss_teamPrefix($league, $slot);
+        if (is_array($window) && ($window['end']->getTimestamp() > time() || pss_pluginSetting("{$prefix}GameStatus", '') === 'in')) {
+            $playlistName = pss_generatedGameSchedulePlaylistName($league, $slot);
+            global $settings;
+            $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+            if ($playlistName !== '' && !is_file($playlistDirectory . '/' . $playlistName . '.json')) {
+                pss_jsonResponse(false, 'FPP schedule rebuilt, but the managed game playlist was not created. Check the plugin log for the exact WLED/model error.');
+            }
+        }
+    }
+
+    pss_jsonResponse(true, $wledEffect !== '' ? 'WLED game helper playlist and schedule rebuilt.' : 'Game schedule helper rebuilt.');
 }
 
 function pss_generatedPlaylistMarker() {
@@ -917,7 +3081,7 @@ function pss_sequenceDuration($sequenceName) {
     return round(($frames * $stepMs) / 1000, 3);
 }
 
-function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds = 0) {
+function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '') {
     $duration = pss_sequenceDuration($sequenceName);
     $delaySeconds = pss_clampInt($delaySeconds, 0, 300, 0);
 
@@ -933,6 +3097,9 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
         );
     }
 
+    $overlayWrap = ($league !== '') ? pss_scheduleOverlaySuspendResumeEntries($league, $slot, $celebrationSuffix) : array('before' => array(), 'after' => array());
+    foreach ($overlayWrap['before'] as $entry) $mainPlaylist[] = $entry;
+
     $mainPlaylist[] = array(
         'type' => 'sequence',
         'enabled' => 1,
@@ -942,6 +3109,7 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
         'timecode' => 'Default',
         'duration' => $duration
     );
+    foreach ($overlayWrap['after'] as $entry) $mainPlaylist[] = $entry;
 
     $totalDuration = $duration + $delaySeconds;
     $itemCount = count($mainPlaylist);
@@ -971,7 +3139,7 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
     );
 }
 
-function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds = 0) {
+function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '') {
     global $settings;
 
     $playlistName = trim((string)$playlistName);
@@ -992,7 +3160,7 @@ function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds 
         return false;
     }
 
-    $data = pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds);
+    $data = pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds, $league, $slot, $celebrationSuffix);
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     if ($json === false) {
         pss_logEntry("Unable to encode generated playlist {$playlistName}");
@@ -1015,6 +3183,363 @@ function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds 
 
     @chmod($path, 0664);
     pss_logEntry("Generated playlist {$playlistName} for sequence {$sequenceName}");
+    return true;
+}
+
+function pss_effectArgListLooksValid($list) {
+    if (!is_array($list) || empty($list)) {
+        return false;
+    }
+    $objects = 0;
+    $named = 0;
+    foreach ($list as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $objects++;
+        foreach (array('name', 'Name', 'label', 'Label', 'id', 'key') as $key) {
+            if (isset($item[$key]) && is_scalar($item[$key]) && trim((string)$item[$key]) !== '') {
+                $named++;
+                break;
+            }
+        }
+    }
+    return $objects > 0 && $named === $objects;
+}
+
+function pss_findEffectArgList($node) {
+    if (!is_array($node)) {
+        return array();
+    }
+    foreach (array('args', 'arguments', 'parameters', 'params', 'commandArgs', 'command_args') as $key) {
+        if (isset($node[$key]) && pss_effectArgListLooksValid($node[$key])) {
+            return array_values($node[$key]);
+        }
+    }
+    if (pss_effectArgListLooksValid($node)) {
+        return array_values($node);
+    }
+    foreach ($node as $value) {
+        if (is_array($value)) {
+            $found = pss_findEffectArgList($value);
+            if (!empty($found)) {
+                return $found;
+            }
+        }
+    }
+    return array();
+}
+
+function pss_getWledEffectDefinition($effectName) {
+    $effectName = trim((string)$effectName);
+    if ($effectName === '') {
+        return array();
+    }
+
+    $catalog = pss_getWledEffectCatalog();
+    if (isset($catalog[$effectName]) && is_array($catalog[$effectName])) {
+        $args = pss_findEffectArgList($catalog[$effectName]);
+        if (!empty($args)) {
+            return $catalog[$effectName];
+        }
+    }
+
+    foreach (array(
+        'http://127.0.0.1/api/overlays/effects/' . rawurlencode($effectName),
+        'http://127.0.0.1/api/overlays/effects/' . rawurlencode(preg_replace('/^WLED\s*-\s*/i', '', $effectName))
+    ) as $url) {
+        $data = pss_httpJson($url);
+        if (is_array($data) && !empty(pss_findEffectArgList($data))) {
+            return $data;
+        }
+    }
+
+    return isset($catalog[$effectName]) && is_array($catalog[$effectName]) ? $catalog[$effectName] : array();
+}
+
+function pss_effectArgMetaValue($arg, $keys, $default = '') {
+    if (!is_array($arg)) return $default;
+    foreach ($keys as $key) {
+        if (array_key_exists($key, $arg) && is_scalar($arg[$key])) {
+            return (string)$arg[$key];
+        }
+    }
+    return $default;
+}
+
+function pss_effectArgOptions($arg) {
+    if (!is_array($arg)) return array();
+    foreach (array('contentList', 'content_list', 'options', 'values', 'contents', 'allowedValues', 'allowed_values') as $key) {
+        if (!isset($arg[$key]) || !is_array($arg[$key])) continue;
+        $out = array();
+        foreach ($arg[$key] as $entry) {
+            if (is_scalar($entry)) {
+                $out[] = (string)$entry;
+            } elseif (is_array($entry)) {
+                foreach (array('value', 'name', 'label', 'id') as $ek) {
+                    if (isset($entry[$ek]) && is_scalar($entry[$ek])) {
+                        $out[] = (string)$entry[$ek];
+                        break;
+                    }
+                }
+            }
+        }
+        if (!empty($out)) return $out;
+    }
+    return array();
+}
+
+function pss_wledEffectArgValue($arg, $colors, &$genericColorIndex, $overrides = array()) {
+    $name = pss_effectArgMetaValue($arg, array('name', 'Name', 'label', 'Label', 'id', 'key'), '');
+    $type = strtolower(pss_effectArgMetaValue($arg, array('type', 'Type'), ''));
+    $norm = strtolower(preg_replace('/[^a-z0-9]+/i', ' ', $name));
+    $norm = trim(preg_replace('/\s+/', ' ', $norm));
+
+    if (strpos($norm, 'palette') !== false) {
+        return '* Colors Only';
+    }
+    if (is_array($overrides)) {
+        if (strpos($norm, 'buffer') !== false && strpos($norm, 'mapping') !== false && isset($overrides['mapping'])) {
+            return (string)$overrides['mapping'];
+        }
+        if (strpos($norm, 'brightness') !== false && isset($overrides['brightness'])) {
+            return (string)$overrides['brightness'];
+        }
+    }
+    if (preg_match('/(^| )color ?1($| )/', $norm) || strpos($norm, 'primary color') !== false) {
+        return $colors[0];
+    }
+    if (preg_match('/(^| )color ?2($| )/', $norm) || strpos($norm, 'secondary color') !== false) {
+        return $colors[1];
+    }
+    if (preg_match('/(^| )color ?3($| )/', $norm) || strpos($norm, 'tertiary color') !== false) {
+        return $colors[2];
+    }
+    if ($type === 'color') {
+        $value = $colors[min(2, $genericColorIndex)];
+        $genericColorIndex++;
+        return $value;
+    }
+
+    // Honor FPP's own default for every non-color effect control. This is what
+    // lets the scoring dropdown support the full WLED effect set without the
+    // sports plugin having to hard-code each effect's sliders.
+    $default = pss_effectArgMetaValue($arg, array('default', 'defaultValue', 'default_value', 'value'), '');
+    if ($default !== '') {
+        return $default;
+    }
+
+    $options = pss_effectArgOptions($arg);
+    if (!empty($options)) {
+        if (strpos($norm, 'buffer') !== false && in_array('Horizontal', $options, true)) return 'Horizontal';
+        return (string)$options[0];
+    }
+
+    if (strpos($norm, 'buffer') !== false && strpos($norm, 'mapping') !== false) return 'Horizontal';
+    if (strpos($norm, 'brightness') !== false) return '128';
+    if ($type === 'bool' || $type === 'boolean') return 'false';
+    if (in_array($type, array('int', 'integer', 'range', 'number', 'float', 'double'), true)) {
+        $min = pss_effectArgMetaValue($arg, array('min', 'minimum'), '');
+        $max = pss_effectArgMetaValue($arg, array('max', 'maximum'), '');
+        if (is_numeric($min) && is_numeric($max)) {
+            return (string)(int)round((((float)$min) + ((float)$max)) / 2.0);
+        }
+        return '128';
+    }
+    return '';
+}
+
+function pss_buildWledEffectArgs($effectName, $model, $palette, $overrides = array()) {
+    $effectName = trim((string)$effectName);
+    $model = trim((string)$model);
+    if ($effectName === '' || $model === '' || !is_array($palette)) {
+        return array();
+    }
+
+    $colors = isset($palette['colors']) && is_array($palette['colors']) ? array_values($palette['colors']) : array();
+    while (count($colors) < 3) $colors[] = '#000000';
+    $colors = array(
+        pss_normalizeColor($colors[0], '#FFFFFF'),
+        pss_normalizeColor($colors[1], '#000000'),
+        pss_normalizeColor($colors[2], '#808080')
+    );
+
+    $definition = pss_getWledEffectDefinition($effectName);
+    $argDefs = pss_findEffectArgList($definition);
+
+    // Known FPP 10.1 command layouts are kept only as a safety net. Normally
+    // the live FPP effect definition above supplies the exact argument order.
+    if (empty($argDefs)) {
+        if ($effectName === 'WLED - Android') {
+            return array($model, 'Enabled', $effectName, isset($overrides['mapping']) ? (string)$overrides['mapping'] : 'Horizontal', isset($overrides['brightness']) ? (string)$overrides['brightness'] : '128', '128', '128', '* Colors Only', $colors[0], $colors[1]);
+        }
+        if ($effectName === 'WLED - Colortwinkles' || $effectName === 'WLED - Blends') {
+            // Blends and Colortwinkles both expose two effect controls plus the
+            // palette/colors block in FPP 10.  Keep this fallback so scheduling
+            // still works if the per-effect metadata endpoint is temporarily
+            // unavailable while the main effect list remains available.
+            return array($model, 'Enabled', $effectName, isset($overrides['mapping']) ? (string)$overrides['mapping'] : 'Horizontal', isset($overrides['brightness']) ? (string)$overrides['brightness'] : '128', '128', '128', '* Colors Only', $colors[0], $colors[1], $colors[2]);
+        }
+        return array();
+    }
+
+    $args = array($model, 'Enabled', $effectName);
+    $genericColorIndex = 0;
+    foreach ($argDefs as $arg) {
+        $name = strtolower(trim(pss_effectArgMetaValue($arg, array('name', 'Name', 'label', 'Label', 'id', 'key'), '')));
+        // An endpoint that returns the full Overlay Model Effect schema rather
+        // than just the selected subcommand may repeat these three outer args.
+        if (in_array($name, array('models', 'model', 'autoenable', 'auto enable/disable', 'effect'), true)) {
+            continue;
+        }
+        $args[] = pss_wledEffectArgValue($arg, $colors, $genericColorIndex, $overrides);
+    }
+    return $args;
+}
+
+function pss_teamPaletteForSlot($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $teamID = trim(pss_pluginSetting("{$prefix}TeamID", ''));
+    if ($teamID === '') return null;
+    return pss_findTeamPalette(strtolower((string)$league) . ':' . $teamID);
+}
+
+function pss_playlistCommandEntry($command, $args, $note = '') {
+    $entry = array(
+        'type' => 'command',
+        'enabled' => 1,
+        'playOnce' => 0,
+        'command' => (string)$command,
+        'multisyncCommand' => false,
+        'multisyncHosts' => '',
+        'args' => is_array($args) ? array_values($args) : array(),
+        'displayMode' => 'argsOnly',
+        'duration' => 0
+    );
+    if ($note !== '') $entry['note'] = (string)$note;
+    return $entry;
+}
+
+function pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds = 0, $celebrationSuffix = '') {
+    $models = pss_teamWledModels($league, $slot);
+    $effectDuration = pss_teamWledDuration($league, $slot);
+    $palette = pss_teamPaletteForSlot($league, $slot);
+    if (empty($models) || !is_array($palette)) return null;
+
+    $startArgsList = array();
+    foreach ($models as $model) {
+        $args = pss_buildWledEffectArgs($effectName, $model, $palette);
+        if (empty($args)) return null;
+        $startArgsList[] = $args;
+    }
+
+    $delaySeconds = pss_clampInt($delaySeconds, 0, 300, 0);
+    $mainPlaylist = array();
+    if ($delaySeconds > 0) {
+        $mainPlaylist[] = array(
+            'type' => 'pause', 'enabled' => 1, 'playOnce' => 0,
+            'duration' => $delaySeconds,
+            'note' => 'Pro Sports Scoring celebration delay',
+            'displayMode' => 'argsOnly'
+        );
+    }
+
+    $overlayWrap = pss_scheduleOverlaySuspendResumeEntries($league, $slot, $celebrationSuffix);
+    foreach ($overlayWrap['before'] as $entry) $mainPlaylist[] = $entry;
+
+    $teamName = isset($palette['name']) ? (string)$palette['name'] : strtoupper((string)$league);
+    foreach ($startArgsList as $startArgs) {
+        $mainPlaylist[] = pss_playlistCommandEntry(
+            'Overlay Model Effect', $startArgs,
+            'Start ' . $effectName . ' using ' . $teamName . ' team colors'
+        );
+    }
+    $mainPlaylist[] = array(
+        'type' => 'pause', 'enabled' => 1, 'playOnce' => 0,
+        'duration' => $effectDuration,
+        'note' => 'Run WLED sports celebration effect',
+        'displayMode' => 'argsOnly'
+    );
+    foreach ($models as $model) {
+        $mainPlaylist[] = pss_playlistCommandEntry(
+            'Overlay Model Effect', array($model, 'Enabled', 'Stop Effects'),
+            'Stop Pro Sports Scoring WLED celebration effect'
+        );
+    }
+    foreach ($overlayWrap['after'] as $entry) $mainPlaylist[] = $entry;
+
+    $totalDuration = $delaySeconds + $effectDuration;
+    return array(
+        'name' => $playlistName,
+        'version' => 4,
+        'repeat' => 0,
+        'loopCount' => 0,
+        'desc' => pss_generatedPlaylistMarker(),
+        'random' => 0,
+        'globalPauseBetweenSequencesMS' => 0,
+        'empty' => false,
+        'leadIn' => array(),
+        'mainPlaylist' => $mainPlaylist,
+        'leadOut' => array(),
+        'playlistInfo' => array(
+            'leadIn_duration' => 0,
+            'leadIn_items' => 0,
+            'mainPlaylist_duration' => $totalDuration,
+            'mainPlaylist_items' => count($mainPlaylist),
+            'leadOut_duration' => 0,
+            'leadOut_items' => 0,
+            'total_duration' => $totalDuration,
+            'total_items' => count($mainPlaylist)
+        )
+    );
+}
+
+function pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $effectName, $delaySeconds = 0, $celebrationSuffix = '') {
+    global $settings;
+    $playlistName = trim((string)$playlistName);
+    $effectName = trim((string)$effectName);
+    if ($playlistName === '' || $effectName === '') return false;
+
+    $selectedModels = pss_teamWledModels($league, $slot);
+    if (empty($selectedModels)) {
+        pss_logEntry('Cannot build ' . $playlistName . '; select one or more WLED celebration models for ' . pss_teamLogLabel($league, $slot));
+        return false;
+    }
+    $missing = array();
+    if (!pss_overlayModelsExist($selectedModels, $missing)) {
+        pss_logEntry('Cannot build ' . $playlistName . '; WLED celebration model(s) are not returned by FPP: ' . implode(', ', $missing));
+        return false;
+    }
+    if (!is_array(pss_teamPaletteForSlot($league, $slot))) {
+        pss_logEntry('Cannot build ' . $playlistName . '; team palette is unavailable for ' . pss_teamLogLabel($league, $slot));
+        return false;
+    }
+
+    $data = pss_generatedWledPlaylistData($playlistName, $league, $slot, $effectName, $delaySeconds, $celebrationSuffix);
+    if (!is_array($data)) {
+        pss_logEntry('Cannot build ' . $playlistName . '; FPP did not provide an argument definition for ' . $effectName);
+        return false;
+    }
+
+    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if (!is_dir($playlistDirectory) || !is_writable($playlistDirectory)) {
+        pss_logEntry('Cannot write generated playlist; directory is not writable: ' . $playlistDirectory);
+        return false;
+    }
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    if ($json === false) return false;
+    $json .= "\n";
+    $path = $playlistDirectory . '/' . $playlistName . '.json';
+    $existing = is_file($path) ? @file_get_contents($path) : false;
+    if ($existing === $json) return true;
+    $tmp = $path . '.tmp.' . getmypid();
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false || !@rename($tmp, $path)) {
+        @unlink($tmp);
+        pss_logEntry('Unable to create generated WLED playlist ' . $playlistName);
+        return false;
+    }
+    @chmod($path, 0664);
+    pss_logEntry('Generated playlist ' . $playlistName . ' for ' . $effectName . ' using team palette');
     return true;
 }
 
@@ -1080,7 +3605,11 @@ function pss_syncGeneratedPlaylistsForLeague($league) {
                 continue;
             }
             $delaySeconds = pss_teamCelebrationDelay($league, $slot);
-            if (pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds)) {
+            $wledEffect = pss_wledEffectFromSelection($sequence);
+            $written = ($wledEffect !== '')
+                ? pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $wledEffect, $delaySeconds, $suffix)
+                : pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds, $league, $slot, $suffix);
+            if ($written) {
                 $keepNames[] = $playlistName;
             }
         }
@@ -1139,7 +3668,8 @@ function pss_getTeamInfo($sport, $league, $team) {
         'name' => '',
         'nextEventID' => '',
         'nextEventDate' => '',
-        'nextEventStatus' => ''
+        'nextEventStatus' => '',
+        'paletteColors' => array('#FFFFFF', '#000000', '#FFFFFF')
     );
     if ($team === '') {
         return $info;
@@ -1157,6 +3687,7 @@ function pss_getTeamInfo($sport, $league, $team) {
     $info['logo'] = pss_extractTeamLogo($teamData);
     $info['abbreviation'] = isset($teamData['abbreviation']) ? (string)$teamData['abbreviation'] : '';
     $info['name'] = isset($teamData['displayName']) ? (string)$teamData['displayName'] : '';
+    $info['paletteColors'] = pss_teamPaletteColorsFromEspn($teamData);
 
     if (isset($teamData['nextEvent'][0]) && is_array($teamData['nextEvent'][0])) {
         $event = $teamData['nextEvent'][0];
@@ -1317,12 +3848,20 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     $pluginSettings = pss_loadPluginSettings();
     $prefix = pss_teamPrefix($league, $slot);
 
+    $previousTeamID = trim(pss_pluginSetting("{$prefix}TeamID", ''));
     if ($selectedTeamID !== null) {
         // Team-select callbacks can arrive before FPP's own async setting save
         // is visible to PHP. Persist and use the value from the browser so the
         // team metadata and generated playlist name cannot lag one selection.
         $teamID = trim((string)$selectedTeamID);
         pss_setPluginSetting("{$prefix}TeamID", $teamID);
+        if ($teamID !== $previousTeamID) {
+            if ($previousTeamID !== '') pss_stopScheduledGameOverlay($league, $slot);
+            // Clear metadata from the previous team immediately.  This prevents
+            // a transient ESPN failure from keeping the old team's palette under
+            // the new TeamID.
+            pss_clearLeagueState($league, false, $slot);
+        }
     } else {
         $teamID = pss_pluginSetting("{$prefix}TeamID", '');
     }
@@ -1330,19 +3869,23 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     if ($teamID === '') {
         pss_clearLeagueState($league, true, $slot);
         pss_syncGeneratedPlaylistsForLeague($league);
+        pss_syncTeamPalettes(false);
+        pss_syncGameSchedules(true);
         pss_logEntry(pss_teamLogLabel($league, $slot) . ' cleared');
         return '';
     }
 
     $teamInfo = pss_getTeamInfo($sport, $league, $teamID);
     if (!$teamInfo['valid']) {
-        pss_logEntry(pss_teamLogLabel($league, $slot) . ' update failed; keeping existing state');
+        pss_syncTeamPalettes(false);
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' update failed; palette will retry on the next sync');
         return pss_pluginSetting("{$prefix}TeamLogo", '');
     }
 
     pss_setPluginSetting("{$prefix}TeamLogo", $teamInfo['logo']);
     pss_setPluginSetting("{$prefix}TeamAbbreviation", $teamInfo['abbreviation']);
     pss_setPluginSetting("{$prefix}TeamName", $teamInfo['name']);
+    pss_storeTeamPaletteSettings($league, $slot, $teamInfo);
     pss_setPluginSetting("{$prefix}TeamNextEventID", $teamInfo['nextEventID']);
     pss_setPluginSetting("{$prefix}Start", $teamInfo['nextEventDate']);
     pss_setPluginSetting("{$prefix}GameStatus", $teamInfo['nextEventStatus']);
@@ -1356,6 +3899,8 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     }
 
     pss_syncGeneratedPlaylistsForLeague($league);
+    pss_syncTeamPalettes(false);
+    pss_syncGameSchedules(true);
     pss_logEntry(pss_teamLogLabel($league, $slot) . " updated to {$teamInfo['name']}");
     return $teamInfo['logo'];
 }
@@ -1363,7 +3908,8 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
 function pss_clearLeagueState($league, $clearTeam = false, $slot = 1) {
     $prefix = pss_teamPrefix($league, $slot);
     $keys = array(
-        'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamNextEventID' => '',
+        'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamPaletteName' => '',
+        'TeamColor1' => '', 'TeamColor2' => '', 'TeamColor3' => '', 'TeamNextEventID' => '',
         'Start' => '', 'GameStatus' => '', 'OppoID' => '', 'OppoName' => '', 'OppoAbbreviation' => '',
         'OppoLogo' => '', 'GameDetail' => '', 'MyScore' => '0', 'OppoScore' => '0',
         'LastScoringPlayID' => '', 'LastCelebratedScore' => '0',
@@ -1481,24 +4027,48 @@ function pss_processSimpleScoreIncrease($league, $oldScore, $newScore, $slot = 1
 
 function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
     $prefix = pss_teamPrefix($league, $slot);
-    $sequence = pss_pluginSetting("{$prefix}{$suffix}", '');
+    $selection = pss_pluginSetting("{$prefix}{$suffix}", '');
     $logLabel = pss_teamLogLabel($league, $slot);
 
-    if ($sequence === '') {
-        pss_logEntry("{$logLabel} {$label} detected but no sequence is selected");
+    if ($selection === '') {
+        pss_logEntry("{$logLabel} {$label} detected but no sequence/effect is selected");
         return false;
     }
 
     $playlist = pss_generatedPlaylistName($league, $suffix, $slot);
     $delaySeconds = pss_teamCelebrationDelay($league, $slot);
-    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $sequence, $delaySeconds)) {
-        pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$sequence}");
+    $wledEffect = pss_wledEffectFromSelection($selection);
+
+    // A win ends the game-time presentation.  Do this here as well as in the
+    // ESPN post-state path so the Manual Win test button has identical behavior.
+    if ($suffix === 'WinSequence') {
+        pss_stopScheduledGameOverlay($league, $slot);
+    }
+
+    if ($wledEffect !== '') {
+        if ($playlist === '' || !pss_writeGeneratedWledPlaylist($playlist, $league, $slot, $wledEffect, $delaySeconds, $suffix)) {
+            pss_logEntry("{$logLabel} {$label} detected but WLED helper playlist could not be prepared for {$wledEffect}");
+            return false;
+        }
+        if (pss_insertPlaylistImmediate($playlist)) {
+            $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
+            $duration = pss_teamWledDuration($league, $slot);
+            pss_logEntry("{$logLabel} {$label} detected; inserted {$wledEffect}{$delayText} for {$duration}s using playlist {$playlist}");
+            return true;
+        }
+        pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated WLED playlist {$playlist}");
+        return false;
+    }
+
+    // Existing FSEQ behavior is intentionally unchanged.
+    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $selection, $delaySeconds, $league, $slot, $suffix)) {
+        pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$selection}");
         return false;
     }
 
     if (pss_insertPlaylistImmediate($playlist)) {
         $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
-        pss_logEntry("{$logLabel} {$label} detected; inserted {$sequence}{$delayText} using playlist {$playlist}");
+        pss_logEntry("{$logLabel} {$label} detected; inserted {$selection}{$delayText} using playlist {$playlist}");
         return true;
     }
 
@@ -1508,8 +4078,17 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
 
 function pss_updateTeamStatus($reparseSettings = true) {
     global $pluginSettings, $leagues;
+    static $teamPalettesSynced = false;
     if ($reparseSettings) {
         $pluginSettings = pss_loadPluginSettings();
+    }
+
+    // Build/backfill the palette registry once when the scoring daemon starts.
+    // This makes upgrades/installations self-healing for already-selected teams
+    // without polling ESPN for colors on every scoring loop.
+    if (!$teamPalettesSynced) {
+        pss_syncTeamPalettes(true);
+        $teamPalettesSynced = true;
     }
 
     $sleepTimes = array(600);
@@ -1559,6 +4138,9 @@ function pss_updateTeamStatus($reparseSettings = true) {
                     $snapshotEventID = pss_pluginSetting("{$prefix}GameSnapshotEventID", '');
                     pss_logEntry("{$logLabel} next event changed from {$oldEventID} to {$eventID}");
                 } else {
+                    // If fppd/plugin restarted after the final, make sure a
+                    // game-time WLED effect cannot remain orphaned.
+                    pss_stopScheduledGameOverlay($league, $slot);
                     if ($snapshotEventID !== $eventID || pss_pluginSetting("{$prefix}OppoID", '') === '') {
                         $repair = pss_getGameStatus($sport, $league, $eventID, $teamID);
                         if ($repair['valid']) {
@@ -1626,6 +4208,9 @@ function pss_updateTeamStatus($reparseSettings = true) {
             } elseif ($status['state'] === 'pre') {
                 $teamSleep = 30;
             } elseif ($status['state'] === 'post') {
+                // End a game-long WLED overlay before the win celebration.  The
+                // win helper intentionally does not resume a game overlay.
+                pss_stopScheduledGameOverlay($league, $slot);
                 $completed = pss_pluginSetting("{$prefix}LastCompletedEventID", '');
                 if ($completed !== $eventID) {
                     if ($status['myScore'] > $status['oppoScore']) {
@@ -1641,6 +4226,9 @@ function pss_updateTeamStatus($reparseSettings = true) {
         }
     }
 
+    // Keep FPP's schedule.json aligned with ESPN event rollover/status.  This
+    // write is atomic and reloads FPP only when the managed entries changed.
+    pss_syncGameSchedules(false);
     return min($sleepTimes);
 }
 
