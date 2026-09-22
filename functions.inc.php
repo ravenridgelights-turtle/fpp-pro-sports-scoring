@@ -3752,12 +3752,40 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
     $status['oppoAbbreviation'] = isset($opponent['team']['abbreviation']) ? (string)$opponent['team']['abbreviation'] : '';
     $status['oppoName'] = isset($opponent['team']['displayName']) ? (string)$opponent['team']['displayName'] : '';
     $status['oppoLogo'] = pss_extractTeamLogo($opponent['team']);
-    if (isset($competition['status']['type']['shortDetail'])) {
+    $competitionStatus = (isset($competition['status']) && is_array($competition['status']))
+        ? $competition['status']
+        : array();
+
+    // ESPN exposes a live displayClock separately from type.shortDetail.
+    // Prefer the raw clock + period for live football because shortDetail can
+    // lag behind while the score and displayClock have already advanced.
+    if ($sport === 'football'
+        && $status['state'] === 'in'
+        && isset($competitionStatus['displayClock'])
+        && trim((string)$competitionStatus['displayClock']) !== '') {
+        $clock = trim((string)$competitionStatus['displayClock']);
+        $period = isset($competitionStatus['period']) ? (int)$competitionStatus['period'] : 0;
+        $periodLabel = '';
+        if ($period === 1) {
+            $periodLabel = '1st';
+        } elseif ($period === 2) {
+            $periodLabel = '2nd';
+        } elseif ($period === 3) {
+            $periodLabel = '3rd';
+        } elseif ($period === 4) {
+            $periodLabel = '4th';
+        } elseif ($period === 5) {
+            $periodLabel = 'OT';
+        } elseif ($period > 5) {
+            $periodLabel = (string)($period - 4) . 'OT';
+        }
+        $status['detail'] = ($periodLabel !== '') ? ($clock . ' - ' . $periodLabel) : $clock;
+    } elseif (isset($competition['status']['type']['shortDetail'])) {
         $status['detail'] = (string)$competition['status']['type']['shortDetail'];
     } elseif (isset($competition['status']['type']['detail'])) {
         $status['detail'] = (string)$competition['status']['type']['detail'];
-    } elseif (isset($competition['status']['displayClock'])) {
-        $status['detail'] = (string)$competition['status']['displayClock'];
+    } elseif (isset($competitionStatus['displayClock'])) {
+        $status['detail'] = (string)$competitionStatus['displayClock'];
     }
     $status['myScore'] = isset($myTeam['score']) ? (int)$myTeam['score'] : 0;
     $status['oppoScore'] = isset($opponent['score']) ? (int)$opponent['score'] : 0;
@@ -3961,16 +3989,17 @@ function pss_applyGameSnapshot($league, $status, $updateStatus = true, $eventID 
     }
 }
 
-function pss_processFootballScoring($league, $teamID, $plays, $slot = 1) {
+function pss_processFootballScoring($league, $teamID, $plays, $slot = 1, $currentScore = null) {
     $prefix = pss_teamPrefix($league, $slot);
     $lastID = pss_pluginSetting("{$prefix}LastScoringPlayID", '');
+    $lastCelebrated = (int)pss_pluginSetting("{$prefix}LastCelebratedScore", '0');
     if (!is_array($plays) || count($plays) === 0) {
-        return;
+        return false;
     }
 
     if ($lastID === '') {
         pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
-        return;
+        return false;
     }
 
     $seenLast = false;
@@ -3990,25 +4019,81 @@ function pss_processFootballScoring($league, $teamID, $plays, $slot = 1) {
     if (!$seenLast) {
         pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
         pss_logEntry(pss_teamLogLabel($league, $slot) . ' scoring-play marker was no longer in ESPN response; re-baselined safely');
-        return;
+        return false;
     }
 
+    $triggered = false;
+    $ourNewScoringPlays = array();
     foreach ($newPlays as $play) {
         if (!isset($play['team']['id']) || (string)$play['team']['id'] !== (string)$teamID) {
             continue;
         }
+        $ourNewScoringPlays[] = $play;
+    }
+
+    // ESPN sometimes publishes the scoreboard total one poll before the
+    // matching scoringPlays entry. In that case the score-delta fallback has
+    // already played the celebration and advanced LastCelebratedScore. Still
+    // advance LastScoringPlayID below, but do not play the celebration twice.
+    if ($currentScore !== null
+        && !empty($ourNewScoringPlays)
+        && (int)$currentScore <= $lastCelebrated) {
+        pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
+        pss_logEntry(pss_teamLogLabel($league, $slot) . ' delayed ESPN scoring play already handled by score fallback; skipped duplicate celebration');
+        return false;
+    }
+
+    foreach ($ourNewScoringPlays as $play) {
         $typeText = isset($play['type']['text']) ? strtolower((string)$play['type']['text']) : '';
         $playText = isset($play['text']) ? strtolower((string)$play['text']) : '';
         $haystack = $typeText . ' ' . $playText;
 
         if (strpos($haystack, 'touchdown') !== false) {
+            $triggered = true;
             pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown', $slot);
         } elseif (strpos($haystack, 'field goal') !== false && strpos($haystack, 'no good') === false && strpos($haystack, 'miss') === false) {
+            $triggered = true;
             pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal', $slot);
         }
     }
 
     pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
+    return $triggered;
+}
+
+// ESPN can advance the live score a poll before scoringPlays contains the new
+// play. Use the score delta as a safety net so a real touchdown/field goal
+// cannot be missed just because the play-by-play feed arrived late.
+function pss_processFootballScoreIncreaseFallback($league, $oldScore, $newScore, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $oldScore = (int)$oldScore;
+    $newScore = (int)$newScore;
+    $lastCelebrated = (int)pss_pluginSetting("{$prefix}LastCelebratedScore", '0');
+
+    if ($newScore <= $oldScore || $newScore <= $lastCelebrated) {
+        return false;
+    }
+
+    $delta = $newScore - $oldScore;
+    $logLabel = pss_teamLogLabel($league, $slot);
+
+    if ($delta === 3) {
+        pss_logEntry("{$logLabel} score changed {$oldScore} -> {$newScore} before a matching scoring-play marker; using +3 field-goal fallback");
+        pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal', $slot);
+        return true;
+    }
+
+    if ($delta >= 6) {
+        pss_logEntry("{$logLabel} score changed {$oldScore} -> {$newScore} before a matching scoring-play marker; using touchdown fallback");
+        pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown', $slot);
+        return true;
+    }
+
+    // +1 is normally a PAT and +2 may be a conversion or safety. There is no
+    // separate configured celebration for those, so record the score without
+    // firing a second touchdown/field-goal celebration.
+    pss_logEntry("{$logLabel} score changed {$oldScore} -> {$newScore}; no TD/FG fallback for +{$delta}");
+    return false;
 }
 
 function pss_processSimpleScoreIncrease($league, $oldScore, $newScore, $slot = 1) {
@@ -4200,11 +4285,17 @@ function pss_updateTeamStatus($reparseSettings = true) {
             $oldScore = (int)pss_pluginSetting("{$prefix}MyScore", '0');
             if ($status['state'] === 'in') {
                 if ($sport === 'football') {
-                    pss_processFootballScoring($league, $teamID, $status['scoringPlays'], $slot);
+                    $footballTriggered = pss_processFootballScoring($league, $teamID, $status['scoringPlays'], $slot, $status['myScore']);
+                    if ((int)$status['myScore'] > $oldScore) {
+                        if (!$footballTriggered) {
+                            pss_processFootballScoreIncreaseFallback($league, $oldScore, $status['myScore'], $slot);
+                        }
+                        pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$status['myScore']);
+                    }
                 } else {
                     pss_processSimpleScoreIncrease($league, $oldScore, $status['myScore'], $slot);
                 }
-                $teamSleep = 10;
+                $teamSleep = 3;
             } elseif ($status['state'] === 'pre') {
                 $teamSleep = 30;
             } elseif ($status['state'] === 'post') {

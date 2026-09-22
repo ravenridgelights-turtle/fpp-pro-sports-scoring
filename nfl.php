@@ -87,7 +87,10 @@ while (true) {
     try {
         $sleepTime = pss_updateTeamStatus(false);
         pss_updateTickerOutput(false);
-        sleep(max(5, (int)$sleepTime));
+        // During a live game, keep ESPN polling close enough to real time for
+        // score-triggered sequences. The status page reads this daemon's saved
+        // snapshot; it never polls ESPN independently.
+        sleep(max(3, (int)$sleepTime));
     } catch (Throwable $e) {
         pss_logEntry('Daemon error: ' . $e->getMessage());
         sleep(30);
