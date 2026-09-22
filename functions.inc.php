@@ -82,6 +82,18 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
         case 'promoteGameSchedulePriority':
             pss_promoteGameSchedulePriority($_POST);
             break;
+        case 'saveTeamVideoSource':
+            pss_saveTeamVideoSource($_POST);
+            break;
+        case 'startTeamVideoPreview':
+            pss_startTeamVideoPreview($_POST);
+            break;
+        case 'stopTeamVideoPreview':
+            pss_stopTeamVideoPreview($_POST);
+            break;
+        case 'videoPreviewState':
+            pss_videoPreviewState();
+            break;
         case 'manualTrigger':
             pss_manualTrigger($_POST);
             break;
@@ -344,6 +356,347 @@ function pss_httpJson($url, $method = 'GET', $body = null) {
     }
 
     return $data;
+}
+
+function pss_videoPreviewSourceName() {
+    return 'PSS Sports Preview';
+}
+
+function pss_videoCapturePluginInstalled() {
+    global $settings;
+    $pluginDirectory = isset($settings['pluginDirectory']) ? rtrim((string)$settings['pluginDirectory'], '/') : '/home/fpp/media/plugins';
+    return is_dir($pluginDirectory . '/fpp-VideoCapture');
+}
+
+function pss_coreVideoPreviewAvailable() {
+    $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources/v4l2-devices');
+    return is_array($data) && isset($data['devices']) && is_array($data['devices']);
+}
+
+function pss_getCoreV4L2Devices() {
+    $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources/v4l2-devices');
+    if (!is_array($data) || !isset($data['devices']) || !is_array($data['devices'])) {
+        return array();
+    }
+    return $data['devices'];
+}
+
+function pss_getVideoCaptureDevices() {
+    $devices = array();
+    $seen = array();
+
+    // FPP 10.1+ knows which /dev/video* nodes are actual single-planar capture
+    // devices and filters out decoder/ISP nodes that cannot produce a picture.
+    foreach (pss_getCoreV4L2Devices() as $device) {
+        if (!is_array($device)) continue;
+        $path = isset($device['device']) ? trim((string)$device['device']) : '';
+        if ($path === '' || !preg_match('#^/dev/video[0-9]+$#', $path)) continue;
+        $name = isset($device['name']) ? trim((string)$device['name']) : '';
+        $bus = isset($device['busInfo']) ? trim((string)$device['busInfo']) : '';
+        $label = ($name !== '' ? $name : 'USB Video Capture') . ' — ' . $path;
+        if ($bus !== '') $label .= ' (' . $bus . ')';
+        $devices[] = array('value' => 'usb:' . $path, 'device' => $path, 'label' => $label, 'source' => 'FPP');
+        $seen[$path] = true;
+    }
+
+    // The official fpp-VideoCapture plugin exposes its own camera list. Use it
+    // as a compatibility fallback, while de-duplicating devices FPP core found.
+    if (pss_videoCapturePluginInstalled()) {
+        $pluginCameras = pss_httpJson('http://127.0.0.1/api/plugin-apis/VideoCapture/Cameras');
+        if (is_array($pluginCameras)) {
+            foreach ($pluginCameras as $path => $name) {
+                $path = trim((string)$path);
+                if ($path === '' || $path === '--Default--' || isset($seen[$path])) continue;
+                if (!preg_match('#^/dev/video[0-9]+$#', $path)) continue;
+                $name = trim((string)$name);
+                $devices[] = array(
+                    'value' => 'usb:' . $path,
+                    'device' => $path,
+                    'label' => ($name !== '' ? $name : 'USB Video Capture') . ' — ' . $path,
+                    'source' => 'fpp-VideoCapture'
+                );
+                $seen[$path] = true;
+            }
+        }
+    }
+
+    usort($devices, function ($a, $b) {
+        return strnatcasecmp((string)$a['label'], (string)$b['label']);
+    });
+    return $devices;
+}
+
+function pss_normalizeVideoSource($value) {
+    $value = trim((string)$value);
+    if ($value === '' || $value === 'url') return $value;
+    if (strpos($value, 'usb:') === 0) {
+        $device = substr($value, 4);
+        if (preg_match('#^/dev/video[0-9]+$#', $device)) return 'usb:' . $device;
+    }
+    return '';
+}
+
+function pss_validateVideoStreamUrl($url) {
+    $url = trim((string)$url);
+    if ($url === '') return '';
+    if (strlen($url) > 2048) return '';
+    $parts = @parse_url($url);
+    if (!is_array($parts) || empty($parts['scheme'])) return '';
+    $scheme = strtolower((string)$parts['scheme']);
+    if (!in_array($scheme, array('rtsp', 'rtsps', 'http', 'https'), true)) return '';
+    return $url;
+}
+
+function pss_teamVideoSourceInfo($league, $slot = 1) {
+    $info = pss_leagueInfo($league);
+    if ($info['sport'] === '') return array('valid' => false, 'source' => '', 'url' => '', 'label' => '');
+    $prefix = pss_teamPrefix($league, $slot);
+    $source = pss_normalizeVideoSource(pss_pluginSetting("{$prefix}VideoSource", ''));
+    $url = pss_validateVideoStreamUrl(pss_pluginSetting("{$prefix}VideoStreamUrl", ''));
+    $label = trim(pss_pluginSetting("{$prefix}VideoSourceLabel", ''));
+    $valid = false;
+    if (strpos($source, 'usb:') === 0) $valid = true;
+    if ($source === 'url' && $url !== '') $valid = true;
+    return array('valid' => $valid, 'source' => $source, 'url' => $url, 'label' => $label);
+}
+
+function pss_saveTeamVideoSource($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    if (pss_leagueInfo($league)['sport'] === '') {
+        pss_jsonResponse(false, 'Invalid league.');
+    }
+
+    $prefix = pss_teamPrefix($league, $slot);
+    $source = pss_normalizeVideoSource(isset($post['source']) ? $post['source'] : '');
+    $urlRaw = isset($post['url']) ? trim((string)$post['url']) : '';
+    $url = ($urlRaw === '') ? '' : pss_validateVideoStreamUrl($urlRaw);
+    $label = isset($post['label']) ? trim((string)$post['label']) : '';
+    if (strlen($label) > 160) $label = substr($label, 0, 160);
+
+    if ($source === 'url' && $urlRaw !== '' && $url === '') {
+        pss_jsonResponse(false, 'Stream URL must use http://, https://, rtsp://, or rtsps://.');
+    }
+    if ($source === 'url') {
+        // Keep credentials/long stream addresses out of the scoreboard markup.
+        // The actual URL stays only in the plugin setting and is read server-side.
+        $label = 'Network / IP stream';
+    }
+    if (strpos($source, 'usb:') === 0) {
+        $device = substr($source, 4);
+        if (!preg_match('#^/dev/video[0-9]+$#', $device)) {
+            pss_jsonResponse(false, 'Invalid USB video capture device.');
+        }
+        $url = '';
+    }
+    if ($source === '') {
+        $url = '';
+        $label = '';
+    }
+
+    pss_setPluginSetting("{$prefix}VideoSource", $source);
+    pss_setPluginSetting("{$prefix}VideoStreamUrl", $url);
+    pss_setPluginSetting("{$prefix}VideoSourceLabel", $label);
+    $pluginSettings = pss_loadPluginSettings();
+
+    if (pss_pluginSetting('ActiveVideoPreviewKey', '') === $prefix) {
+        // A source changed while it was live. Stop the old pipeline so the
+        // scoreboard cannot continue showing a device/URL that is no longer selected.
+        pss_stopVideoPreviewPipeline(false);
+    }
+
+    pss_jsonResponse(true, $source === '' ? 'Team video source cleared.' : 'Team video source saved.', array(
+        'source' => $source,
+        'urlConfigured' => ($source === 'url' && $url !== ''),
+        'label' => $label
+    ));
+}
+
+function pss_getVideoInputSourcesConfig() {
+    $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources');
+    if (!is_array($data)) return null;
+    if (!isset($data['videoInputSources']) || !is_array($data['videoInputSources'])) {
+        $data['videoInputSources'] = array();
+    }
+    return $data;
+}
+
+function pss_removeSportsPreviewSourceFromConfig($data, &$removedID = 0) {
+    if (!is_array($data)) $data = array();
+    if (!isset($data['videoInputSources']) || !is_array($data['videoInputSources'])) {
+        $data['videoInputSources'] = array();
+    }
+    $marker = pss_videoPreviewSourceName();
+    $kept = array();
+    foreach ($data['videoInputSources'] as $src) {
+        if (is_array($src) && isset($src['name']) && (string)$src['name'] === $marker) {
+            if (isset($src['id'])) $removedID = (int)$src['id'];
+            continue;
+        }
+        $kept[] = $src;
+    }
+    $data['videoInputSources'] = $kept;
+    return $data;
+}
+
+function pss_chooseVideoPreviewMode($device, $requestedFps = 5) {
+    $requestedFps = max(1, min(10, (int)$requestedFps));
+    $modes = array();
+    foreach (pss_getCoreV4L2Devices() as $entry) {
+        if (!is_array($entry) || !isset($entry['device']) || (string)$entry['device'] !== (string)$device) continue;
+        if (isset($entry['modes']) && is_array($entry['modes'])) $modes = $entry['modes'];
+        break;
+    }
+    if (empty($modes)) return array('width' => 640, 'height' => 480, 'framerate' => $requestedFps);
+
+    $best = null;
+    $bestScore = PHP_INT_MAX;
+    foreach ($modes as $mode) {
+        if (!is_array($mode)) continue;
+        $w = isset($mode['width']) ? (int)$mode['width'] : 0;
+        $h = isset($mode['height']) ? (int)$mode['height'] : 0;
+        if ($w <= 0 || $h <= 0) continue;
+        $rates = isset($mode['framerates']) && is_array($mode['framerates']) ? $mode['framerates'] : array();
+        $fps = $requestedFps;
+        if (!empty($rates)) {
+            $usable = array_map('intval', $rates);
+            sort($usable, SORT_NUMERIC);
+            $fps = end($usable);
+            foreach ($usable as $candidate) {
+                if ($candidate >= $requestedFps) { $fps = $candidate; break; }
+            }
+            $fps = min($fps, 30);
+        }
+        // Prefer a modest preview capture size near 640x360/480. Very large
+        // modes waste USB bandwidth/CPU for a small scoreboard panel.
+        $pixels = $w * $h;
+        $targetPixels = 640 * 480;
+        $score = abs($pixels - $targetPixels) + (abs($w - 640) * 200);
+        if ($score < $bestScore) {
+            $bestScore = $score;
+            $best = array('width' => $w, 'height' => $h, 'framerate' => $fps);
+        }
+    }
+    return $best ?: array('width' => 640, 'height' => 480, 'framerate' => $requestedFps);
+}
+
+function pss_saveAndApplyVideoInputSources($data) {
+    $save = pss_httpRequest('http://127.0.0.1/api/pipewire/video/input-sources', 'POST', $data, 'application/json');
+    if (!$save['ok']) {
+        return array('ok' => false, 'message' => 'FPP rejected the video input source configuration (HTTP ' . (int)$save['status'] . ').');
+    }
+    $apply = pss_httpRequest('http://127.0.0.1/api/pipewire/video/input-sources/apply', 'POST', null, 'application/json');
+    if (!$apply['ok']) {
+        return array('ok' => false, 'message' => 'FPP saved the source but could not apply it (HTTP ' . (int)$apply['status'] . ').');
+    }
+    return array('ok' => true, 'message' => '');
+}
+
+function pss_stopVideoPreviewPipeline($writeJsonResponse = true) {
+    global $pluginSettings;
+    $data = pss_getVideoInputSourcesConfig();
+    if (!is_array($data)) {
+        if ($writeJsonResponse) pss_jsonResponse(false, 'FPP video input API is unavailable. FPP 10.1 or newer is required for scoreboard live preview.');
+        return false;
+    }
+    $removedID = 0;
+    $updated = pss_removeSportsPreviewSourceFromConfig($data, $removedID);
+    if ($removedID > 0) {
+        $result = pss_saveAndApplyVideoInputSources($updated);
+        if (!$result['ok']) {
+            if ($writeJsonResponse) pss_jsonResponse(false, $result['message']);
+            return false;
+        }
+    }
+    pss_setPluginSetting('ActiveVideoPreviewKey', '');
+    $pluginSettings = pss_loadPluginSettings();
+    if ($writeJsonResponse) pss_jsonResponse(true, 'Live video stopped.');
+    return true;
+}
+
+function pss_startTeamVideoPreview($post) {
+    global $pluginSettings;
+    $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
+    $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
+    if (pss_leagueInfo($league)['sport'] === '') pss_jsonResponse(false, 'Invalid league.');
+    $prefix = pss_teamPrefix($league, $slot);
+    $sourceInfo = pss_teamVideoSourceInfo($league, $slot);
+    if (empty($sourceInfo['valid'])) {
+        pss_jsonResponse(false, 'Choose a USB video capture device or enter a stream URL for this team first.');
+    }
+
+    $data = pss_getVideoInputSourcesConfig();
+    if (!is_array($data)) {
+        pss_jsonResponse(false, 'FPP video input API is unavailable. FPP 10.1 or newer is required for scoreboard live preview.');
+    }
+
+    $oldID = 0;
+    $data = pss_removeSportsPreviewSourceFromConfig($data, $oldID);
+    $used = array();
+    foreach ($data['videoInputSources'] as $src) {
+        if (is_array($src) && isset($src['id'])) $used[(int)$src['id']] = true;
+    }
+    $sourceID = ($oldID > 0 && !isset($used[$oldID])) ? $oldID : 900001;
+    while (isset($used[$sourceID]) && $sourceID < 900100) $sourceID++;
+    if (isset($used[$sourceID])) pss_jsonResponse(false, 'Unable to reserve an FPP video preview source ID.');
+
+    $previewFps = pss_clampInt(pss_pluginSetting('ScoreboardVideoPreviewFPS', '5'), 1, 10, 5);
+    $entry = array(
+        'id' => $sourceID,
+        'name' => pss_videoPreviewSourceName(),
+        'enabled' => true,
+        'audioEnabled' => false,
+        'width' => 640,
+        'height' => 360,
+        'framerate' => $previewFps
+    );
+
+    if (strpos($sourceInfo['source'], 'usb:') === 0) {
+        $device = substr($sourceInfo['source'], 4);
+        if (!preg_match('#^/dev/video[0-9]+$#', $device)) pss_jsonResponse(false, 'The saved USB capture device is invalid.');
+        $mode = pss_chooseVideoPreviewMode($device, $previewFps);
+        $entry['type'] = 'v4l2src';
+        $entry['device'] = $device;
+        $entry['width'] = (int)$mode['width'];
+        $entry['height'] = (int)$mode['height'];
+        $entry['framerate'] = (int)$mode['framerate'];
+    } else {
+        $url = pss_validateVideoStreamUrl($sourceInfo['url']);
+        if ($url === '') pss_jsonResponse(false, 'The saved stream URL is missing or unsupported.');
+        $scheme = strtolower((string)parse_url($url, PHP_URL_SCHEME));
+        if ($scheme === 'rtsp' || $scheme === 'rtsps') {
+            $entry['type'] = 'rtspsrc';
+            $entry['uri'] = $url;
+            $entry['latency'] = 200;
+        } else {
+            $entry['type'] = 'urisrc';
+            $entry['uri'] = $url;
+            $entry['bufferSec'] = 1.0;
+        }
+    }
+
+    $data['videoInputSources'][] = $entry;
+    $result = pss_saveAndApplyVideoInputSources($data);
+    if (!$result['ok']) pss_jsonResponse(false, $result['message']);
+
+    pss_setPluginSetting('ActiveVideoPreviewKey', $prefix);
+    $pluginSettings = pss_loadPluginSettings();
+    pss_jsonResponse(true, 'Live video started. Starting another team automatically switches the single preview pipeline.', array(
+        'key' => $prefix,
+        'sourceID' => $sourceID,
+        'previewUrl' => 'api/pipewire/video/input-sources/' . $sourceID . '/preview?width=720',
+        'fps' => $previewFps
+    ));
+}
+
+function pss_stopTeamVideoPreview($post) {
+    pss_stopVideoPreviewPipeline(true);
+}
+
+function pss_videoPreviewState() {
+    $key = trim(pss_pluginSetting('ActiveVideoPreviewKey', ''));
+    pss_jsonResponse(true, 'Video preview state.', array('key' => $key));
 }
 
 function pss_getTeams($sport = 'football', $league = 'nfl') {

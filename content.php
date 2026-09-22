@@ -13,6 +13,9 @@ $pssOverlayGeometry = pss_getOverlayModels();
 $pssOverlayFonts = pss_getOverlayFonts();
 $pssTeamPalettes = pss_syncTeamPalettes(true);
 $pssWledEffects = pss_getWledEffectNames();
+$pssVideoDevices = pss_getVideoCaptureDevices();
+$pssVideoCapturePluginInstalled = pss_videoCapturePluginInstalled();
+$pssCoreVideoPreviewAvailable = pss_coreVideoPreviewAvailable();
 
 function pss_currentValue($key, $default = '') {
     global $pluginSettings;
@@ -297,6 +300,29 @@ function pss_scheduleGameDisplay($startRaw) {
             <div class="row mb-3 align-items-center">
                 <div class="col-md-5"><strong>Log level</strong><div class="text-muted small">Info logs scoring actions. Debug also logs ESPN polling.</div></div>
                 <div class="col-md-7"><?php PrintSettingSelect('logLevel', 'logLevel', 0, 0, '4', array('Info' => '4', 'Debug' => '5'), $pluginName, '', ''); ?></div>
+            </div>
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-5"><strong>Scoreboard media</strong><div class="text-muted small">Choose how the Status/Kiosk game cards use live team video and ESPN highlights.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect('ScoreboardMediaMode', 'ScoreboardMediaMode', 0, 0, 'auto', array(
+                    'Automatic — live video when playing, otherwise highlights' => 'auto',
+                    'Live Video — hide highlights' => 'video',
+                    'Highlights only — disable live video panels' => 'highlights',
+                    'None — hide video and highlights' => 'none'
+                ), $pluginName, '', ''); ?></div>
+            </div>
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-5"><strong>Hide highlights while live video plays</strong><div class="text-muted small">Recommended when Scoreboard media is Automatic so the live game feed replaces the highlight area instead of stacking both.</div></div>
+                <div class="col-md-7"><?php PrintSettingCheckbox('ScoreboardHideHighlightsWithVideo', 'ScoreboardHideHighlightsWithVideo', 0, 0, 'ON', 'OFF', $pluginName, '', ''); ?></div>
+            </div>
+            <div class="row mb-3 align-items-center">
+                <div class="col-md-5"><strong>Live video preview rate</strong><div class="text-muted small">FPP 10.1 previews are JPEG snapshots. 5 fps is the balanced default; 10 fps is smoother but uses more CPU.</div></div>
+                <div class="col-md-7"><?php PrintSettingSelect('ScoreboardVideoPreviewFPS', 'ScoreboardVideoPreviewFPS', 0, 0, '5', array('2 fps — lowest load' => '2', '5 fps — recommended' => '5', '10 fps — smoother / higher load' => '10'), $pluginName, '', ''); ?></div>
+            </div>
+            <div class="alert alert-secondary py-2 mb-0">
+                <strong>Video support:</strong>
+                FPP 10.1 live preview API <?= $pssCoreVideoPreviewAvailable ? '<span class="text-success">detected</span>' : '<span class="text-warning">not detected</span>' ?>
+                · fpp-VideoCapture plugin <?= $pssVideoCapturePluginInstalled ? '<span class="text-success">installed</span>' : '<span class="text-muted">not installed</span>' ?>.
+                <div class="small text-muted mt-1">USB/IP video on the web scoreboard uses FPP's native Video Input preview path and allows only one active stream at a time. The official fpp-VideoCapture plugin is used as an additional USB-device discovery source when installed and remains available for Pixel Overlay video effects.</div>
             </div>
         </div>
     </div>
@@ -674,6 +700,38 @@ function pss_scheduleGameDisplay($startRaw) {
                 </div>
                 <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'TeamID', $prefix1 . 'TeamID', 0, 0, '', $teamOptions, $pluginName, $callback1, ''); ?></div>
                 <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'TeamID', $prefix2 . 'TeamID', 0, 0, '', $teamOptions, $pluginName, $callback2, ''); ?></div>
+            </div>
+
+            <div class="row mb-3 align-items-start">
+                <div class="col-md-4 pss-config-label">
+                    <strong>Scoreboard live video source</strong>
+                    <div class="text-muted small pss-config-note">Optional. Choose a detected USB capture device or enter an RTSP/HTTP stream URL. Only one team video can play at a time to limit CPU/USB load.</div>
+                </div>
+                <?php foreach (array(1 => $prefix1, 2 => $prefix2) as $videoSlot => $videoPrefix):
+                    $savedVideoSource = pss_currentValue($videoPrefix . 'VideoSource', '');
+                    $savedVideoUrl = pss_currentValue($videoPrefix . 'VideoStreamUrl', '');
+                    $savedVideoLabel = pss_currentValue($videoPrefix . 'VideoSourceLabel', '');
+                    $savedFound = ($savedVideoSource === '' || $savedVideoSource === 'url');
+                ?>
+                <div class="col-md-4 pss-config-select <?= $videoSlot === 1 ? 'pss-config-select-team1' : 'pss-config-select-team2' ?>">
+                    <select class="form-control pss-video-source-select" id="pss-video-source-<?=htmlspecialchars($videoPrefix, ENT_QUOTES)?>" onchange="pssVideoSourceChanged('<?=htmlspecialchars($league, ENT_QUOTES)?>', <?=$videoSlot?>, '<?=htmlspecialchars($videoPrefix, ENT_QUOTES)?>')">
+                        <option value="" <?=$savedVideoSource === '' ? 'selected' : ''?>>Choose video capture USB device</option>
+                        <?php foreach ($pssVideoDevices as $videoDevice):
+                            $deviceValue = isset($videoDevice['value']) ? (string)$videoDevice['value'] : '';
+                            $deviceLabel = isset($videoDevice['label']) ? (string)$videoDevice['label'] : $deviceValue;
+                            if ($savedVideoSource === $deviceValue) $savedFound = true;
+                        ?>
+                        <option value="<?=htmlspecialchars($deviceValue, ENT_QUOTES)?>" <?=$savedVideoSource === $deviceValue ? 'selected' : ''?>><?=htmlspecialchars($deviceLabel)?></option>
+                        <?php endforeach; ?>
+                        <?php if (!$savedFound && strpos($savedVideoSource, 'usb:') === 0): ?>
+                        <option value="<?=htmlspecialchars($savedVideoSource, ENT_QUOTES)?>" selected><?=htmlspecialchars($savedVideoLabel !== '' ? $savedVideoLabel : substr($savedVideoSource, 4))?> (saved; not currently detected)</option>
+                        <?php endif; ?>
+                        <option value="url" <?=$savedVideoSource === 'url' ? 'selected' : ''?>>Enter IP / Stream URL…</option>
+                    </select>
+                    <input class="form-control mt-2 pss-video-url-input" id="pss-video-url-<?=htmlspecialchars($videoPrefix, ENT_QUOTES)?>" type="text" value="<?=htmlspecialchars($savedVideoUrl, ENT_QUOTES)?>" placeholder="rtsp://camera/stream or https://server/stream" <?=$savedVideoSource === 'url' ? '' : 'style="display:none"'?> onchange="pssVideoUrlChanged('<?=htmlspecialchars($league, ENT_QUOTES)?>', <?=$videoSlot?>, '<?=htmlspecialchars($videoPrefix, ENT_QUOTES)?>')">
+                    <div class="text-muted small mt-1"><?php if (empty($pssVideoDevices)): ?>No USB capture devices detected right now. IP/URL video is still available.<?php else: ?><?=count($pssVideoDevices)?> USB capture device<?=count($pssVideoDevices) === 1 ? '' : 's'?> detected.<?php endif; ?></div>
+                </div>
+                <?php endforeach; ?>
             </div>
 
             <div class="row mb-3 align-items-start">
@@ -1282,6 +1340,50 @@ function pssRenderTickerPreview(items, fallbackText, spacing, fontSize) {
         }
         root.appendChild(segment);
     }
+}
+
+function pssVideoSourceMessage(text, isError) {
+    var old = document.getElementById('pss-video-source-message');
+    if (!old) {
+        old = document.createElement('div');
+        old.id = 'pss-video-source-message';
+        old.className = 'small mt-2';
+        var general = document.querySelector('.container-fluid');
+        if (general) general.insertBefore(old, general.firstChild.nextSibling);
+    }
+    old.textContent = text || '';
+    old.className = 'small mt-2 ' + (isError ? 'text-danger' : 'text-success');
+}
+
+function pssSaveTeamVideoSource(league, slot, prefix) {
+    var select = document.getElementById('pss-video-source-' + prefix);
+    var urlInput = document.getElementById('pss-video-url-' + prefix);
+    if (!select) return;
+    var source = select.value || '';
+    var url = urlInput ? String(urlInput.value || '').trim() : '';
+    var label = select.options && select.selectedIndex >= 0 ? String(select.options[select.selectedIndex].text || '') : '';
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'saveTeamVideoSource', league: league, slot: slot, source: source, url: url, label: label },
+        type: 'post',
+        dataType: 'json'
+    }).done(function(response) {
+        pssVideoSourceMessage(response && response.message ? response.message : 'Video source saved.', !(response && response.ok));
+    }).fail(function() {
+        pssVideoSourceMessage('Unable to save the video source. Check the plugin log.', true);
+    });
+}
+
+function pssVideoSourceChanged(league, slot, prefix) {
+    var select = document.getElementById('pss-video-source-' + prefix);
+    var urlInput = document.getElementById('pss-video-url-' + prefix);
+    if (!select) return;
+    if (urlInput) urlInput.style.display = (select.value === 'url') ? '' : 'none';
+    pssSaveTeamVideoSource(league, slot, prefix);
+}
+
+function pssVideoUrlChanged(league, slot, prefix) {
+    pssSaveTeamVideoSource(league, slot, prefix);
 }
 
 function pssSaveTickerSettings(event) {

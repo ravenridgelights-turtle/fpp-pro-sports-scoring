@@ -2,28 +2,41 @@
   "repoName": "fpp-nfl",
   "name": "Pro Sports Scoring Plugin",
   "author": "Ben Kools (koolsb), maintained by ravenridgelights-turtle",
-  "description": "Automatically play an FPP sequence when your NFL, NCAA Football, NHL, or MLB team scores or wins.",
+  "description": "Automatically play an FPP sequence or team-color overlay effect when your NFL, NCAA Football, NHL, or MLB team scores or wins, with optional live scoreboard video.",
   "homeURL": "https://github.com/ravenridgelights-turtle/fpp-pro-sports-scoring",
   "srcURL": "https://github.com/ravenridgelights-turtle/fpp-pro-sports-scoring.git",
   "bugURL": "https://github.com/ravenridgelights-turtle/fpp-pro-sports-scoring/issues",
   "allowUpdates": 1,
   "releaseNotesStyle": "gitHistory",
   "privacy": {
-    "summary": "Checks ESPN for the selected teams and game scores so FPP can trigger local sequences.",
+    "summary": "Checks ESPN for selected teams and game scores. If you configure live video, FPP can also open a local USB capture device or a network stream address you enter for an on-demand scoreboard preview.",
     "sends": [
       {
         "to": "site.api.espn.com",
         "what": "selected team IDs and ESPN game IDs",
-        "why": "to retrieve schedules, scores and scoring plays",
+        "why": "to retrieve schedules, scores, scoring plays and highlights",
+        "alwaysOn": false
+      },
+      {
+        "to": "the network video address you enter",
+        "what": "a request to open the configured HTTP/HTTPS/RTSP video stream, including any credentials embedded in that URL",
+        "why": "to show the selected team's optional live video preview",
         "alwaysOn": false
       }
     ],
     "collects": [],
-    "sensors": [],
+    "sensors": [
+      {
+        "type": "camera",
+        "stored": false
+      }
+    ],
     "remoteAccess": "none",
-    "systemChanges": [],
+    "systemChanges": [
+      "Creates one temporary FPP Video Input source named PSS Sports Preview while a scoreboard live-video preview is running, then removes that source when stopped. Existing FPP video input sources are preserved."
+    ],
     "closedCode": false,
-    "other": "ESPN's Site API is unofficial and may change without notice."
+    "other": "ESPN's Site API is unofficial and may change without notice. Live scoreboard video is optional and starts only when the user presses Play. The plugin limits itself to one managed live preview source at a time."
   },
   "versions": [
     {
