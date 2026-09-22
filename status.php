@@ -1420,7 +1420,7 @@ body {
             <span class="pss-kiosk-title">Pro Sports Scoreboard</span>
         </a>
         <div class="pss-kiosk-actions">
-            <span class="pss-kiosk-refresh-note">Live refresh: 10 sec</span>
+            <span class="pss-kiosk-refresh-note">Live refresh: 5 sec</span>
             <button type="button" class="pss-kiosk-fullscreen" onclick="pssKioskFullscreen()">Fullscreen</button>
         </div>
     </header>
@@ -1788,7 +1788,7 @@ function pssKioskFullscreen() {
         }
 
         if (refreshNote) {
-            refreshNote.textContent = 'Live refresh: 10 sec';
+            refreshNote.textContent = 'Live refresh: 5 sec';
         }
     }
 
@@ -1823,11 +1823,111 @@ function pssKioskFullscreen() {
         }, 150);
     });
 
-    window.setInterval(refreshScoreboard, 10000);
+    refreshScoreboard();
+    window.setInterval(refreshScoreboard, 5000);
 })();
 </script>
 <?php else: ?>
 </div>
+<?php endif; ?>
+
+<?php if (!$pssKioskMode): ?>
+<script>
+(function () {
+    if (typeof fetch !== 'function') return;
+
+    var dataUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&data=1';
+
+    function stateClass(state) {
+        if (state === 'in') return 'pss-state-in';
+        if (state === 'pre') return 'pss-state-pre';
+        if (state === 'post') return 'pss-state-post';
+        return 'pss-state-wait';
+    }
+
+    function setField(card, field, value) {
+        var element = card.querySelector('[data-pss-field="' + field + '"]');
+        if (element) {
+            element.textContent = value == null ? '' : String(value);
+        }
+    }
+
+    function identityChanged(card, game) {
+        return card.getAttribute('data-event-id') !== String(game.eventID || '') ||
+            card.getAttribute('data-team-name') !== String(game.teamName || '') ||
+            card.getAttribute('data-opponent-name') !== String(game.oppoName || '') ||
+            card.getAttribute('data-team-logo') !== String(game.teamLogo || '') ||
+            card.getAttribute('data-opponent-logo') !== String(game.oppoLogo || '');
+    }
+
+    function applySnapshot(snapshot) {
+        if (!snapshot || !snapshot.games) return;
+
+        var cards = document.querySelectorAll('.pss-scoreboard[data-pss-key]');
+        var gameKeys = Object.keys(snapshot.games);
+        if (cards.length !== gameKeys.length) {
+            window.location.reload();
+            return;
+        }
+
+        for (var i = 0; i < cards.length; i++) {
+            var card = cards[i];
+            var gameKey = card.getAttribute('data-pss-key');
+            var game = snapshot.games[gameKey];
+
+            if (!game || identityChanged(card, game)) {
+                window.location.reload();
+                return;
+            }
+
+            setField(card, 'opponent-score', game.oppoScore);
+            setField(card, 'team-score', game.myScore);
+            setField(card, 'opponent-name', game.oppoName);
+            setField(card, 'opponent-abbr', game.oppoAbbr);
+            setField(card, 'team-name', game.teamName);
+            setField(card, 'team-abbr', game.teamAbbr);
+            setField(card, 'start', game.startFormatted);
+            setField(card, 'matchup', String(game.oppoAbbr || '') + ' vs ' + String(game.teamAbbr || ''));
+            setField(card, 'detail', game.detail || game.stateLabel || 'Waiting for ESPN');
+
+            var state = card.querySelector('[data-pss-field="state"]');
+            if (state) {
+                state.className = 'pss-state-pill ' + stateClass(game.state);
+                state.textContent = game.stateLabel || 'Waiting for ESPN';
+            }
+
+            var score = card.querySelector('.pss-score');
+            if (score) {
+                score.setAttribute(
+                    'aria-label',
+                    String(game.oppoName || 'Opponent') + ' ' + String(game.oppoScore || '0') +
+                    ', ' + String(game.teamName || 'Selected team') + ' ' + String(game.myScore || '0')
+                );
+            }
+        }
+
+        var disabledBanner = document.getElementById('pss-disabled-banner');
+        if (disabledBanner) {
+            disabledBanner.style.display = snapshot.enabled ? 'none' : '';
+        }
+    }
+
+    function refreshScoreboard() {
+        fetch(dataUrl, { cache: 'no-store' })
+            .then(function (response) {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return response.json();
+            })
+            .then(applySnapshot)
+            .catch(function () {});
+    }
+
+    // The normal Status page previously rendered once and then stayed frozen.
+    // Refresh it the same way the kiosk page already does.
+    refreshScoreboard();
+    window.setInterval(refreshScoreboard, 5000);
+})();
+</script>
 <?php endif; ?>
 
 <script>
