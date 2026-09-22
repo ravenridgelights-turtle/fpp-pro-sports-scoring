@@ -8,6 +8,8 @@ The FPP plugin ID/repository name remains `fpp-nfl` for compatibility with exist
 
 Team lists and game data use ESPN's Site API. ESPN's Site API is unofficial, so keep HTTP failures non-destructive: do not erase a known event or score merely because one poll fails.
 
+During a live game the daemon polls ESPN every three seconds (plus request time). The status and kiosk pages read the daemon's saved snapshot every two seconds with a cache-busting URL; browser refreshes never make separate ESPN requests or drive celebration triggers.
+
 The FPP device used during development received HTTP 403 responses from ESPN when PHP cURL used a browser-like User-Agent, while normal command-line curl succeeded. `pss_httpRequest()` therefore identifies as the installed curl version.
 
 ## Celebration sequence flow
@@ -54,4 +56,6 @@ Info logs scoring actions and notable failures. Debug additionally logs ESPN pol
 7. With a normal show running, a manual celebration inserts the helper playlist and FPP returns to the show afterward.
 8. Live polling uses a fresh daemon PID after upgrade.
 9. Football scoring is based on ESPN scoring plays rather than score-delta guesses.
-10. NHL/MLB score changes and win handling do not replay after daemon restart.
+10. A delayed ESPN scoring-play record does not replay a touchdown/field-goal already handled by the score-delta fallback.
+11. The normal status page and kiosk cards refresh without reloading the browser page and show their last successful local snapshot check.
+12. NHL/MLB score changes and win handling do not replay after daemon restart.

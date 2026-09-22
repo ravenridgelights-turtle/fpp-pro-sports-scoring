@@ -775,6 +775,8 @@ if ($pssHighlightMode) {
 if ($pssDataMode) {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
     echo json_encode(pss_statusSnapshotData());
     exit;
 }
@@ -1420,7 +1422,7 @@ body {
             <span class="pss-kiosk-title">Pro Sports Scoreboard</span>
         </a>
         <div class="pss-kiosk-actions">
-            <span class="pss-kiosk-refresh-note">Live refresh: 5 sec</span>
+            <span class="pss-kiosk-refresh-note" data-pss-refresh-note="1">Connecting live refresh…</span>
             <button type="button" class="pss-kiosk-fullscreen" onclick="pssKioskFullscreen()">Fullscreen</button>
         </div>
     </header>
@@ -1429,7 +1431,10 @@ body {
 <div class="container-fluid pss-status-wrap">
     <div class="pss-status-toolbar">
         <h2>Pro Sports Scoring Status</h2>
-        <a class="pss-kiosk-open" href="plugin.php?plugin=fpp-nfl&amp;page=status.php&amp;nopage=1&amp;kiosk=1">Kiosk Display</a>
+        <div class="pss-kiosk-actions">
+            <span class="pss-kiosk-refresh-note" data-pss-refresh-note="1">Connecting live refresh…</span>
+            <a class="pss-kiosk-open" href="plugin.php?plugin=fpp-nfl&amp;page=status.php&amp;nopage=1&amp;kiosk=1">Kiosk Display</a>
+        </div>
     </div>
 <?php endif; ?>
 
@@ -1579,7 +1584,9 @@ function pssKioskFullscreen() {
 
 (function () {
     var dataUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&data=1';
-    var refreshNote = document.querySelector('.pss-kiosk-refresh-note');
+    var refreshNote = document.querySelector('[data-pss-refresh-note="1"]');
+    var refreshTimer = null;
+    var refreshInFlight = false;
 
     var ticker = document.getElementById('pss-kiosk-ticker');
     var tickerState = {
@@ -1788,23 +1795,36 @@ function pssKioskFullscreen() {
         }
 
         if (refreshNote) {
-            refreshNote.textContent = 'Live refresh: 5 sec';
+            refreshNote.textContent = 'Live · checked ' + new Date().toLocaleTimeString();
         }
     }
 
     function refreshScoreboard() {
-        fetch(dataUrl, { cache: 'no-store' })
+        if (refreshInFlight) return;
+        refreshInFlight = true;
+
+        fetch(dataUrl + '&_pss=' + Date.now(), {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        })
             .then(function (response) {
                 if (!response.ok) {
                     throw new Error('HTTP ' + response.status);
                 }
                 return response.json();
             })
-            .then(applySnapshot)
+            .then(function (snapshot) {
+                applySnapshot(snapshot);
+                refreshInFlight = false;
+                refreshTimer = window.setTimeout(refreshScoreboard, 2000);
+            })
             .catch(function () {
+                refreshInFlight = false;
                 if (refreshNote) {
-                    refreshNote.textContent = 'Waiting to refresh…';
+                    refreshNote.textContent = 'Live refresh retrying…';
                 }
+                refreshTimer = window.setTimeout(refreshScoreboard, 5000);
             });
     }
 
@@ -1824,7 +1844,12 @@ function pssKioskFullscreen() {
     });
 
     refreshScoreboard();
-    window.setInterval(refreshScoreboard, 5000);
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) {
+            window.clearTimeout(refreshTimer);
+            refreshScoreboard();
+        }
+    });
 })();
 </script>
 <?php else: ?>
@@ -1837,6 +1862,9 @@ function pssKioskFullscreen() {
     if (typeof fetch !== 'function') return;
 
     var dataUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&data=1';
+    var refreshNote = document.querySelector('[data-pss-refresh-note="1"]');
+    var refreshTimer = null;
+    var refreshInFlight = false;
 
     function stateClass(state) {
         if (state === 'in') return 'pss-state-in';
@@ -1910,22 +1938,48 @@ function pssKioskFullscreen() {
         if (disabledBanner) {
             disabledBanner.style.display = snapshot.enabled ? 'none' : '';
         }
+
+        if (refreshNote) {
+            refreshNote.textContent = 'Live · checked ' + new Date().toLocaleTimeString();
+        }
     }
 
     function refreshScoreboard() {
-        fetch(dataUrl, { cache: 'no-store' })
+        if (refreshInFlight) return;
+        refreshInFlight = true;
+
+        fetch(dataUrl + '&_pss=' + Date.now(), {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json' }
+        })
             .then(function (response) {
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 return response.json();
             })
-            .then(applySnapshot)
-            .catch(function () {});
+            .then(function (snapshot) {
+                applySnapshot(snapshot);
+                refreshInFlight = false;
+                refreshTimer = window.setTimeout(refreshScoreboard, 2000);
+            })
+            .catch(function () {
+                refreshInFlight = false;
+                if (refreshNote) {
+                    refreshNote.textContent = 'Live refresh retrying…';
+                }
+                refreshTimer = window.setTimeout(refreshScoreboard, 5000);
+            });
     }
 
     // The normal Status page previously rendered once and then stayed frozen.
     // Refresh it the same way the kiosk page already does.
     refreshScoreboard();
-    window.setInterval(refreshScoreboard, 5000);
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) {
+            window.clearTimeout(refreshTimer);
+            refreshScoreboard();
+        }
+    });
 })();
 </script>
 <?php endif; ?>
