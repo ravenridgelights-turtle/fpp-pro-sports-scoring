@@ -54,8 +54,18 @@ function pss_initializePluginDefaults() {
             if ($league === 'nfl' || $league === 'ncaa') {
                 $defaults["{$prefix}TouchdownSequence"] = '';
                 $defaults["{$prefix}FieldgoalSequence"] = '';
+                $celebrationSuffixes = array('TouchdownSequence', 'FieldgoalSequence', 'WinSequence');
             } else {
                 $defaults["{$prefix}ScoreSequence"] = '';
+                $celebrationSuffixes = array('ScoreSequence', 'WinSequence');
+            }
+
+            $defaults["{$prefix}CelebrationTarget"] = 'local';
+            $defaults["{$prefix}CelebrationRemoteHost"] = '';
+
+            foreach ($celebrationSuffixes as $celebrationSuffix) {
+                $defaults["{$prefix}{$celebrationSuffix}PlaybackMode"] = 'sequence';
+                $defaults["{$prefix}{$celebrationSuffix}Media"] = '';
             }
         }
     }

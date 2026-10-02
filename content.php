@@ -4,6 +4,7 @@ include_once __DIR__ . '/functions.inc.php';
 $pluginName = basename(dirname(__FILE__));
 $pluginSettings = pss_loadPluginSettings();
 $pssSequenceOptions = pss_getSequences();
+$pssCelebrationMediaOptions = pss_getCelebrationMediaOptions();
 $pssOverlayModels = pss_getOverlayCommandModels();
 $pssOverlayModelOptions = array('No WLED celebration model' => '');
 foreach ($pssOverlayModels as $pssOverlayModelName) {
@@ -20,6 +21,63 @@ $pssCoreVideoPreviewAvailable = pss_coreVideoPreviewAvailable();
 function pss_currentValue($key, $default = '') {
     global $pluginSettings;
     return isset($pluginSettings[$key]) ? urldecode((string)$pluginSettings[$key]) : $default;
+}
+function pss_renderCelebrationHelperOptions($prefix, $suffix, $mediaOptions) {
+    $base = $prefix . $suffix;
+    $modeSetting = $base . 'PlaybackMode';
+    $mediaSetting = $base . 'Media';
+    $mode = pss_currentValue($modeSetting, 'sequence');
+    $media = pss_currentValue($mediaSetting, '');
+
+    echo '<div class="mt-2 pt-2 border-top">';
+    echo '<div class="text-muted small mb-1">Generated helper playlist</div>';
+
+    echo '<select class="form-control form-control-sm mb-2" id="' . htmlspecialchars($modeSetting, ENT_QUOTES)
+        . '" onchange="pssCelebrationPlaybackChanged(\'' . htmlspecialchars($modeSetting, ENT_QUOTES)
+        . '\', this.value)">';
+    echo '<option value="sequence"' . ($mode !== 'both' ? ' selected' : '') . '>Sequence only</option>';
+    echo '<option value="both"' . ($mode === 'both' ? ' selected' : '') . '>Sequence + audio/video</option>';
+    echo '</select>';
+
+    echo '<select class="form-control form-control-sm" id="' . htmlspecialchars($mediaSetting, ENT_QUOTES)
+        . '" onchange="pssCelebrationPlaybackChanged(\'' . htmlspecialchars($mediaSetting, ENT_QUOTES)
+        . '\', this.value)">';
+    foreach ($mediaOptions as $label => $value) {
+        echo '<option value="' . htmlspecialchars($value, ENT_QUOTES) . '"'
+            . ((string)$media === (string)$value ? ' selected' : '') . '>'
+            . htmlspecialchars($label) . '</option>';
+    }
+    echo '</select>';
+    echo '<div class="text-muted small mt-1">Media is used only with an .fseq in <strong>Sequence + audio/video</strong> mode. Run WLED Effect selections ignore this media choice.</div>';
+    echo '</div>';
+}
+
+function pss_renderCelebrationTargetControls($prefix) {
+    $targetSetting = $prefix . 'CelebrationTarget';
+    $remoteSetting = $prefix . 'CelebrationRemoteHost';
+    $target = pss_currentValue($targetSetting, 'local');
+    if (!in_array($target, array('local', 'remote', 'both'), true)) $target = 'local';
+    $remote = pss_currentValue($remoteSetting, '');
+
+    echo '<select class="form-control mb-2" id="' . htmlspecialchars($targetSetting, ENT_QUOTES)
+        . '" onchange="pssCelebrationPlaybackChanged(\'' . htmlspecialchars($targetSetting, ENT_QUOTES)
+        . '\', this.value)">';
+    foreach (array(
+        'This FPP only' => 'local',
+        'Remote FPP only' => 'remote',
+        'This FPP + Remote FPP' => 'both'
+    ) as $label => $value) {
+        echo '<option value="' . htmlspecialchars($value, ENT_QUOTES) . '"'
+            . ($target === $value ? ' selected' : '') . '>'
+            . htmlspecialchars($label) . '</option>';
+    }
+    echo '</select>';
+
+    echo '<input class="form-control" id="' . htmlspecialchars($remoteSetting, ENT_QUOTES)
+        . '" type="text" value="' . htmlspecialchars($remote, ENT_QUOTES)
+        . '" placeholder="192.168.4.50 or fpp-remote.local"'
+        . ' onchange="pssCelebrationPlaybackChanged(\'' . htmlspecialchars($remoteSetting, ENT_QUOTES)
+        . '\', this.value)">';
 }
 function pss_renderModelChecklist($id, $selectedModels, $allModels, $inputName = '', $setting = '', $onchange = '') {
     $selectedModels = pss_normalizeOverlayModelSelection($selectedModels);
@@ -755,6 +813,18 @@ function pss_scheduleGameDisplay($startRaw) {
 
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
+                    <strong>Celebration playback target</strong>
+                    <div class="text-muted small pss-config-note">Choose where generated Touchdown/Field Goal/Score/Win helper playlists run. For a Remote FPP, the plugin copies the helper playlist JSON to that player before triggering it. The remote player must already have the same .fseq and selected media filenames.</div>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <?php pss_renderCelebrationTargetControls($prefix1); ?>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <?php pss_renderCelebrationTargetControls($prefix2); ?>
+                </div>
+            </div>
+            <div class="row mb-3 align-items-start">
+                <div class="col-md-4 pss-config-label">
                     <strong>WLED celebration models</strong>
                     <div class="text-muted small pss-config-note">Only used when a celebration dropdown is set to <strong>Run WLED Effect</strong>. Check every Pixel Overlay prop that should receive the team-color effect; normal .fseq selections ignore this setting.</div>
                 </div>
@@ -797,39 +867,63 @@ function pss_scheduleGameDisplay($startRaw) {
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
                     <strong>Touchdown sequence / effect</strong>
-                    <div class="text-muted small pss-config-note">Choose an existing .fseq or a Run WLED Effect option. Team colors are supplied automatically for WLED effects.</div>
+                    <div class="text-muted small pss-config-note">Choose an existing .fseq or a Run WLED Effect option. For an .fseq, the helper below can play the sequence by itself or pair it with audio/video from FPP File Manager.</div>
                 </div>
-                <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'TouchdownSequence', $prefix1 . 'TouchdownSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
-                <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'TouchdownSequence', $prefix2 . 'TouchdownSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <?php PrintSettingSelect($prefix1 . 'TouchdownSequence', $prefix1 . 'TouchdownSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix1, 'TouchdownSequence', $pssCelebrationMediaOptions); ?>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <?php PrintSettingSelect($prefix2 . 'TouchdownSequence', $prefix2 . 'TouchdownSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix2, 'TouchdownSequence', $pssCelebrationMediaOptions); ?>
+                </div>
             </div>
+
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
                     <strong>Field goal sequence / effect</strong>
-                    <div class="text-muted small pss-config-note">Existing sequences work exactly as before. WLED choices generate start → pause → stop helper playlists automatically.</div>
+                    <div class="text-muted small pss-config-note">Choose the field-goal .fseq/effect, then choose whether its generated helper playlist also carries an audio/video file.</div>
                 </div>
-                <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'FieldgoalSequence', $prefix1 . 'FieldgoalSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
-                <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'FieldgoalSequence', $prefix2 . 'FieldgoalSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <?php PrintSettingSelect($prefix1 . 'FieldgoalSequence', $prefix1 . 'FieldgoalSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix1, 'FieldgoalSequence', $pssCelebrationMediaOptions); ?>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <?php PrintSettingSelect($prefix2 . 'FieldgoalSequence', $prefix2 . 'FieldgoalSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix2, 'FieldgoalSequence', $pssCelebrationMediaOptions); ?>
+                </div>
             </div>
             <?php else: ?>
             <div class="row mb-3 align-items-start">
                 <div class="col-md-4 pss-config-label">
                     <strong>Score sequence / effect</strong>
-                    <div class="text-muted small pss-config-note">Choose an existing .fseq or a Run WLED Effect option for that team score.</div>
+                    <div class="text-muted small pss-config-note">Choose the score .fseq/effect, then choose whether its generated helper playlist also carries an audio/video file.</div>
                 </div>
-                <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'ScoreSequence', $prefix1 . 'ScoreSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
-                <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'ScoreSequence', $prefix2 . 'ScoreSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <?php PrintSettingSelect($prefix1 . 'ScoreSequence', $prefix1 . 'ScoreSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix1, 'ScoreSequence', $pssCelebrationMediaOptions); ?>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <?php PrintSettingSelect($prefix2 . 'ScoreSequence', $prefix2 . 'ScoreSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix2, 'ScoreSequence', $pssCelebrationMediaOptions); ?>
+                </div>
             </div>
             <?php endif; ?>
 
             <div class="row mb-1 align-items-start">
                 <div class="col-md-4 pss-config-label">
                     <strong>Win sequence / effect</strong>
-                    <div class="text-muted small pss-config-note">Choose an existing .fseq or a Run WLED Effect option when that team wins.</div>
+                    <div class="text-muted small pss-config-note">Choose the win .fseq/effect. An .fseq helper can optionally pair it with audio/video from FPP File Manager.</div>
                 </div>
-                <div class="col-md-4 pss-config-select pss-config-select-team1"><?php PrintSettingSelect($prefix1 . 'WinSequence', $prefix1 . 'WinSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
-                <div class="col-md-4 pss-config-select pss-config-select-team2"><?php PrintSettingSelect($prefix2 . 'WinSequence', $prefix2 . 'WinSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?></div>
-            </div>
-        </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team1">
+                    <?php PrintSettingSelect($prefix1 . 'WinSequence', $prefix1 . 'WinSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix1, 'WinSequence', $pssCelebrationMediaOptions); ?>
+                </div>
+                <div class="col-md-4 pss-config-select pss-config-select-team2">
+                    <?php PrintSettingSelect($prefix2 . 'WinSequence', $prefix2 . 'WinSequence', 0, 0, '', $pssSequenceOptions, $pluginName, 'pssSequenceChanged', ''); ?>
+                    <?php pss_renderCelebrationHelperOptions($prefix2, 'WinSequence', $pssCelebrationMediaOptions); ?>
+                </div>
+            </div>        </div>
     </div>
     <?php endforeach; ?>
 </div>
@@ -1187,6 +1281,23 @@ function pssSequenceChanged(setting) {
     });
 }
 
+function pssCelebrationPlaybackChanged(setting, value) {
+    $.ajax({
+        url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
+        data: { action: 'saveCelebrationPlaybackSetting', setting: setting, value: value },
+        type: 'post',
+        dataType: 'json'
+    }).done(function(response) {
+        if (response && response.ok && typeof response.value !== 'undefined') {
+            var control = document.getElementById(setting);
+            if (control && control.tagName === 'INPUT') {
+                control.value = response.value;
+            }
+        }
+    }).fail(function() {
+        console.log('Pro Sports Scoring: unable to save celebration playback setting ' + setting);
+    });
+}
 function pssCelebrationDelayChanged(setting, input) {
     var value = parseInt(input.value, 10);
     if (isNaN(value)) value = 0;
