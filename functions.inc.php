@@ -1,6 +1,8 @@
 <?php
 $skipJSsettings = true;
 include_once "/opt/fpp/www/common.php";
+require_once __DIR__ . '/compatibility.inc.php';
+require_once __DIR__ . '/reliability.inc.php';
 
 $pluginName = basename(dirname(__FILE__));
 $pluginConfigFile = $settings['configDirectory'] . "/plugin." . $pluginName;
@@ -61,8 +63,12 @@ if (isset($_POST['action']) && !empty($_POST['action'])) {
             break;
         case 'syncSequencePlaylist':
             if (isset($_POST['setting'])) {
-                pss_syncGeneratedPlaylistSetting((string)$_POST['setting']);
+                $ok = pss_syncGeneratedPlaylistSetting((string)$_POST['setting'], isset($_POST['value']) ? (string)$_POST['value'] : null);
+                pss_jsonResponse($ok, $ok ? 'Celebration selection saved.' : 'Unable to build the selected celebration. Check the file/model and plugin log.');
             }
+            break;
+        case 'saveCelebrationPlaybackSetting':
+            pss_saveCelebrationPlaybackSetting($_POST);
             break;
         case 'saveCelebrationDelay':
             pss_saveCelebrationDelay($_POST);
@@ -125,11 +131,13 @@ function pss_teamLogLabel($league, $slot = 1) {
 
 function pss_loadPluginSettings() {
     global $pluginConfigFile;
-    if (!file_exists($pluginConfigFile)) {
-        return array();
-    }
-    $data = parse_ini_file($pluginConfigFile);
-    return is_array($data) ? $data : array();
+    $fd = @fopen($pluginConfigFile, 'r');
+    if (!$fd) return array();
+    flock($fd, LOCK_SH);
+    $data = pss_parseSettingsText(stream_get_contents($fd));
+    flock($fd, LOCK_UN);
+    fclose($fd);
+    return $data;
 }
 
 function pss_pluginSetting($key, $default = '') {
@@ -147,6 +155,10 @@ function pss_normalizeOverlayModelSelection($value) {
         $decoded = json_decode($value, true);
         if (is_array($decoded)) {
             $value = $decoded;
+        } elseif (substr($value, 0, 1) === '[' && substr($value, -1) === ']') {
+            // FPP 8's old INI writer strips the quotes inside JSON arrays.
+            // Recover its simple [Patio,Roof] form when upgrading.
+            $value = str_getcsv(substr($value, 1, -1), ',', '"', '\\');
         } else {
             // Backward compatibility: every older plugin version stored one
             // plain model name in this setting.
@@ -212,38 +224,7 @@ function pss_modelListText($models) {
 }
 
 function pss_setPluginSetting($key, $value) {
-    global $pluginName, $pluginSettings;
-    $value = (string)$value;
-
-    // FPP versions do not all return the same success value from
-    // WriteSettingToFile().  In particular, older releases can write the
-    // setting successfully while returning null/false.  If we only update
-    // our in-memory cache on a truthy return value, the rest of this request
-    // sees the previous team metadata.  That made generated helper playlist
-    // names lag one team behind the selection.
-    $result = WriteSettingToFile($key, $value, $pluginName);
-
-    if (!is_array($pluginSettings)) {
-        $pluginSettings = array();
-    }
-    $pluginSettings[$key] = $value;
-
-    if ($result === true || $result === 1) {
-        return true;
-    }
-
-    // Older FPP may not report success.  Verify the on-disk value before
-    // treating it as a failure so we avoid false error logs while keeping the
-    // request-local cache synchronized with what we just wrote.
-    $diskSettings = pss_loadPluginSettings();
-    if (is_array($diskSettings) && array_key_exists($key, $diskSettings)) {
-        if (urldecode((string)$diskSettings[$key]) === $value) {
-            return true;
-        }
-    }
-
-    pss_logEntry("Unable to save setting {$key}");
-    return false;
+    return pss_setPluginSettings(array($key => (string)$value));
 }
 
 function pss_leagueInfo($league) {
@@ -343,6 +324,9 @@ function pss_httpRequest($url, $method = 'GET', $body = null, $accept = 'applica
 }
 
 function pss_httpJson($url, $method = 'GET', $body = null) {
+    static $metadataCache = array();
+    $cacheable = $method === 'GET' && preg_match('#^http://127\.0\.0\.1/api/(models(?:\?|$)|overlays/(effects|fonts)|pipewire/video/input-sources/v4l2-devices)#', $url);
+    if ($cacheable && isset($metadataCache[$url]) && time() - $metadataCache[$url]['time'] < 60) return $metadataCache[$url]['data'];
     $response = pss_httpRequest($url, $method, $body, 'application/json');
     if (!$response['ok']) {
         pss_logEntry("HTTP {$response['status']} returned for {$url}");
@@ -355,6 +339,7 @@ function pss_httpJson($url, $method = 'GET', $body = null) {
         return null;
     }
 
+    if ($cacheable) $metadataCache[$url] = array('time' => time(), 'data' => $data);
     return $data;
 }
 
@@ -369,11 +354,13 @@ function pss_videoCapturePluginInstalled() {
 }
 
 function pss_coreVideoPreviewAvailable() {
+    if (pss_fppMajorVersion() > 0 && version_compare(ltrim(pss_fppVersion(), 'v'), '10.1', '<')) return false;
     $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources/v4l2-devices');
     return is_array($data) && isset($data['devices']) && is_array($data['devices']);
 }
 
 function pss_getCoreV4L2Devices() {
+    if (pss_fppMajorVersion() > 0 && pss_fppMajorVersion() < 10) return array();
     $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources/v4l2-devices');
     if (!is_array($data) || !isset($data['devices']) || !is_array($data['devices'])) {
         return array();
@@ -514,6 +501,7 @@ function pss_saveTeamVideoSource($post) {
 }
 
 function pss_getVideoInputSourcesConfig() {
+    if (pss_fppMajorVersion() > 0 && pss_fppMajorVersion() < 10) return null;
     $data = pss_httpJson('http://127.0.0.1/api/pipewire/video/input-sources');
     if (!is_array($data)) return null;
     if (!isset($data['videoInputSources']) || !is_array($data['videoInputSources'])) {
@@ -583,11 +571,11 @@ function pss_chooseVideoPreviewMode($device, $requestedFps = 5) {
 
 function pss_saveAndApplyVideoInputSources($data) {
     $save = pss_httpRequest('http://127.0.0.1/api/pipewire/video/input-sources', 'POST', $data, 'application/json');
-    if (!$save['ok']) {
+    if (!pss_fppResponseOk($save)) {
         return array('ok' => false, 'message' => 'FPP rejected the video input source configuration (HTTP ' . (int)$save['status'] . ').');
     }
     $apply = pss_httpRequest('http://127.0.0.1/api/pipewire/video/input-sources/apply', 'POST', null, 'application/json');
-    if (!$apply['ok']) {
+    if (!pss_fppResponseOk($apply)) {
         return array('ok' => false, 'message' => 'FPP saved the source but could not apply it (HTTP ' . (int)$apply['status'] . ').');
     }
     return array('ok' => true, 'message' => '');
@@ -617,6 +605,7 @@ function pss_stopVideoPreviewPipeline($writeJsonResponse = true) {
 
 function pss_startTeamVideoPreview($post) {
     global $pluginSettings;
+    if (!pss_coreVideoPreviewAvailable()) pss_jsonResponse(false, 'Live video preview requires FPP 10.1 or newer with its video input API available.');
     $league = isset($post['league']) ? strtolower(trim((string)$post['league'])) : '';
     $slot = (isset($post['slot']) && (int)$post['slot'] === 2) ? 2 : 1;
     if (pss_leagueInfo($league)['sport'] === '') pss_jsonResponse(false, 'Invalid league.');
@@ -813,11 +802,13 @@ function pss_collectWledEffectCatalog($node, &$catalog) {
 
 function pss_getWledEffectCatalog() {
     static $catalog = null;
-    if (is_array($catalog)) {
+    static $loadedAt = 0;
+    if (is_array($catalog) && time() - $loadedAt < 60) {
         return $catalog;
     }
 
     $catalog = array();
+    $loadedAt = time();
     $data = pss_httpJson('http://127.0.0.1/api/overlays/effects/');
     if (!is_array($data)) {
         $data = pss_httpJson('http://127.0.0.1/api/overlays/effects');
@@ -1111,7 +1102,7 @@ function pss_syncTeamPalettes($refreshMissing = false) {
     if ($oldJson !== $json) {
         $tmp = $path . '.tmp.' . getmypid();
         if (@file_put_contents($tmp, $json, LOCK_EX) !== false && @rename($tmp, $path)) {
-            @chmod($path, 0664);
+            pss_shareFileWithFpp($path);
             pss_logEntry('Synced ' . count($palettes) . ' selected sports team palette' . (count($palettes) === 1 ? '' : 's'));
         } else {
             @unlink($tmp);
@@ -1561,39 +1552,16 @@ function pss_buildTickerText($forOverlay = false) {
 }
 
 function pss_runFppCommand($command, $args) {
-    $payload = array(
-        'command' => (string)$command,
-        'multisyncCommand' => false,
-        'multisyncHosts' => '',
-        'args' => is_array($args) ? $args : array()
-    );
-    return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+    return pss_commandRequest($command, is_array($args) ? $args : array());
 }
 
-// Pixel Overlay command-window compatible request.  FPP's own Pixel Overlay UI
-// posts only {command,args}; do not add multisync fields or model geometry.
 function pss_runFppCommandExact($command, $args) {
-    $payload = array(
-        'command' => (string)$command,
-        'args' => is_array($args) ? array_values($args) : array()
-    );
-    return pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+    return pss_runFppCommand($command, $args);
 }
 
-// FPP 10 also exposes commands through /api/command/<command>/<arg...>.
-// Pixel Overlay commands are sent through this route because FPP 10.1.2's
-// generic POST /api/command path can return HTTP 500 for overlay commands on
-// some players even though the same command succeeds from FPP's command UI.
+// Retained for old callers; JSON POST preserves arbitrary text/model names.
 function pss_runFppCommandPath($command, $args) {
-    $parts = array(rawurlencode((string)$command));
-    if (is_array($args)) {
-        foreach ($args as $arg) {
-            $parts[] = rawurlencode((string)$arg);
-        }
-    }
-
-    $url = 'http://127.0.0.1/api/command/' . implode('/', $parts);
-    return pss_httpRequest($url, 'GET', null, 'text/plain, application/json');
+    return pss_runFppCommand($command, $args);
 }
 
 function pss_legacyOverlayTickerPaths() {
@@ -1960,9 +1928,11 @@ function pss_clearOverlayModel($model) {
     // Stop any helper left behind by older plugin builds, then issue only the
     // same Overlay Model Clear command available in FPP's command window.
     pss_stopLegacyOverlayTicker();
+    $stop = pss_runFppCommandExact('Overlay Model Effect', array($model, 'False', 'Stop Effects'));
     $response = pss_runFppCommandExact('Overlay Model Clear', array($model));
-    if (!$response['ok']) {
-        $detail = pss_overlayCommandErrorText($response);
+    $state = pss_runFppCommandExact('Overlay Model State', array($model, 'Disabled'));
+    if (!$stop['ok'] || !$response['ok'] || !$state['ok']) {
+        $detail = pss_overlayCommandErrorText(!$stop['ok'] ? $stop : (!$response['ok'] ? $response : $state));
         pss_logEntry(
             "FPP rejected Overlay Model Clear for {$model} with HTTP {$response['status']}"
             . ($detail !== '' ? " response={$detail}" : '')
@@ -1974,28 +1944,15 @@ function pss_clearOverlayModel($model) {
 
 function pss_resolveOverlayFont($requestedFont) {
     $requestedFont = trim((string)$requestedFont);
-
-    // IMPORTANT: FPP's Text effect expects the font value shown by its own
-    // Overlay Model Effect -> Text dropdown.  Do not translate those names to
-    // filesystem paths here.  On FPP 10.1.2 the player can advertise both
-    // ImageMagick font aliases and font-file paths, but the alias C059-Bdlta is
-    // confirmed to start and scroll Text successfully on this player while the
-    // previously forced Lato-Bold.ttf path returns "Could not start effect: Text".
-    //
-    // Older plugin builds stored "Helvetica" and then rewrote it to a Lato
-    // path.  Keep existing settings compatible by mapping that historical value
-    // (and the Lato path we previously injected) to the known-good FPP alias.
-    if ($requestedFont === ''
-        || strcasecmp($requestedFont, 'Helvetica') === 0
-        || strcasecmp($requestedFont, 'Lato-Bold') === 0
-        || strcasecmp($requestedFont, 'Lato-Bold.ttf') === 0
-        || $requestedFont === '/usr/share/fonts/truetype/lato/Lato-Bold.ttf') {
-        return 'C059-Bdlta';
+    $fonts = pss_getOverlayFonts();
+    if (in_array($requestedFont, $fonts, true)) return $requestedFont;
+    $legacyDefaults = array('', 'Helvetica', 'Lato-Bold', 'Lato-Bold.ttf', '/usr/share/fonts/truetype/lato/Lato-Bold.ttf');
+    if (in_array($requestedFont, $legacyDefaults, true)) {
+        foreach (array('DejaVu-Sans', 'DejaVu-Sans-Bold', 'C059-Bdlta', 'Lato-Bold') as $candidate) {
+            if (in_array($candidate, $fonts, true)) return $candidate;
+        }
+        if (!empty($fonts)) return $fonts[0];
     }
-
-    // Otherwise preserve exactly what the user entered/selected.  FPP owns
-    // font discovery and validation; changing a valid FPP alias here can turn a
-    // working command into a 500 before TextEffect ever begins scrolling.
     return $requestedFont;
 }
 
@@ -2020,10 +1977,7 @@ function pss_runExactOverlayTextCommand($model, $autoEnable, $color, $font, $fon
         $autoEnable = 'Enabled';
     }
     $color = pss_normalizeColor($color, '#FFFFFF');
-    $font = trim((string)$font);
-    if ($font === '') {
-        $font = 'C059-Bdlta';
-    }
+    $font = pss_resolveOverlayFont($font);
     $fontSize = pss_clampInt($fontSize, 4, 100, 20);
     $antiAlias = $antiAlias ? 'true' : 'false';
     $allowedPositions = array('Center', 'Right to Left', 'Left to Right', 'Bottom to Top', 'Top to Bottom');
@@ -2104,7 +2058,7 @@ function pss_sendOverlayTickerText($text, $force = false) {
 
     $autoEnable = pss_pluginSetting('TickerOverlayAutoEnable', 'Enabled');
     $color = pss_pluginSetting('TickerTextColor', '#FFFFFF');
-    $font = trim(pss_pluginSetting('TickerFont', 'C059-Bdlta'));
+    $font = pss_resolveOverlayFont(pss_pluginSetting('TickerFont', ''));
     $fontSize = pss_pluginSetting('TickerFontSize', '20');
     $antiAlias = (pss_pluginSetting('TickerFontAntiAlias', 'OFF') === 'ON');
     $position = pss_pluginSetting('TickerDirection', 'Right to Left');
@@ -2326,7 +2280,7 @@ function pss_manualTrigger($post) {
     $playlist = pss_generatedPlaylistName($league, $suffix, $slot);
     $ok = pss_playConfiguredSequence($league, $suffix, 'Manual ' . strtolower($label), $slot);
     if (!$ok) {
-        pss_jsonResponse(false, "FPP could not trigger the {$label} playlist. Check the plugin log.");
+        pss_jsonResponse(false, isset($GLOBALS['pssLastPlaybackError']) ? $GLOBALS['pssLastPlaybackError'] : "FPP could not prepare the {$label} playlist. Check the selected file/model and plugin log.");
     }
 
     $message = $teamName . ': ' . $label . ' triggered';
@@ -2651,6 +2605,8 @@ function pss_isManagedGameScheduleEntry($entry) {
 
 function pss_reloadFppSchedule() {
     global $settings;
+    $response = pss_httpRequest('http://127.0.0.1/api/schedule/reload', 'POST');
+    if (pss_fppResponseOk($response)) return true;
     if (!function_exists('exec')) {
         pss_logEntry('Schedule helper wrote schedule.json but PHP exec() is disabled; FPP schedule reload was not requested');
         return false;
@@ -2768,7 +2724,7 @@ function pss_writeManagedGamePlaylist($playlistName, $league, $slot, $selection)
         @unlink($tmp);
         return false;
     }
-    @chmod($path, 0664);
+    pss_shareFileWithFpp($path);
     pss_logEntry('Generated game schedule helper playlist ' . $playlistName);
     return true;
 }
@@ -2820,7 +2776,10 @@ function pss_syncGameSchedules($logChanges = true) {
             if ($window['end']->getTimestamp() <= time() && pss_pluginSetting("{$prefix}GameStatus", '') !== 'in') continue;
 
             $playlist = pss_generatedGameSchedulePlaylistName($league, $slot);
-            if ($playlist === '' || !pss_writeManagedGamePlaylist($playlist, $league, $slot, $selection)) continue;
+            if ($playlist === '') continue;
+            // Preserve the existing schedule when metadata or file access
+            // fails; do not interpret that failure as disabling a game.
+            if (!pss_writeManagedGamePlaylist($playlist, $league, $slot, $selection)) return false;
             $keepPlaylists[] = $playlist;
 
             $isWled = pss_wledEffectFromSelection($selection) !== '';
@@ -2887,7 +2846,7 @@ function pss_syncGameSchedules($logChanges = true) {
             pss_logEntry('Schedule helper could not update ' . $path);
             return false;
         }
-        @chmod($path, 0664);
+        pss_shareFileWithFpp($path);
         pss_reloadFppSchedule();
         if ($logChanges) pss_logEntry('Updated FPP game schedule helper entries: ' . count($managedEntries));
     }
@@ -3081,9 +3040,12 @@ function pss_sequenceDuration($sequenceName) {
     return round(($frames * $stepMs) / 1000, 3);
 }
 
-function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '') {
-    $duration = pss_sequenceDuration($sequenceName);
+function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '', $mediaName = '') {
+    $sequenceDuration = pss_sequenceDuration($sequenceName);
     $delaySeconds = pss_clampInt($delaySeconds, 0, 300, 0);
+    $mediaName = basename(trim((string)$mediaName));
+    $mediaDuration = ($mediaName !== '') ? pss_mediaDurationSeconds($mediaName) : 0.0;
+    $itemDuration = max((float)$sequenceDuration, (float)$mediaDuration);
 
     $mainPlaylist = array();
     if ($delaySeconds > 0) {
@@ -3097,21 +3059,32 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
         );
     }
 
-    $overlayWrap = ($league !== '') ? pss_scheduleOverlaySuspendResumeEntries($league, $slot, $celebrationSuffix) : array('before' => array(), 'after' => array());
+    $overlayWrap = ($league !== '')
+        ? pss_scheduleOverlaySuspendResumeEntries($league, $slot, $celebrationSuffix)
+        : array('before' => array(), 'after' => array());
+
     foreach ($overlayWrap['before'] as $entry) $mainPlaylist[] = $entry;
 
-    $mainPlaylist[] = array(
-        'type' => 'sequence',
+    $playItem = array(
+        'type' => ($mediaName !== '') ? 'both' : 'sequence',
         'enabled' => 1,
         'playOnce' => 0,
         'sequenceName' => basename((string)$sequenceName),
         'displayMode' => 'argsOnly',
         'timecode' => 'Default',
-        'duration' => $duration
+        'duration' => $itemDuration
     );
+
+    if ($mediaName !== '') {
+        $playItem['mediaName'] = $mediaName;
+        $playItem['videoOut'] = '--Default--';
+    }
+
+    $mainPlaylist[] = $playItem;
+
     foreach ($overlayWrap['after'] as $entry) $mainPlaylist[] = $entry;
 
-    $totalDuration = $duration + $delaySeconds;
+    $totalDuration = $itemDuration + $delaySeconds;
     $itemCount = count($mainPlaylist);
 
     return array(
@@ -3139,28 +3112,50 @@ function pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds =
     );
 }
 
-function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '') {
+function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds = 0, $league = '', $slot = 1, $celebrationSuffix = '', $mediaName = '') {
     global $settings;
 
     $playlistName = trim((string)$playlistName);
     $sequenceName = basename((string)$sequenceName);
+    $mediaName = basename(trim((string)$mediaName));
+
     if ($playlistName === '' || $sequenceName === '') {
         return false;
     }
 
-    $sequenceDirectory = isset($settings['sequenceDirectory']) ? rtrim((string)$settings['sequenceDirectory'], '/') : '/home/fpp/media/sequences';
-    if (!is_file($sequenceDirectory . '/' . $sequenceName)) {
-        pss_logEntry("Cannot build {$playlistName}; sequence not found: {$sequenceName}");
+    $sequenceDirectory = isset($settings['sequenceDirectory'])
+        ? rtrim((string)$settings['sequenceDirectory'], '/')
+        : '/home/fpp/media/sequences';
+
+    if (!is_file($sequenceDirectory . '/' . $sequenceName) || pss_sequenceDuration($sequenceName) <= 0) {
+        pss_logEntry("Cannot build {$playlistName}; sequence missing or invalid: {$sequenceName}");
         return false;
     }
 
-    $playlistDirectory = isset($settings['playlistDirectory']) ? rtrim((string)$settings['playlistDirectory'], '/') : '/home/fpp/media/playlists';
+    if ($mediaName !== '' && pss_celebrationMediaPath($mediaName) === '') {
+        pss_logEntry("Cannot build {$playlistName}; media not found in FPP File Manager: {$mediaName}");
+        return false;
+    }
+
+    $playlistDirectory = isset($settings['playlistDirectory'])
+        ? rtrim((string)$settings['playlistDirectory'], '/')
+        : '/home/fpp/media/playlists';
+
     if (!is_dir($playlistDirectory) || !is_writable($playlistDirectory)) {
         pss_logEntry("Cannot write generated playlist; directory is not writable: {$playlistDirectory}");
         return false;
     }
 
-    $data = pss_generatedPlaylistData($playlistName, $sequenceName, $delaySeconds, $league, $slot, $celebrationSuffix);
+    $data = pss_generatedPlaylistData(
+        $playlistName,
+        $sequenceName,
+        $delaySeconds,
+        $league,
+        $slot,
+        $celebrationSuffix,
+        $mediaName
+    );
+
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     if ($json === false) {
         pss_logEntry("Unable to encode generated playlist {$playlistName}");
@@ -3181,11 +3176,11 @@ function pss_writeGeneratedPlaylist($playlistName, $sequenceName, $delaySeconds 
         return false;
     }
 
-    @chmod($path, 0664);
-    pss_logEntry("Generated playlist {$playlistName} for sequence {$sequenceName}");
+    pss_shareFileWithFpp($path);
+    $mediaText = ($mediaName !== '') ? " + media {$mediaName}" : '';
+    pss_logEntry("Generated playlist {$playlistName} for sequence {$sequenceName}{$mediaText}");
     return true;
 }
-
 function pss_effectArgListLooksValid($list) {
     if (!is_array($list) || empty($list)) {
         return false;
@@ -3538,7 +3533,7 @@ function pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $effectNa
         pss_logEntry('Unable to create generated WLED playlist ' . $playlistName);
         return false;
     }
-    @chmod($path, 0664);
+    pss_shareFileWithFpp($path);
     pss_logEntry('Generated playlist ' . $playlistName . ' for ' . $effectName . ' using team palette');
     return true;
 }
@@ -3578,6 +3573,211 @@ function pss_cleanupGeneratedPlaylists($league, $keepNames) {
     }
 }
 
+function pss_getCelebrationMediaOptions() {
+    global $settings;
+
+    $sources = array(
+        array(
+            'label' => 'Audio',
+            'dir' => isset($settings['musicDirectory']) ? rtrim((string)$settings['musicDirectory'], '/') : '/home/fpp/media/music'
+        ),
+        array(
+            'label' => 'Video',
+            'dir' => isset($settings['videoDirectory']) ? rtrim((string)$settings['videoDirectory'], '/') : '/home/fpp/media/videos'
+        )
+    );
+
+    $rows = array();
+    $seen = array();
+    foreach ($sources as $source) {
+        if (!is_dir($source['dir'])) continue;
+        $files = @scandir($source['dir']);
+        if (!is_array($files)) continue;
+
+        foreach ($files as $file) {
+            if ($file === '.' || $file === '..' || $file === '' || $file[0] === '.') continue;
+            $path = $source['dir'] . '/' . $file;
+            if (!is_file($path)) continue;
+
+            $name = basename((string)$file);
+            if ($name === '' || isset($seen[$name])) continue;
+            $seen[$name] = true;
+            $rows[] = array(
+                'label' => $source['label'] . ' — ' . $name,
+                'value' => $name
+            );
+        }
+    }
+
+    usort($rows, function ($a, $b) {
+        return strnatcasecmp((string)$a['label'], (string)$b['label']);
+    });
+
+    $options = array('-- Select media from FPP File Manager --' => '');
+    foreach ($rows as $row) {
+        $options[$row['label']] = $row['value'];
+    }
+    return $options;
+}
+
+function pss_celebrationMediaPath($mediaName) {
+    global $settings;
+
+    $mediaName = basename(trim((string)$mediaName));
+    if ($mediaName === '') return '';
+
+    $directories = array(
+        isset($settings['musicDirectory']) ? rtrim((string)$settings['musicDirectory'], '/') : '/home/fpp/media/music',
+        isset($settings['videoDirectory']) ? rtrim((string)$settings['videoDirectory'], '/') : '/home/fpp/media/videos'
+    );
+
+    foreach ($directories as $directory) {
+        $path = $directory . '/' . $mediaName;
+        if (is_file($path)) return $path;
+    }
+    return '';
+}
+
+function pss_mediaDurationSeconds($mediaName) {
+    $mediaName = basename(trim((string)$mediaName));
+    if ($mediaName === '') return 0.0;
+
+    $data = pss_httpJson('http://127.0.0.1/api/media/' . rawurlencode($mediaName) . '/duration');
+    if (!is_array($data)) return 0.0;
+
+    if (isset($data[$mediaName]['duration']) && is_numeric($data[$mediaName]['duration'])) {
+        return max(0.0, (float)$data[$mediaName]['duration']);
+    }
+
+    foreach ($data as $entry) {
+        if (is_array($entry) && isset($entry['duration']) && is_numeric($entry['duration'])) {
+            return max(0.0, (float)$entry['duration']);
+        }
+    }
+    return 0.0;
+}
+
+function pss_teamCelebrationPlaybackMode($league, $slot, $suffix) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $mode = strtolower(trim(pss_pluginSetting("{$prefix}{$suffix}PlaybackMode", 'sequence')));
+    return ($mode === 'both') ? 'both' : 'sequence';
+}
+
+function pss_teamCelebrationMediaName($league, $slot, $suffix) {
+    if (pss_teamCelebrationPlaybackMode($league, $slot, $suffix) !== 'both') {
+        return '';
+    }
+
+    $prefix = pss_teamPrefix($league, $slot);
+    $media = basename(trim(pss_pluginSetting("{$prefix}{$suffix}Media", '')));
+    if ($media === '') return '';
+
+    if (pss_celebrationMediaPath($media) === '') {
+        pss_logEntry(pss_teamLogLabel($league, $slot) . " helper media is missing from FPP File Manager: {$media}; using sequence only");
+        return '';
+    }
+    return $media;
+}
+
+function pss_normalizeRemoteFppBaseUrl($value) {
+    $value = trim((string)$value);
+    if ($value === '') return '';
+
+    if (!preg_match('#^https?://#i', $value)) {
+        $value = 'http://' . $value;
+    }
+
+    $parts = @parse_url($value);
+    if (!is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+        return '';
+    }
+
+    $scheme = strtolower((string)$parts['scheme']);
+    if ($scheme !== 'http' && $scheme !== 'https') return '';
+    if (!empty($parts['user']) || !empty($parts['pass']) || !empty($parts['query']) || !empty($parts['fragment'])) {
+        return '';
+    }
+
+    $path = isset($parts['path']) ? trim((string)$parts['path']) : '';
+    if ($path !== '' && $path !== '/') return '';
+
+    $host = (string)$parts['host'];
+    if (strpos($host, ':') !== false && $host[0] !== '[') {
+        $host = '[' . $host . ']';
+    }
+
+    $base = $scheme . '://' . $host;
+    if (isset($parts['port'])) $base .= ':' . (int)$parts['port'];
+    return $base;
+}
+
+function pss_teamCelebrationTarget($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    $target = strtolower(trim(pss_pluginSetting("{$prefix}CelebrationTarget", 'local')));
+    return in_array($target, array('local', 'remote', 'both'), true) ? $target : 'local';
+}
+
+function pss_teamCelebrationRemoteBaseUrl($league, $slot = 1) {
+    $prefix = pss_teamPrefix($league, $slot);
+    return pss_normalizeRemoteFppBaseUrl(pss_pluginSetting("{$prefix}CelebrationRemoteHost", ''));
+}
+
+function pss_saveCelebrationPlaybackSetting($post) {
+    global $pluginSettings;
+
+    $setting = isset($post['setting']) ? trim((string)$post['setting']) : '';
+    $value = isset($post['value']) ? trim((string)$post['value']) : '';
+
+    $league = '';
+    $savedValue = $value;
+
+    if (preg_match('/^(nfl|ncaa|nhl|mlb)(2)?(TouchdownSequence|FieldgoalSequence|ScoreSequence|WinSequence)(PlaybackMode|Media)$/', $setting, $matches)) {
+        $league = $matches[1];
+        $field = $matches[4];
+
+        if ($field === 'PlaybackMode') {
+            $savedValue = (strtolower($value) === 'both') ? 'both' : 'sequence';
+        } else {
+            $savedValue = basename($value);
+            if ($savedValue !== '' && pss_celebrationMediaPath($savedValue) === '') {
+                pss_jsonResponse(false, 'Selected media file was not found in FPP File Manager.');
+            }
+        }
+    } elseif (preg_match('/^(nfl|ncaa|nhl|mlb)(2)?Celebration(Target|RemoteHost)$/', $setting, $matches)) {
+        $league = $matches[1];
+        $field = $matches[3];
+
+        if ($field === 'Target') {
+            $savedValue = strtolower($value);
+            if (!in_array($savedValue, array('local', 'remote', 'both'), true)) {
+                $savedValue = 'local';
+            }
+        } else {
+            if ($value === '') {
+                $savedValue = '';
+            } else {
+                $savedValue = pss_normalizeRemoteFppBaseUrl($value);
+                if ($savedValue === '') {
+                    pss_jsonResponse(false, 'Remote FPP must be an IP/hostname such as 192.168.4.50 or fpp-remote.local.');
+                }
+            }
+        }
+    } else {
+        pss_jsonResponse(false, 'Invalid celebration playback setting.');
+    }
+
+    if (!pss_setPluginSetting($setting, $savedValue)) {
+        pss_jsonResponse(false, 'Unable to save celebration playback setting.');
+    }
+
+    $pluginSettings = pss_loadPluginSettings();
+    pss_syncGeneratedPlaylistsForLeague($league);
+
+    pss_jsonResponse(true, 'Celebration playback setting saved.', array(
+        'setting' => $setting,
+        'value' => $savedValue
+    ));
+}
 function pss_syncGeneratedPlaylistsForLeague($league) {
     $info = pss_leagueInfo($league);
     if ($info['sport'] === '') {
@@ -3589,6 +3789,7 @@ function pss_syncGeneratedPlaylistsForLeague($league) {
         : array('ScoreSequence', 'WinSequence');
 
     $keepNames = array();
+    $allOk = true;
     foreach (array(1, 2) as $slot) {
         $prefix = pss_teamPrefix($league, $slot);
         if (pss_pluginSetting("{$prefix}TeamID", '') === '') {
@@ -3600,25 +3801,33 @@ function pss_syncGeneratedPlaylistsForLeague($league) {
             if ($sequence === '') {
                 continue;
             }
+
             $playlistName = pss_generatedPlaylistName($league, $suffix, $slot);
             if ($playlistName === '') {
                 continue;
             }
+
             $delaySeconds = pss_teamCelebrationDelay($league, $slot);
             $wledEffect = pss_wledEffectFromSelection($sequence);
+            $mediaName = ($wledEffect === '')
+                ? pss_teamCelebrationMediaName($league, $slot, $suffix)
+                : '';
+
             $written = ($wledEffect !== '')
                 ? pss_writeGeneratedWledPlaylist($playlistName, $league, $slot, $wledEffect, $delaySeconds, $suffix)
-                : pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds, $league, $slot, $suffix);
-            if ($written) {
-                $keepNames[] = $playlistName;
-            }
+                : pss_writeGeneratedPlaylist($playlistName, $sequence, $delaySeconds, $league, $slot, $suffix, $mediaName);
+
+            // A temporarily unavailable effect API must not delete a helper
+            // that is still selected or currently playing.
+            $keepNames[] = $playlistName;
+            if (!$written) $allOk = false;
         }
     }
 
     pss_cleanupGeneratedPlaylists($league, $keepNames);
+    return $allOk;
 }
-
-function pss_syncGeneratedPlaylistSetting($setting) {
+function pss_syncGeneratedPlaylistSetting($setting, $value = null) {
     global $pluginSettings;
     $pluginSettings = pss_loadPluginSettings();
 
@@ -3626,10 +3835,14 @@ function pss_syncGeneratedPlaylistSetting($setting) {
         return false;
     }
 
+    if ($value !== null && !pss_setPluginSetting($setting, $value)) pss_jsonResponse(false, 'Unable to save celebration selection.');
+
     // Rebuild both team slots together so cleaning one team's helper playlists
     // can never remove the other team's generated playlists.
-    pss_syncGeneratedPlaylistsForLeague($matches[1]);
-    return true;
+    $ok = pss_syncGeneratedPlaylistsForLeague($matches[1]);
+    $slot = $matches[2] === '2' ? 2 : 1;
+    if (pss_pluginSetting($setting, '') === '') return true;
+    return $ok && is_array(pss_readGeneratedPlaylistData(pss_generatedPlaylistName($matches[1], $matches[3], $slot)));
 }
 
 function pss_syncAllGeneratedPlaylists() {
@@ -3787,10 +4000,11 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
     } elseif (isset($competitionStatus['displayClock'])) {
         $status['detail'] = (string)$competitionStatus['displayClock'];
     }
-    $status['myScore'] = isset($myTeam['score']) ? (int)$myTeam['score'] : 0;
+    if (!isset($myTeam['score'], $opponent['score']) || !is_numeric($myTeam['score']) || !is_numeric($opponent['score'])) return $status;
+    $status['myScore'] = (int)$myTeam['score'];
     $status['oppoScore'] = isset($opponent['score']) ? (int)$opponent['score'] : 0;
     $status['scoringPlays'] = isset($data['scoringPlays']) && is_array($data['scoringPlays']) ? $data['scoringPlays'] : array();
-    $status['valid'] = ($status['state'] !== '');
+    $status['valid'] = in_array($status['state'], array('pre', 'in', 'post'), true);
     return $status;
 }
 
@@ -3973,20 +4187,15 @@ function pss_applyGameSnapshot($league, $status, $updateStatus = true, $eventID 
         }
     }
 
-    pss_setPluginSetting("{$prefix}Start", $status['start']);
-    pss_setPluginSetting("{$prefix}OppoID", $status['oppoID']);
-    pss_setPluginSetting("{$prefix}OppoName", $status['oppoName']);
-    pss_setPluginSetting("{$prefix}OppoAbbreviation", $status['oppoAbbreviation']);
-    pss_setPluginSetting("{$prefix}OppoLogo", $oppoLogo);
-    pss_setPluginSetting("{$prefix}GameDetail", isset($status['detail']) ? $status['detail'] : '');
-    pss_setPluginSetting("{$prefix}MyScore", (string)$status['myScore']);
-    pss_setPluginSetting("{$prefix}OppoScore", (string)$status['oppoScore']);
-    if ($updateStatus) {
-        pss_setPluginSetting("{$prefix}GameStatus", $status['state']);
-    }
-    if ($eventID !== '') {
-        pss_setPluginSetting("{$prefix}GameSnapshotEventID", (string)$eventID);
-    }
+    $values = array(
+        "{$prefix}Start" => $status['start'], "{$prefix}OppoID" => $status['oppoID'],
+        "{$prefix}OppoName" => $status['oppoName'], "{$prefix}OppoAbbreviation" => $status['oppoAbbreviation'],
+        "{$prefix}OppoLogo" => $oppoLogo, "{$prefix}GameDetail" => isset($status['detail']) ? $status['detail'] : '',
+        "{$prefix}MyScore" => (string)$status['myScore'], "{$prefix}OppoScore" => (string)$status['oppoScore']
+    );
+    if ($updateStatus) $values["{$prefix}GameStatus"] = $status['state'];
+    if ($eventID !== '') $values["{$prefix}GameSnapshotEventID"] = (string)$eventID;
+    pss_setPluginSettings($values);
 }
 
 function pss_processFootballScoring($league, $teamID, $plays, $slot = 1, $currentScore = null) {
@@ -4032,12 +4241,14 @@ function pss_processFootballScoring($league, $teamID, $plays, $slot = 1, $curren
     }
 
     // ESPN sometimes publishes the scoreboard total one poll before the
-    // matching scoringPlays entry. In that case the score-delta fallback has
-    // already played the celebration and advanced LastCelebratedScore. Still
-    // advance LastScoringPlayID below, but do not play the celebration twice.
+    // matching scoringPlays entry.  In that case the score-delta fallback has
+    // already played the celebration and advanced LastCelebratedScore.  Still
+    // advance LastScoringPlayID below, but do not play that same celebration a
+    // second time when the delayed play-by-play record appears.
     if ($currentScore !== null
         && !empty($ourNewScoringPlays)
-        && (int)$currentScore <= $lastCelebrated) {
+        && ((int)$currentScore <= $lastCelebrated
+            || ($lastCelebrated > 0 && (int)$currentScore - $lastCelebrated <= 2))) {
         pss_setPluginSetting("{$prefix}LastScoringPlayID", pss_latestScoringPlayID($plays));
         pss_logEntry(pss_teamLogLabel($league, $slot) . ' delayed ESPN scoring play already handled by score fallback; skipped duplicate celebration');
         return false;
@@ -4049,11 +4260,11 @@ function pss_processFootballScoring($league, $teamID, $plays, $slot = 1, $curren
         $haystack = $typeText . ' ' . $playText;
 
         if (strpos($haystack, 'touchdown') !== false) {
+            if (!pss_enqueueCelebration($league, 'TouchdownSequence', 'Touchdown', $slot, $currentScore, isset($play['id']) ? (string)$play['id'] : '')) return false;
             $triggered = true;
-            pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown', $slot);
         } elseif (strpos($haystack, 'field goal') !== false && strpos($haystack, 'no good') === false && strpos($haystack, 'miss') === false) {
+            if (!pss_enqueueCelebration($league, 'FieldgoalSequence', 'Field goal', $slot, $currentScore, isset($play['id']) ? (string)$play['id'] : '')) return false;
             $triggered = true;
-            pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal', $slot);
         }
     }
 
@@ -4062,7 +4273,7 @@ function pss_processFootballScoring($league, $teamID, $plays, $slot = 1, $curren
 }
 
 // ESPN can advance the live score a poll before scoringPlays contains the new
-// play. Use the score delta as a safety net so a real touchdown/field goal
+// play.  Use the score delta as a safety net so a real touchdown/field goal
 // cannot be missed just because the play-by-play feed arrived late.
 function pss_processFootballScoreIncreaseFallback($league, $oldScore, $newScore, $slot = 1) {
     $prefix = pss_teamPrefix($league, $slot);
@@ -4079,17 +4290,15 @@ function pss_processFootballScoreIncreaseFallback($league, $oldScore, $newScore,
 
     if ($delta === 3) {
         pss_logEntry("{$logLabel} score changed {$oldScore} -> {$newScore} before a matching scoring-play marker; using +3 field-goal fallback");
-        pss_playConfiguredSequence($league, 'FieldgoalSequence', 'Field goal', $slot);
-        return true;
+        return pss_enqueueCelebration($league, 'FieldgoalSequence', 'Field goal', $slot, $newScore);
     }
 
     if ($delta >= 6) {
         pss_logEntry("{$logLabel} score changed {$oldScore} -> {$newScore} before a matching scoring-play marker; using touchdown fallback");
-        pss_playConfiguredSequence($league, 'TouchdownSequence', 'Touchdown', $slot);
-        return true;
+        return pss_enqueueCelebration($league, 'TouchdownSequence', 'Touchdown', $slot, $newScore);
     }
 
-    // +1 is normally a PAT and +2 may be a conversion or safety. There is no
+    // +1 is normally a PAT and +2 may be a conversion or safety.  There is no
     // separate configured celebration for those, so record the score without
     // firing a second touchdown/field-goal celebration.
     pss_logEntry("{$logLabel} score changed {$oldScore} -> {$newScore}; no TD/FG fallback for +{$delta}");
@@ -4103,7 +4312,7 @@ function pss_processSimpleScoreIncrease($league, $oldScore, $newScore, $slot = 1
     $lastCelebrated = (int)pss_pluginSetting("{$prefix}LastCelebratedScore", '0');
 
     if ($newScore > $oldScore && $newScore > $lastCelebrated) {
-        pss_playConfiguredSequence($league, 'ScoreSequence', 'Score', $slot);
+        if (!pss_enqueueCelebration($league, 'ScoreSequence', 'Score', $slot, $newScore)) return false;
         pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$newScore);
     } elseif ($newScore > $lastCelebrated) {
         pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$newScore);
@@ -4111,6 +4320,7 @@ function pss_processSimpleScoreIncrease($league, $oldScore, $newScore, $slot = 1
 }
 
 function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
+    unset($GLOBALS['pssLastPlaybackError'], $GLOBALS['pssPlaybackFailureKind']);
     $prefix = pss_teamPrefix($league, $slot);
     $selection = pss_pluginSetting("{$prefix}{$suffix}", '');
     $logLabel = pss_teamLogLabel($league, $slot);
@@ -4124,8 +4334,8 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
     $delaySeconds = pss_teamCelebrationDelay($league, $slot);
     $wledEffect = pss_wledEffectFromSelection($selection);
 
-    // A win ends the game-time presentation.  Do this here as well as in the
-    // ESPN post-state path so the Manual Win test button has identical behavior.
+    // A win ends the game-time presentation. Do this here as well as in the
+    // ESPN post-state path so the Manual Win button has identical behavior.
     if ($suffix === 'WinSequence') {
         pss_stopScheduledGameOverlay($league, $slot);
     }
@@ -4135,33 +4345,45 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
             pss_logEntry("{$logLabel} {$label} detected but WLED helper playlist could not be prepared for {$wledEffect}");
             return false;
         }
-        if (pss_insertPlaylistImmediate($playlist)) {
+
+        if (pss_playGeneratedPlaylistTargets($playlist, $league, $slot)) {
             $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
             $duration = pss_teamWledDuration($league, $slot);
             pss_logEntry("{$logLabel} {$label} detected; inserted {$wledEffect}{$delayText} for {$duration}s using playlist {$playlist}");
             return true;
         }
-        pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated WLED playlist {$playlist}");
+
+        pss_logEntry("{$logLabel} {$label} detected but one or more configured FPP targets rejected generated WLED playlist {$playlist}");
         return false;
     }
 
-    // Existing FSEQ behavior is intentionally unchanged.
-    if ($playlist === '' || !pss_writeGeneratedPlaylist($playlist, $selection, $delaySeconds, $league, $slot, $suffix)) {
+    $mediaName = pss_teamCelebrationMediaName($league, $slot, $suffix);
+
+    if ($playlist === '' || !pss_writeGeneratedPlaylist(
+        $playlist,
+        $selection,
+        $delaySeconds,
+        $league,
+        $slot,
+        $suffix,
+        $mediaName
+    )) {
         pss_logEntry("{$logLabel} {$label} detected but helper playlist could not be prepared for {$selection}");
         return false;
     }
 
-    if (pss_insertPlaylistImmediate($playlist)) {
+    if (pss_playGeneratedPlaylistTargets($playlist, $league, $slot)) {
         $delayText = ($delaySeconds > 0) ? " after {$delaySeconds}s delay" : '';
-        pss_logEntry("{$logLabel} {$label} detected; inserted {$selection}{$delayText} using playlist {$playlist}");
+        $mediaText = ($mediaName !== '') ? " with media {$mediaName}" : '';
+        pss_logEntry("{$logLabel} {$label} detected; inserted {$selection}{$mediaText}{$delayText} using playlist {$playlist}");
         return true;
     }
 
-    pss_logEntry("{$logLabel} {$label} detected but FPP rejected generated playlist {$playlist}");
+    pss_logEntry("{$logLabel} {$label} detected but one or more configured FPP targets rejected generated playlist {$playlist}");
     return false;
 }
-
 function pss_updateTeamStatus($reparseSettings = true) {
+    $GLOBALS['pssLastEspnError'] = '';
     global $pluginSettings, $leagues;
     static $teamPalettesSynced = false;
     if ($reparseSettings) {
@@ -4207,6 +4429,7 @@ function pss_updateTeamStatus($reparseSettings = true) {
                     $start = pss_pluginSetting("{$prefix}Start", '');
                     $snapshotEventID = pss_pluginSetting("{$prefix}GameSnapshotEventID", '');
                 } else {
+                    $GLOBALS['pssLastEspnError'] = 'ESPN team/event data is unavailable; retrying.';
                     $sleepTimes[] = 60;
                     continue;
                 }
@@ -4249,6 +4472,7 @@ function pss_updateTeamStatus($reparseSettings = true) {
                     $snapshotEventID = $eventID;
                     pss_logEntry("{$logLabel} refreshed full snapshot for event {$eventID}");
                 } else {
+                    $GLOBALS['pssLastEspnError'] = 'ESPN snapshot refresh failed; retaining the last game data.';
                     pss_logEntry("{$logLabel} ESPN snapshot refresh failed; keeping event metadata and retrying");
                     $sleepTimes[] = 30;
                     continue;
@@ -4273,8 +4497,17 @@ function pss_updateTeamStatus($reparseSettings = true) {
                 $status = pss_getGameStatus($sport, $league, $eventID, $teamID);
             }
             if (!$status['valid']) {
+                $GLOBALS['pssLastEspnError'] = 'ESPN game status is unavailable; retaining the last game data.';
                 pss_logEntry("{$logLabel} ESPN game status request failed; keeping existing game state");
                 $sleepTimes[] = 30;
+                continue;
+            }
+
+            $currentSettings = pss_loadPluginSettings();
+            if (urldecode(isset($currentSettings["{$prefix}TeamID"]) ? $currentSettings["{$prefix}TeamID"] : '') !== $teamID
+                || urldecode(isset($currentSettings["{$prefix}TeamNextEventID"]) ? $currentSettings["{$prefix}TeamNextEventID"] : '') !== $eventID) {
+                $pluginSettings = $currentSettings;
+                $sleepTimes[] = 3;
                 continue;
             }
 
@@ -4283,14 +4516,20 @@ function pss_updateTeamStatus($reparseSettings = true) {
             }
 
             $oldScore = (int)pss_pluginSetting("{$prefix}MyScore", '0');
-            if ($status['state'] === 'in') {
+            if ((int)$status['myScore'] < $oldScore) {
+                // An overturned score must not suppress the next real score.
+                pss_setPluginSettings(array("{$prefix}ScoringEpoch" => (string)((int)pss_pluginSetting("{$prefix}ScoringEpoch", '0') + 1),
+                    "{$prefix}LastCelebratedScore" => (string)$status['myScore'],
+                    "{$prefix}LastScoringPlayID" => pss_latestScoringPlayID($status['scoringPlays'])));
+            }
+            if ($status['state'] === 'in' || $status['state'] === 'post') {
                 if ($sport === 'football') {
                     $footballTriggered = pss_processFootballScoring($league, $teamID, $status['scoringPlays'], $slot, $status['myScore']);
                     if ((int)$status['myScore'] > $oldScore) {
                         if (!$footballTriggered) {
-                            pss_processFootballScoreIncreaseFallback($league, $oldScore, $status['myScore'], $slot);
+                            $footballTriggered = pss_processFootballScoreIncreaseFallback($league, $oldScore, $status['myScore'], $slot);
                         }
-                        pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$status['myScore']);
+                        if ($footballTriggered || (int)$status['myScore'] - $oldScore < 3) pss_setPluginSetting("{$prefix}LastCelebratedScore", (string)$status['myScore']);
                     }
                 } else {
                     pss_processSimpleScoreIncrease($league, $oldScore, $status['myScore'], $slot);
@@ -4298,16 +4537,18 @@ function pss_updateTeamStatus($reparseSettings = true) {
                 $teamSleep = 3;
             } elseif ($status['state'] === 'pre') {
                 $teamSleep = 30;
-            } elseif ($status['state'] === 'post') {
+            }
+            if ($status['state'] === 'post') {
                 // End a game-long WLED overlay before the win celebration.  The
                 // win helper intentionally does not resume a game overlay.
                 pss_stopScheduledGameOverlay($league, $slot);
                 $completed = pss_pluginSetting("{$prefix}LastCompletedEventID", '');
                 if ($completed !== $eventID) {
                     if ($status['myScore'] > $status['oppoScore']) {
-                        pss_playConfiguredSequence($league, 'WinSequence', 'Win', $slot);
+                        if (pss_enqueueCelebration($league, 'WinSequence', 'Win', $slot, 'win')) pss_setPluginSetting("{$prefix}LastCompletedEventID", $eventID);
+                    } else {
+                        pss_setPluginSetting("{$prefix}LastCompletedEventID", $eventID);
                     }
-                    pss_setPluginSetting("{$prefix}LastCompletedEventID", $eventID);
                 }
                 $teamSleep = 600;
             }
@@ -4323,26 +4564,107 @@ function pss_updateTeamStatus($reparseSettings = true) {
     return min($sleepTimes);
 }
 
-function pss_insertPlaylistImmediate($playlist) {
+function pss_readGeneratedPlaylistData($playlist) {
+    global $settings;
+
     $playlist = trim((string)$playlist);
-    if ($playlist === '') {
+    if ($playlist === '') return null;
+
+    $playlistDirectory = isset($settings['playlistDirectory'])
+        ? rtrim((string)$settings['playlistDirectory'], '/')
+        : '/home/fpp/media/playlists';
+
+    $path = $playlistDirectory . '/' . $playlist . '.json';
+    if (!is_file($path)) return null;
+
+    $raw = @file_get_contents($path);
+    if ($raw === false) return null;
+
+    $data = json_decode($raw, true);
+    return is_array($data) ? $data : null;
+}
+
+function pss_syncGeneratedPlaylistToRemote($playlist, $baseUrl) {
+    $baseUrl = pss_normalizeRemoteFppBaseUrl($baseUrl);
+    if ($baseUrl === '') return false;
+
+    $data = pss_readGeneratedPlaylistData($playlist);
+    if (!is_array($data)) {
+        pss_logEntry("Cannot sync remote playlist {$playlist}; local generated playlist JSON is unavailable");
         return false;
     }
 
-    $payload = array(
-        'command' => 'Insert Playlist Immediate',
-        'multisyncCommand' => false,
-        'multisyncHosts' => '',
-        'args' => array($playlist, '0', '0', 'false')
-    );
-    $response = pss_httpRequest('http://127.0.0.1/api/command', 'POST', $payload, 'text/plain, application/json');
+    if (!pss_remotePlaylistAssetsAvailable($data, $baseUrl)) return false;
+    $url = rtrim($baseUrl, '/') . '/api/playlist/' . rawurlencode($playlist);
+    $existingResponse = pss_httpRequest($url);
+    if (pss_fppResponseOk($existingResponse) && json_decode($existingResponse['body'], true) == $data) return true;
+    $response = pss_httpRequest($url, 'POST', $data, 'application/json');
+
+    if (!pss_fppResponseOk($response)) {
+        $GLOBALS['pssLastPlaybackError'] = 'Remote FPP rejected the helper playlist: HTTP ' . $response['status'] . ' ' . pss_overlayCommandErrorText($response);
+        pss_logEntry("Remote FPP {$baseUrl} rejected playlist sync {$playlist} with HTTP {$response['status']}");
+        return false;
+    }
+
+    return true;
+}
+
+function pss_insertPlaylistImmediate($playlist, $baseUrl = '') {
+    $playlist = trim((string)$playlist);
+    if ($playlist === '') return false;
+    if ($baseUrl !== '') {
+        $baseUrl = pss_normalizeRemoteFppBaseUrl($baseUrl);
+        if ($baseUrl === '') return false;
+    }
+    if (!pss_targetReadyForCelebration($baseUrl)) {
+        $GLOBALS['pssLastPlaybackError'] = isset($GLOBALS['pssPlaybackFailureKind']) && $GLOBALS['pssPlaybackFailureKind'] === 'busy'
+            ? 'FPP is finishing another celebration. Try again when it finishes.' : 'FPP is unavailable. Check that FPPD is running on the selected player.';
+        return false;
+    }
+    $response = pss_commandRequest('Insert Playlist Immediate', array($playlist, '0', '0', 'true'), $baseUrl);
     if (!$response['ok']) {
-        pss_logEntry("FPP command failed with HTTP {$response['status']} for playlist {$playlist}");
+        $detail = pss_overlayCommandErrorText($response);
+        $GLOBALS['pssPlaybackFailureKind'] = 'unavailable';
+        $GLOBALS['pssLastPlaybackError'] = "FPP HTTP {$response['status']}: {$detail}";
+        pss_logEntry("FPP command failed for playlist {$playlist}: HTTP {$response['status']} {$detail}");
         return false;
     }
     return true;
 }
 
+function pss_playGeneratedPlaylistTargets($playlist, $league, $slot = 1) {
+    $target = pss_teamCelebrationTarget($league, $slot);
+    $allOk = true;
+    $attempted = false;
+
+    if ($target === 'local' || $target === 'both') {
+        $attempted = true;
+        if (empty($GLOBALS['pssDispatchDoneTargets']['local'])) {
+            if (!pss_insertPlaylistImmediate($playlist)) $allOk = false;
+            elseif (isset($GLOBALS['pssDispatchDoneTargets'])) $GLOBALS['pssDispatchDoneTargets']['local'] = true;
+        }
+    }
+
+    if ($target === 'remote' || $target === 'both') {
+        $attempted = true;
+        $remote = pss_teamCelebrationRemoteBaseUrl($league, $slot);
+
+        if ($remote === '') {
+            pss_logEntry(pss_teamLogLabel($league, $slot) . " is configured for remote celebration playback but no valid Remote FPP address is set");
+            $allOk = false;
+        } elseif (!empty($GLOBALS['pssDispatchDoneTargets'][$remote])) {
+            // This destination already accepted this event.
+        } elseif (!pss_syncGeneratedPlaylistToRemote($playlist, $remote)) {
+            $allOk = false;
+        } elseif (!pss_insertPlaylistImmediate($playlist, $remote)) {
+            $allOk = false;
+        } elseif (isset($GLOBALS['pssDispatchDoneTargets'])) {
+            $GLOBALS['pssDispatchDoneTargets'][$remote] = true;
+        }
+    }
+
+    return $attempted && $allOk;
+}
 function pss_logEntry($message) {
     global $logFile;
     $pid = getmypid();
