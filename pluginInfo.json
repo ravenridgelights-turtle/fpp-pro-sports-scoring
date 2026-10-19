@@ -40,32 +40,12 @@
   },
   "versions": [
     {
-      "minFPPVersion": "7.0",
-      "maxFPPVersion": "7.99",
-      "branch": "modernize-fpp-espn",
-      "sha": "",
-      "allowUpdates": 1
-    },
-    {
       "minFPPVersion": "8.0",
-      "maxFPPVersion": "8.99",
-      "branch": "modernize-fpp-espn",
-      "sha": "",
-      "allowUpdates": 1
-    },
-    {
-      "minFPPVersion": "9.0",
-      "maxFPPVersion": "9.99",
-      "branch": "modernize-fpp-espn",
-      "sha": "",
-      "allowUpdates": 1
-    },
-    {
-      "minFPPVersion": "10.0",
-      "maxFPPVersion": "0",
+      "maxFPPVersion": "10.999",
       "branch": "modernize-fpp-espn",
       "sha": "",
       "allowUpdates": 1
     }
-  ]
+  ],
+  "version": "2026.10.19.1"
 }

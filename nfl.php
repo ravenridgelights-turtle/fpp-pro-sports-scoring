@@ -84,25 +84,53 @@ function pss_initializePluginDefaults() {
     }
 }
 
+// A PID file is advisory; flock prevents duplicate workers even when two
+// lifecycle calls race or an old PID file disappears.
+$workerLock = @fopen(pss_runtimePath('worker-lock'), 'c+');
+if (!$workerLock || !flock($workerLock, LOCK_EX | LOCK_NB)) exit(0);
+pss_shareFileWithFpp(pss_runtimePath('worker-lock'));
+if (pss_fppMajorVersion() > 0 && (pss_fppMajorVersion() < 8 || pss_fppMajorVersion() > 10)) {
+    pss_logEntry('This plugin supports FPP 8, 9 and 10; detected ' . pss_fppVersion());
+    exit(1);
+}
 pss_initializePluginDefaults();
-pss_logEntry('Sports scoring daemon started');
+pss_logEntry('Sports scoring ' . PSS_VERSION . ' daemon started on FPP ' . pss_fppVersion());
+$nextPoll = 0;
+$lastPoll = 0;
+$configHash = '';
+$helperRepairAt = 0;
+$error = '';
 
 while (true) {
     $pluginSettings = pss_loadPluginSettings();
-    if (pss_pluginSetting('ENABLED', 'OFF') !== 'ON') {
-        sleep(10);
-        continue;
-    }
-
     try {
-        $sleepTime = pss_updateTeamStatus(false);
-        pss_updateTickerOutput(false);
-        // During a live game, keep ESPN polling close enough to real time for
-        // score-triggered sequences.  The status page reads this daemon's
-        // saved snapshot; it never polls ESPN independently.
-        sleep(max(3, (int)$sleepTime));
+        // React to user configuration within three seconds, even while ESPN
+        // polling sleeps between games. Exclude frequently changing game data.
+        $config = array();
+        foreach ($pluginSettings as $key => $value) {
+            if (strpos($key, 'TickerLast') !== 0 && preg_match('/(Sequence|Wled|Celebration|Schedule|TeamID|Ticker|^ENABLED$)/', $key)) $config[$key] = $value;
+        }
+        $hash = sha1(json_encode($config));
+        if ($hash !== $configHash || time() >= $helperRepairAt) {
+            pss_syncAllGeneratedPlaylists();
+            if ($hash !== $configHash) $nextPoll = 0;
+            $configHash = $hash;
+            $helperRepairAt = time() + 60;
+        }
+        $enabled = pss_pluginSetting('ENABLED', 'OFF') === 'ON';
+        if ($enabled && time() >= $nextPoll) {
+            $sleepTime = pss_updateTeamStatus(false);
+            pss_updateTickerOutput(false);
+            $lastPoll = time();
+            $nextPoll = time() + max(3, (int)$sleepTime);
+            $error = isset($GLOBALS['pssLastEspnError']) ? $GLOBALS['pssLastEspnError'] : '';
+        }
+        pss_drainCelebrations();
     } catch (Throwable $e) {
-        pss_logEntry('Daemon error: ' . $e->getMessage());
-        sleep(30);
+        $error = $e->getMessage();
+        pss_logEntry('Daemon error: ' . $error);
+        $nextPoll = time() + 15;
     }
+    pss_writeWorkerHealth($lastPoll, $nextPoll, $error);
+    sleep(3);
 }

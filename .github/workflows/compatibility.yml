@@ -1,0 +1,38 @@
+name: FPP compatibility
+on:
+  push:
+  pull_request:
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax
+        run: git ls-files -z -- '*.php' | xargs -0 -n1 php -l
+      - name: Version profiles
+        run: |
+          for version in 8.0 8.5.1 9.0 9.4 10.0 10.1.2 10.2; do
+            PSS_TEST_FPP_VERSION="$version" php tests/run.php || exit 1
+          done
+      - name: Status buttons
+        run: node tests/status-buttons.mjs
+      - name: Concurrent settings
+        run: |
+          settings_dir=$(mktemp -d)
+          pids=""
+          for writer in 0 1 2 3 4 5; do
+            php tests/concurrent-settings.php "$settings_dir" "$writer" &
+            pids="$pids $!"
+          done
+          for pid in $pids; do wait "$pid" || exit 1; done
+          php tests/concurrent-settings.php "$settings_dir"
+          rm -rf "$settings_dir"
+      - name: Fetch official tagged source
+        run: |
+          git init /tmp/fpp-contracts
+          git -C /tmp/fpp-contracts remote add origin https://github.com/FalconChristmas/fpp.git
+          git -C /tmp/fpp-contracts fetch --depth 1 origin tag 8.0 tag 8.5.1 tag 9.0 tag 9.4 tag 10.0 tag 10.1.2 tag 10.2
+      - name: Source contracts and FPP 8 startup regression
+        run: |
+          python3 tests/check_fpp_contracts.py /tmp/fpp-contracts
+          bash tests/lifecycle.sh /tmp/fpp-contracts

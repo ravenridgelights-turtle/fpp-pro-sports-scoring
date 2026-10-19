@@ -346,6 +346,7 @@ function pss_scheduleGameDisplay($startRaw) {
 
 <div class="container-fluid">
     <h2>Pro Sports Scoring Plugin</h2>
+    <p class="text-muted">Plugin <?=htmlspecialchars(PSS_VERSION)?> · FPP <?=htmlspecialchars(pss_fppVersion())?> · <?=pss_workerHealth()['healthy'] ? 'Scoring worker running' : 'Scoring worker not responding — check the plugin log'?></p>
     <p class="text-muted">Choose up to two teams in each sport. Each team can use its own scoring and win sequences.</p>
 
     <div class="card mb-3">
@@ -1276,7 +1277,7 @@ function pssGameSchedulePriority(league, slot, button) {
 function pssSequenceChanged(setting) {
     $.ajax({
         url: 'plugin.php?_menu=content&plugin=<?=rawurlencode($pluginName)?>&nopage=1&page=functions.inc.php',
-        data: { action: 'syncSequencePlaylist', setting: setting },
+        data: { action: 'syncSequencePlaylist', setting: setting, value: document.getElementById(setting).value },
         type: 'post'
     });
 }
