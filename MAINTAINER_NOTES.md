@@ -59,3 +59,11 @@ Info logs scoring actions and notable failures. Debug additionally logs ESPN pol
 10. A delayed ESPN scoring-play record does not replay a touchdown/field-goal already handled by the score-delta fallback.
 11. The normal status page and kiosk cards refresh without reloading the browser page and show their last successful local snapshot check.
 12. NHL/MLB score changes and win handling do not replay after daemon restart.
+
+## FPP 8–10 reliability update (2026.10.19.1)
+
+See `docs/FPP_COMPATIBILITY.md` and `docs/fpp-source-contracts.json` for the audited contracts and limits. `compatibility.inc.php` owns locked settings I/O, shared JSON command POSTs, version/capability helpers and health reporting. `reliability.inc.php` owns the persistent celebration outbox and destination readiness/order checks. Automatic scoring acknowledges persistence in that outbox; a separate worker step acknowledges successful command dispatch per destination. Manual controls use the same playback preparation/dispatch code and return errors immediately.
+
+The outbox is `config/plugin.<plugin-id>-events.json`; completed IDs are retained for 24 hours. The worker heartbeat and lock live under `/tmp` with a path-derived identity. Do not put high-frequency heartbeat writes on persistent media. The worker checks configuration every three seconds even when ESPN's next poll is minutes away. Stable API metadata expires after 60 seconds so startup failures do not become permanent empty caches.
+
+The source-contract and fixture suites are repeatable in GitHub Actions. Fixture tests load named production functions and replace only the HTTP boundary and JSON response/exit behavior. They do not execute fppd. Changes to source version bounds, command argument layouts, scoring markers, outbox behavior, or destination handling require updating the regression coverage and reviewing the hardware checklist.

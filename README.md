@@ -26,3 +26,22 @@ See `MAINTAINER_NOTES.md` for the current architecture, generated-playlist rules
 ## License and attribution
 
 This maintained version is derived from the original work by Ben Kools (koolsb) and remains licensed under GPL-3.0.
+
+## Supported FPP versions
+
+The shared release **2026.10.19.1** supports **FPP 8, 9 and 10**. Scoring, manual celebration buttons, FSEQ/media helpers, WLED and ticker use the common command contract; optional live video preview requires FPP 10.1+ and an available video API. New installs use `modernize-fpp-espn`; existing `legacy-fpp7-9` installations retain their branch for updates. FPP 7 is no longer supported.
+
+See the [compatibility audit, update instructions and hardware checklist](docs/FPP_COMPATIBILITY.md). For a two-player setup, use one automatic scoring controller for the same outputs and configure its Remote/Both target instead of leaving two independent scorers enabled.
+
+## Regression checks
+
+```bash
+for version in 8.0 8.5.1 9.0 9.4 10.0 10.1.2 10.2; do
+  PSS_TEST_FPP_VERSION="$version" php tests/run.php || exit 1
+done
+node tests/status-buttons.mjs
+python3 tests/check_fpp_contracts.py /path/to/FalconChristmas/fpp
+bash tests/lifecycle.sh /path/to/FalconChristmas/fpp
+```
+
+The FPP checkout must contain the release tags above. Profile tests use simulated responses; source checks read official release code. Physical playback and interrupt/resume still require the on-device checklist.

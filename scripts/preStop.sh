@@ -1,12 +1,14 @@
 #!/bin/bash
-# nounset intentionally disabled for FPP 7-9 compatibility
+# nounset intentionally disabled for FPP 8-10 compatibility
 
 PLUGIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 PID_FILE="${PLUGIN_DIR}/sports-scoring.pid"
 
 stop_pid() {
     local pid="$1"
-    [ -n "$pid" ] || return 0
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    # A stale PID file may belong to an unrelated process after a reboot.
+    [ "$(ps -p "$pid" -o args= 2>/dev/null)" = "/usr/bin/php ${PLUGIN_DIR}/nfl.php" ] || return 0
 
     if kill -0 "$pid" 2>/dev/null; then
         kill "$pid" 2>/dev/null || true

@@ -1,5 +1,5 @@
 #!/bin/bash
-# nounset intentionally disabled for FPP 7-9 compatibility
+# FPP common reads optional variables; nounset is incompatible with FPP 8/9.
 : "${FPPDIR:=/opt/fpp}"
 . "${FPPDIR}/scripts/common"
 
@@ -16,7 +16,9 @@ if [ -n "$EXISTING_PID" ]; then
 fi
 
 rm -f "$PID_FILE"
-touch "$PLUGIN_LOG"
+touch "$PLUGIN_LOG" || exit 1
+chown "${FPPUSER}:${FPPGROUP}" "$PLUGIN_LOG" 2>/dev/null || true
+chmod 0664 "$PLUGIN_LOG" 2>/dev/null || true
 
 nohup /usr/bin/php "${PLUGIN_DIR}/nfl.php" >> "$PLUGIN_LOG" 2>&1 &
 PID=$!
