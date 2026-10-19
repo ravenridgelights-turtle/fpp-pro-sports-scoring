@@ -454,7 +454,7 @@ function pss_fetchEspnHighlights($league, $eventID, $limit = 6) {
 
 
 function pss_highlightProxyUrl($league, $slot, $clipID, $sourceIndex = 0) {
-    return 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlightmedia=1&league='
+    return 'plugin.php?plugin=<?=rawurlencode($pluginName)?>&page=status.php&nopage=1&highlightmedia=1&league='
         . rawurlencode((string)$league)
         . '&slot=' . (int)$slot
         . '&clip=' . rawurlencode((string)$clipID)
@@ -713,6 +713,10 @@ function pss_statusSnapshotData() {
     return array(
         'enabled' => pss_statusValue('ENABLED', 'OFF') === 'ON',
         'generatedAt' => date(DATE_ATOM),
+        'worker' => pss_workerHealth(),
+        'pluginVersion' => PSS_VERSION,
+        'build' => pss_pluginBuildInfo(),
+        'fppVersion' => pss_fppVersion(),
         'games' => $games,
         'ticker' => array(
             'enabled' => pss_statusValue('TickerEnabled', 'OFF') === 'ON',
@@ -1413,7 +1417,7 @@ body {
 <?php if ($pssKioskMode): ?>
 <div class="pss-kiosk-page">
     <header class="pss-kiosk-topbar">
-        <a class="pss-kiosk-home" href="plugin.php?plugin=fpp-nfl&amp;page=status.php" title="Return to Pro Sports Scoring">
+        <a class="pss-kiosk-home" href="plugin.php?plugin=<?=rawurlencode($pluginName)?>&amp;page=status.php" title="Return to Pro Sports Scoring">
             <img class="pss-kiosk-logo"
                  src="/images/redesign/fpp-logo.svg"
                  alt="FPP"
@@ -1422,7 +1426,7 @@ body {
             <span class="pss-kiosk-title">Pro Sports Scoreboard</span>
         </a>
         <div class="pss-kiosk-actions">
-            <span class="pss-kiosk-refresh-note" data-pss-refresh-note="1">Connecting live refresh…</span>
+            <span class="pss-kiosk-refresh-note" data-pss-refresh-note="1">Checking scoring worker…</span>
             <button type="button" class="pss-kiosk-fullscreen" onclick="pssKioskFullscreen()">Fullscreen</button>
         </div>
     </header>
@@ -1432,8 +1436,8 @@ body {
     <div class="pss-status-toolbar">
         <h2>Pro Sports Scoring Status</h2>
         <div class="pss-kiosk-actions">
-            <span class="pss-kiosk-refresh-note" data-pss-refresh-note="1">Connecting live refresh…</span>
-            <a class="pss-kiosk-open" href="plugin.php?plugin=fpp-nfl&amp;page=status.php&amp;nopage=1&amp;kiosk=1">Kiosk Display</a>
+            <span class="pss-kiosk-refresh-note" data-pss-refresh-note="1">Checking scoring worker…</span>
+            <a class="pss-kiosk-open" href="plugin.php?plugin=<?=rawurlencode($pluginName)?>&amp;page=status.php&amp;nopage=1&amp;kiosk=1">Kiosk Display</a>
         </div>
     </div>
 <?php endif; ?>
@@ -1583,7 +1587,7 @@ function pssKioskFullscreen() {
 }
 
 (function () {
-    var dataUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&data=1';
+    var dataUrl = 'plugin.php?plugin=<?=rawurlencode($pluginName)?>&page=status.php&nopage=1&data=1';
     var refreshNote = document.querySelector('[data-pss-refresh-note="1"]');
     var refreshTimer = null;
     var refreshInFlight = false;
@@ -1795,7 +1799,9 @@ function pssKioskFullscreen() {
         }
 
         if (refreshNote) {
-            refreshNote.textContent = 'Live · checked ' + new Date().toLocaleTimeString();
+            refreshNote.textContent = snapshot.worker && snapshot.worker.healthy
+                ? (snapshot.enabled ? 'Scoring worker running' : 'Automatic scoring disabled') + ' · FPP ' + snapshot.fppVersion + ' · plugin ' + snapshot.pluginVersion + (snapshot.build ? ' · ' + snapshot.build.branch + ' @ ' + snapshot.build.commit : '') + (snapshot.worker.error ? ' · ' + snapshot.worker.error : '')
+                : 'Scoring worker is not responding · restart the plugin or check its log';
         }
     }
 
@@ -1861,7 +1867,7 @@ function pssKioskFullscreen() {
 (function () {
     if (typeof fetch !== 'function') return;
 
-    var dataUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&data=1';
+    var dataUrl = 'plugin.php?plugin=<?=rawurlencode($pluginName)?>&page=status.php&nopage=1&data=1';
     var refreshNote = document.querySelector('[data-pss-refresh-note="1"]');
     var refreshTimer = null;
     var refreshInFlight = false;
@@ -1940,7 +1946,9 @@ function pssKioskFullscreen() {
         }
 
         if (refreshNote) {
-            refreshNote.textContent = 'Live · checked ' + new Date().toLocaleTimeString();
+            refreshNote.textContent = snapshot.worker && snapshot.worker.healthy
+                ? (snapshot.enabled ? 'Scoring worker running' : 'Automatic scoring disabled') + ' · FPP ' + snapshot.fppVersion + ' · plugin ' + snapshot.pluginVersion + (snapshot.build ? ' · ' + snapshot.build.branch + ' @ ' + snapshot.build.commit : '') + (snapshot.worker.error ? ' · ' + snapshot.worker.error : '')
+                : 'Scoring worker is not responding · restart the plugin or check its log';
         }
     }
 
@@ -1971,6 +1979,8 @@ function pssKioskFullscreen() {
             });
     }
 
+    // The normal Status page previously rendered once and then stayed frozen.
+    // Refresh it the same way the kiosk page already does.
     refreshScoreboard();
     document.addEventListener('visibilitychange', function () {
         if (!document.hidden) {
@@ -1987,7 +1997,7 @@ function pssKioskFullscreen() {
     var buttons = document.querySelectorAll('[data-pss-manual-trigger="1"]');
     if (!buttons.length) return;
 
-    var triggerUrl = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1';
+    var triggerUrl = 'plugin.php?plugin=<?=rawurlencode($pluginName)?>&page=functions.inc.php&nopage=1';
 
     function setFeedback(button, message, isError) {
         var panel = button.closest ? button.closest('.pss-team-selected') : null;
@@ -2502,7 +2512,7 @@ function pssKioskFullscreen() {
         if (panel._pssHighlightLoading) return;
         var league = panel.getAttribute('data-league') || '';
         var slot = panel.getAttribute('data-slot') || '1';
-        var url = 'plugin.php?plugin=fpp-nfl&page=status.php&nopage=1&highlights=1&league=' +
+        var url = 'plugin.php?plugin=<?=rawurlencode($pluginName)?>&page=status.php&nopage=1&highlights=1&league=' +
             encodeURIComponent(league) + '&slot=' + encodeURIComponent(slot) + '&_=' + Date.now();
 
         panel._pssHighlightLoading = true;

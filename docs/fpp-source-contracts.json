@@ -1,0 +1,117 @@
+{
+  "scope": "Tagged source contracts; no hardware execution",
+  "releases": [
+    {
+      "tag": "8.0",
+      "commit": "7ac6336e5195c6803350a8bf8a021bf6c7e1814e",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": false,
+      "videoPreview": false,
+      "source": "https://github.com/FalconChristmas/fpp/tree/8.0"
+    },
+    {
+      "tag": "8.5.1",
+      "commit": "3c40b2efb8c0655acc3f180bc8563f38f1cb0216",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": false,
+      "videoPreview": false,
+      "source": "https://github.com/FalconChristmas/fpp/tree/8.5.1"
+    },
+    {
+      "tag": "9.0",
+      "commit": "70c525ac7ae6f1d5098779a3d367f5799caed87c",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": false,
+      "videoPreview": false,
+      "source": "https://github.com/FalconChristmas/fpp/tree/9.0"
+    },
+    {
+      "tag": "9.4",
+      "commit": "73800dca21f8a8704c6af8707ca0ad337bad9139",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": false,
+      "videoPreview": false,
+      "source": "https://github.com/FalconChristmas/fpp/tree/9.4"
+    },
+    {
+      "tag": "10.0",
+      "commit": "370e62ed7e8c8318da6ee5b01312b8b75082d952",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": true,
+      "videoPreview": false,
+      "source": "https://github.com/FalconChristmas/fpp/tree/10.0"
+    },
+    {
+      "tag": "10.1.2",
+      "commit": "0fc2559a70f7a495810d8a5e3b8f4f9686eb264d",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": true,
+      "videoPreview": true,
+      "source": "https://github.com/FalconChristmas/fpp/tree/10.1.2"
+    },
+    {
+      "tag": "10.2",
+      "commit": "4d38391b7c1808b08fa462c4b4aa731aed5c5896",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": true,
+      "videoPreview": true,
+      "source": "https://github.com/FalconChristmas/fpp/tree/10.2"
+    }
+  ]
+}
