@@ -16,14 +16,14 @@ function pss_statusValue($key, $default = '') {
     return isset($pluginSettings[$key]) ? urldecode((string)$pluginSettings[$key]) : $default;
 }
 
-function pss_formatStart($value) {
+function pss_formatStart($value, $timeValid = true) {
     if ($value === '' || $value === '0') {
         return 'No scheduled event found';
     }
     try {
         $dt = new DateTime($value);
         $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
-        return $dt->format('l, F j @ g:i A');
+        return $timeValid ? $dt->format('l, F j @ g:i A') : ($dt->format('l, F j') . ' @ Time TBD');
     } catch (Exception $e) {
         return 'Unknown';
     }
@@ -705,7 +705,7 @@ function pss_statusSnapshotData() {
                 'stateLabel' => pss_stateLabel(pss_statusValue($prefix . 'GameStatus')),
                 'detail' => pss_statusValue($prefix . 'GameDetail'),
                 'start' => pss_statusValue($prefix . 'Start'),
-                'startFormatted' => pss_formatStart(pss_statusValue($prefix . 'Start')),
+                'startFormatted' => pss_formatStart(pss_statusValue($prefix . 'Start'), pss_statusValue($prefix . 'StartTimeValid', 'ON') !== 'OFF'),
             );
         }
     }
@@ -1515,7 +1515,7 @@ body {
             <div class="pss-meta">
                 <div class="pss-meta-item">
                     <span class="pss-meta-label">Start</span>
-                    <span class="pss-meta-value" data-pss-field="start"><?=htmlspecialchars(pss_formatStart(pss_statusValue($prefix . 'Start')))?></span>
+                    <span class="pss-meta-value" data-pss-field="start"><?=htmlspecialchars(pss_formatStart(pss_statusValue($prefix . 'Start'), pss_statusValue($prefix . 'StartTimeValid', 'ON') !== 'OFF'))?></span>
                 </div>
                 <div class="pss-meta-item">
                     <span class="pss-meta-label">Matchup</span>
