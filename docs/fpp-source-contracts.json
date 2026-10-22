@@ -112,6 +112,22 @@
       "videoInputSources": true,
       "videoPreview": true,
       "source": "https://github.com/FalconChristmas/fpp/tree/10.2"
+    },
+    {
+      "tag": "10.3",
+      "commit": "da997bd61ea2706473033a458aee44fba07c0a30",
+      "insertPlaylistArguments": [
+        "name",
+        "startItem",
+        "endItem",
+        "ifNotRunning"
+      ],
+      "jsonCommandPost": true,
+      "overlayTextArguments": 8,
+      "playlistApi": true,
+      "videoInputSources": true,
+      "videoPreview": true,
+      "source": "https://github.com/FalconChristmas/fpp/tree/10.3"
     }
   ]
 }
