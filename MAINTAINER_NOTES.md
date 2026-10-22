@@ -37,6 +37,8 @@ Playback uses `POST /api/command` with `Insert Playlist Immediate`. FPP may retu
 
 The scoring daemon is started by the plugin lifecycle scripts and runs as root under FPP. Upgrade/install must replace stale daemon processes so newly installed PHP code actually takes effect.
 
+Pregame cards are refreshed on worker startup and at most every ten minutes per selected team, independently of live leagues' three-second polls. `pss_refreshUpcomingGame()` refreshes both the team's next-event pointer and its summary, keeps failed lookups non-destructive, and sends same-event live/final responses through normal score handling. A saved matchup must not bypass refresh until its old kickoff. ESPN may omit scores before kickoff; only pregame may default an absent score to zero. `StartTimeValid = OFF` retains ESPN's TBD time flag for status/ticker rendering and suppresses game-time scheduling until kickoff is known.
+
 ## Logging
 
 Use only FPP's plugin log:
