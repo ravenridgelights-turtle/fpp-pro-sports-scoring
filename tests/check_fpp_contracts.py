@@ -6,7 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
-TAGS = ['8.0', '8.5.1', '9.0', '9.4', '10.0', '10.1.2', '10.2']
+TAGS = ['8.0', '8.5.1', '9.0', '9.4', '10.0', '10.1.2', '10.2', '10.3']
 p = argparse.ArgumentParser()
 p.add_argument('fpp_checkout', type=Path)
 p.add_argument('--report', type=Path)
@@ -50,6 +50,19 @@ for tag in TAGS:
     has_preview = "dispatch_get('/pipewire/video/input-sources/:id/preview'" in routes
     assert has_sources == (version >= (10, 0)), tag
     assert has_preview == (version >= (10, 1)), tag
+    if version >= (10, 3):
+        # The plugin uses the bare JSON POST, and must accept text/plain
+        # successes while treating strict request/command failures as errors.
+        post = commands[commands.index('CommandManager::render_POST'):]
+        assert 'Body must be a JSON object with a' in post, tag
+        assert '400, "text/plain"' in post and 'r->isError()' in post, tag
+        assert '500, r->contentType()' in post, tag
+        assert 'Playlist not found:' in playlist_api and 'http_response_code(404)' in playlist_api, tag
+        assert 'function PlaylistFilePath' in playlist_api, tag
+        assert 'retireEffectFor(m, false);' in overlays, tag
+        apache = read(tag, 'etc/apache2.site')
+        assert 'HTTP:Origin' in apache and 'cross-site' in apache, tag
+        assert 'api-cross-origin' in apache, tag
     row = {'tag': tag, 'commit': git('rev-parse', f'{tag}^{{commit}}').strip(),
            'insertPlaylistArguments': ['name', 'startItem', 'endItem', 'ifNotRunning'],
            'jsonCommandPost': True, 'overlayTextArguments': 8, 'playlistApi': True,
