@@ -33,12 +33,15 @@ The shared release **2026.10.19.1** supports **FPP 8, 9 and 10**. Scoring, manua
 
 See the [compatibility audit, update instructions and hardware checklist](docs/FPP_COMPATIBILITY.md). For a two-player setup, use one automatic scoring controller for the same outputs and configure its Remote/Both target instead of leaving two independent scorers enabled.
 
+**FPP 10.3 recheck (October 21, 2026):** no breaking change was found in the maintained plugin's API contracts. The existing runtime release remains **2026.10.19.1**; this audit adds tests and documentation, with no playback or settings changes. See the [10.3 findings](docs/FPP_COMPATIBILITY.md#fpp-103-recheck--october-21-2026). Source checks and simulated API tests do not replace an on-device celebration/interrupt/resume test after updating FPP.
+
 ## Regression checks
 
 ```bash
-for version in 8.0 8.5.1 9.0 9.4 10.0 10.1.2 10.2; do
+for version in 8.0 8.5.1 9.0 9.4 10.0 10.1.2 10.2 10.3; do
   PSS_TEST_FPP_VERSION="$version" php tests/run.php || exit 1
 done
+php tests/fpp-10.3.php
 node tests/status-buttons.mjs
 python3 tests/check_fpp_contracts.py /path/to/FalconChristmas/fpp
 bash tests/lifecycle.sh /path/to/FalconChristmas/fpp
