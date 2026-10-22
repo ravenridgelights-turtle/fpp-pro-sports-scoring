@@ -1442,7 +1442,7 @@ function pss_tickerLeagueLabel($league) {
     return ($league === 'ncaa') ? 'NCAA' : strtoupper((string)$league);
 }
 
-function pss_tickerStartLabel($value) {
+function pss_tickerStartLabel($value, $timeValid = true) {
     $value = trim((string)$value);
     if ($value === '' || $value === '0') {
         return 'TBD';
@@ -1450,7 +1450,7 @@ function pss_tickerStartLabel($value) {
     try {
         $dt = new DateTime($value);
         $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
-        return $dt->format('D g:i A');
+        return $timeValid ? $dt->format('D g:i A') : ($dt->format('D M j') . ' @ Time TBD');
     } catch (Exception $e) {
         return 'TBD';
     }
@@ -1499,7 +1499,7 @@ function pss_buildTickerItems($forOverlay = false) {
             $oppoScore = pss_pluginSetting("{$prefix}OppoScore", '0');
             $state = pss_pluginSetting("{$prefix}GameStatus", '');
             $detail = pss_tickerCleanDetail(pss_pluginSetting("{$prefix}GameDetail", ''));
-            $start = pss_tickerStartLabel(pss_pluginSetting("{$prefix}Start", ''));
+            $start = pss_tickerStartLabel(pss_pluginSetting("{$prefix}Start", ''), pss_pluginSetting("{$prefix}StartTimeValid", 'ON') !== 'OFF');
 
             $left = ($style === 'detailed') ? $teamName : $teamAbbr;
             $right = ($style === 'detailed') ? $oppoName : $oppoAbbr;
@@ -2491,6 +2491,7 @@ function pss_generatedGameSchedulePlaylistName($league, $slot = 1) {
 
 function pss_gameScheduleWindow($league, $slot = 1) {
     $prefix = pss_teamPrefix($league, $slot);
+    if (pss_pluginSetting("{$prefix}StartTimeValid", 'ON') === 'OFF') return null;
     $startRaw = trim(pss_pluginSetting("{$prefix}Start", ''));
     if ($startRaw === '') return null;
     try {
@@ -3873,6 +3874,13 @@ function pss_extractTeamLogo($teamData) {
     return '';
 }
 
+function pss_espnEventTimeValid($event, $competition) {
+    if ((isset($event['timeValid']) && $event['timeValid'] === false)
+        || (isset($competition['timeValid']) && $competition['timeValid'] === false)) return false;
+    $type = isset($competition['status']['type']) ? $competition['status']['type'] : array();
+    return !isset($type['shortDetail']) || stripos((string)$type['shortDetail'], 'TBD') === false;
+}
+
 function pss_getTeamInfo($sport, $league, $team) {
     $info = array(
         'valid' => false,
@@ -3882,6 +3890,7 @@ function pss_getTeamInfo($sport, $league, $team) {
         'nextEventID' => '',
         'nextEventDate' => '',
         'nextEventStatus' => '',
+        'nextEventTimeValid' => true,
         'paletteColors' => array('#FFFFFF', '#000000', '#FFFFFF')
     );
     if ($team === '') {
@@ -3906,6 +3915,8 @@ function pss_getTeamInfo($sport, $league, $team) {
         $event = $teamData['nextEvent'][0];
         $info['nextEventID'] = isset($event['id']) ? (string)$event['id'] : '';
         $info['nextEventDate'] = isset($event['date']) ? (string)$event['date'] : '';
+        $competition = isset($event['competitions'][0]) ? $event['competitions'][0] : array();
+        $info['nextEventTimeValid'] = pss_espnEventTimeValid($event, $competition);
         if (isset($event['competitions'][0]['status']['type']['state'])) {
             $info['nextEventStatus'] = (string)$event['competitions'][0]['status']['type']['state'];
         }
@@ -3917,6 +3928,7 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
     $status = array(
         'valid' => false,
         'start' => '',
+        'timeValid' => true,
         'state' => '',
         'oppoID' => '',
         'oppoAbbreviation' => '',
@@ -3960,6 +3972,7 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
     }
 
     $status['start'] = isset($competition['date']) ? (string)$competition['date'] : '';
+    $status['timeValid'] = pss_espnEventTimeValid($data['header'], $competition);
     $status['state'] = isset($competition['status']['type']['state']) ? (string)$competition['status']['type']['state'] : '';
     $status['oppoID'] = isset($opponent['team']['id']) ? (string)$opponent['team']['id'] : '';
     $status['oppoAbbreviation'] = isset($opponent['team']['abbreviation']) ? (string)$opponent['team']['abbreviation'] : '';
@@ -4000,9 +4013,19 @@ function pss_getGameStatus($sport, $league, $gameID, $teamID) {
     } elseif (isset($competitionStatus['displayClock'])) {
         $status['detail'] = (string)$competitionStatus['displayClock'];
     }
-    if (!isset($myTeam['score'], $opponent['score']) || !is_numeric($myTeam['score']) || !is_numeric($opponent['score'])) return $status;
-    $status['myScore'] = (int)$myTeam['score'];
-    $status['oppoScore'] = isset($opponent['score']) ? (int)$opponent['score'] : 0;
+    // Scheduled ESPN summaries may omit scores entirely (NFL, NCAA and MLB).
+    // Only pregame may default an absent score to zero. Live/final snapshots
+    // still need both numeric scores, so a partial response cannot erase a
+    // known score or create a false scoring event.
+    $scores = array();
+    foreach (array($myTeam, $opponent) as $competitor) {
+        $score = isset($competitor['score']) ? $competitor['score'] : null;
+        if ($status['state'] === 'pre' && ($score === null || $score === '')) $score = 0;
+        if (!is_numeric($score)) return $status;
+        $scores[] = (int)$score;
+    }
+    $status['myScore'] = $scores[0];
+    $status['oppoScore'] = $scores[1];
     $status['scoringPlays'] = isset($data['scoringPlays']) && is_array($data['scoringPlays']) ? $data['scoringPlays'] : array();
     $status['valid'] = in_array($status['state'], array('pre', 'in', 'post'), true);
     return $status;
@@ -4060,7 +4083,7 @@ function pss_baselineGameSnapshot($league, $eventID, $game, $slot = 1) {
     return true;
 }
 
-function pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo, $slot = 1) {
+function pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo, $slot = 1, $snapshot = null) {
     if (!is_array($teamInfo) || empty($teamInfo['valid']) || empty($teamInfo['nextEventID'])) {
         return false;
     }
@@ -4073,11 +4096,12 @@ function pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo, $slo
     // never be displayed under a new ESPN event ID.
     pss_setPluginSetting("{$prefix}TeamNextEventID", $eventID);
     pss_setPluginSetting("{$prefix}Start", isset($teamInfo['nextEventDate']) ? (string)$teamInfo['nextEventDate'] : '');
+    pss_setPluginSetting("{$prefix}StartTimeValid", !isset($teamInfo['nextEventTimeValid']) || $teamInfo['nextEventTimeValid'] ? 'ON' : 'OFF');
     pss_setPluginSetting("{$prefix}GameStatus", isset($teamInfo['nextEventStatus']) ? (string)$teamInfo['nextEventStatus'] : '');
     pss_clearGameSnapshotState($league, $slot);
 
     // Fetch one full summary immediately, even when the next game is days away.
-    $game = pss_getGameStatus($sport, $league, $eventID, $teamID);
+    $game = is_array($snapshot) ? $snapshot : pss_getGameStatus($sport, $league, $eventID, $teamID);
     if ($game['valid']) {
         pss_baselineGameSnapshot($league, $eventID, $game, $slot);
     }
@@ -4130,6 +4154,7 @@ function pss_updateTeam($sport, $league, $slot = 1, $selectedTeamID = null) {
     pss_storeTeamPaletteSettings($league, $slot, $teamInfo);
     pss_setPluginSetting("{$prefix}TeamNextEventID", $teamInfo['nextEventID']);
     pss_setPluginSetting("{$prefix}Start", $teamInfo['nextEventDate']);
+    pss_setPluginSetting("{$prefix}StartTimeValid", $teamInfo['nextEventTimeValid'] ? 'ON' : 'OFF');
     pss_setPluginSetting("{$prefix}GameStatus", $teamInfo['nextEventStatus']);
     pss_clearGameSnapshotState($league, $slot);
 
@@ -4152,7 +4177,7 @@ function pss_clearLeagueState($league, $clearTeam = false, $slot = 1) {
     $keys = array(
         'TeamLogo' => '', 'TeamAbbreviation' => '', 'TeamName' => '', 'TeamPaletteName' => '',
         'TeamColor1' => '', 'TeamColor2' => '', 'TeamColor3' => '', 'TeamNextEventID' => '',
-        'Start' => '', 'GameStatus' => '', 'OppoID' => '', 'OppoName' => '', 'OppoAbbreviation' => '',
+        'Start' => '', 'StartTimeValid' => 'ON', 'GameStatus' => '', 'OppoID' => '', 'OppoName' => '', 'OppoAbbreviation' => '',
         'OppoLogo' => '', 'GameDetail' => '', 'MyScore' => '0', 'OppoScore' => '0',
         'LastScoringPlayID' => '', 'LastCelebratedScore' => '0',
         'LastCompletedEventID' => '', 'GameSnapshotEventID' => ''
@@ -4188,7 +4213,9 @@ function pss_applyGameSnapshot($league, $status, $updateStatus = true, $eventID 
     }
 
     $values = array(
-        "{$prefix}Start" => $status['start'], "{$prefix}OppoID" => $status['oppoID'],
+        "{$prefix}Start" => $status['start'],
+        "{$prefix}StartTimeValid" => !isset($status['timeValid']) || $status['timeValid'] ? 'ON' : 'OFF',
+        "{$prefix}OppoID" => $status['oppoID'],
         "{$prefix}OppoName" => $status['oppoName'], "{$prefix}OppoAbbreviation" => $status['oppoAbbreviation'],
         "{$prefix}OppoLogo" => $oppoLogo, "{$prefix}GameDetail" => isset($status['detail']) ? $status['detail'] : '',
         "{$prefix}MyScore" => (string)$status['myScore'], "{$prefix}OppoScore" => (string)$status['oppoScore']
@@ -4382,6 +4409,42 @@ function pss_playConfiguredSequence($league, $suffix, $label, $slot = 1) {
     pss_logEntry("{$logLabel} {$label} detected but one or more configured FPP targets rejected generated playlist {$playlist}");
     return false;
 }
+function pss_refreshUpcomingGame($sport, $league, $teamID, $slot = 1) {
+    global $pluginConfigFile;
+    static $nextRefreshAt = array();
+    $prefix = pss_teamPrefix($league, $slot);
+    $key = $pluginConfigFile . '|' . $prefix . '|' . $teamID;
+    if (isset($nextRefreshAt[$key]) && time() < $nextRefreshAt[$key]) return null;
+    // Another league may be live and poll every three seconds. Refresh future
+    // matchups at most once per ten minutes, independently for each team.
+    $nextRefreshAt[$key] = time() + 600;
+    $oldID = pss_pluginSetting("{$prefix}TeamNextEventID", '');
+    $teamInfo = pss_getTeamInfo($sport, $league, $teamID);
+    $eventID = $teamInfo['valid'] && $teamInfo['nextEventID'] !== '' ? $teamInfo['nextEventID'] : $oldID;
+    $game = pss_getGameStatus($sport, $league, $eventID, $teamID);
+    if (!$game['valid']) {
+        $nextRefreshAt[$key] = time() + 60;
+        return false;
+    }
+    // Ignore a response for a team/event the user changed while ESPN answered.
+    $current = pss_loadPluginSettings();
+    if (urldecode(isset($current["{$prefix}TeamID"]) ? $current["{$prefix}TeamID"] : '') !== (string)$teamID
+        || urldecode(isset($current["{$prefix}TeamNextEventID"]) ? $current["{$prefix}TeamNextEventID"] : '') !== $oldID) return null;
+    if ($eventID !== $oldID) {
+        pss_activateEventFromTeamInfo($league, $sport, $teamID, $teamInfo, $slot, $game);
+        pss_logEntry(pss_teamLogLabel($league, $slot) . " upcoming event changed from {$oldID} to {$eventID}");
+    } elseif ($game['state'] === 'pre') {
+        if (pss_pluginSetting("{$prefix}GameSnapshotEventID", '') !== $eventID || pss_pluginSetting("{$prefix}OppoID", '') === '') {
+            pss_baselineGameSnapshot($league, $eventID, $game, $slot);
+        } else {
+            pss_applyGameSnapshot($league, $game, true, $eventID, $slot);
+        }
+    }
+    // Live/final responses for the same event go through normal score handling
+    // below. Baseline only a newly discovered event, never an ongoing score.
+    return $game;
+}
+
 function pss_updateTeamStatus($reparseSettings = true) {
     $GLOBALS['pssLastEspnError'] = '';
     global $pluginSettings, $leagues;
@@ -4463,8 +4526,22 @@ function pss_updateTeamStatus($reparseSettings = true) {
                 }
             }
 
+            if ($gameState === 'pre') {
+                $refreshed = pss_refreshUpcomingGame($sport, $league, $teamID, $slot);
+                if ($refreshed === false) {
+                    $GLOBALS['pssLastEspnError'] = 'ESPN upcoming game refresh failed; retaining the last game data.';
+                    $sleepTimes[] = 60;
+                } elseif (is_array($refreshed)) {
+                    $status = $refreshed;
+                    $eventID = pss_pluginSetting("{$prefix}TeamNextEventID", '');
+                    $gameState = pss_pluginSetting("{$prefix}GameStatus", '');
+                    $start = pss_pluginSetting("{$prefix}Start", '');
+                    $snapshotEventID = pss_pluginSetting("{$prefix}GameSnapshotEventID", '');
+                }
+            }
+
             if ($snapshotEventID !== $eventID || pss_pluginSetting("{$prefix}OppoID", '') === '') {
-                $status = pss_getGameStatus($sport, $league, $eventID, $teamID);
+                if ($status === null) $status = pss_getGameStatus($sport, $league, $eventID, $teamID);
                 if ($status['valid']) {
                     pss_baselineGameSnapshot($league, $eventID, $status, $slot);
                     $gameState = $status['state'];
@@ -4479,7 +4556,7 @@ function pss_updateTeamStatus($reparseSettings = true) {
                 }
             }
 
-            if ($gameState === 'pre' && $start !== '') {
+            if ($gameState === 'pre' && $start !== '' && ($status === null || $status['state'] === 'pre')) {
                 try {
                     $gameDate = new DateTime($start);
                     $secondsToGame = $gameDate->getTimestamp() - time();

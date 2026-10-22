@@ -16,6 +16,8 @@ jobs:
           done
       - name: FPP 10.3 strict API and video fixtures
         run: php tests/fpp-10.3.php
+      - name: ESPN pregame and upcoming-event refresh
+        run: php tests/espn-pregame.php
       - name: Status buttons
         run: node tests/status-buttons.mjs
       - name: Concurrent settings

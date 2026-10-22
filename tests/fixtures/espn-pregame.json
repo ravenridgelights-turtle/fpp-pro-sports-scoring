@@ -1,0 +1,315 @@
+{
+  "capturedOn": "2026-10-21",
+  "note": "Reduced live ESPN responses; optional score fields remain omitted as returned by the source.",
+  "games": [
+    {
+      "name": "steelers",
+      "sport": "football",
+      "league": "nfl",
+      "teamID": "23",
+      "eventID": "401873011",
+      "source": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401873011",
+      "response": {
+        "header": {
+          "id": "401873011",
+          "timeValid": true,
+          "competitions": [
+            {
+              "id": "401873011",
+              "date": "2026-10-25T13:30Z",
+              "status": {
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_SCHEDULED",
+                  "state": "pre",
+                  "completed": false,
+                  "description": "Scheduled",
+                  "detail": "Sun, October 25th at 9:30 AM EDT",
+                  "shortDetail": "10/25 - 9:30 AM EDT"
+                },
+                "isTBDFlex": false
+              },
+              "competitors": [
+                {
+                  "id": "18",
+                  "homeAway": "home",
+                  "team": {
+                    "id": "18",
+                    "abbreviation": "NO",
+                    "displayName": "New Orleans Saints",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/nfl/500/no.png"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "23",
+                  "homeAway": "away",
+                  "team": {
+                    "id": "23",
+                    "abbreviation": "PIT",
+                    "displayName": "Pittsburgh Steelers",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/nfl/500/pit.png"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "jaguars",
+      "sport": "football",
+      "league": "nfl",
+      "teamID": "30",
+      "eventID": "401873028",
+      "source": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401873028",
+      "response": {
+        "header": {
+          "id": "401873028",
+          "timeValid": true,
+          "competitions": [
+            {
+              "id": "401873028",
+              "date": "2026-11-01T18:00Z",
+              "status": {
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_SCHEDULED",
+                  "state": "pre",
+                  "completed": false,
+                  "description": "Scheduled",
+                  "detail": "Sun, November 1st at 1:00 PM EST",
+                  "shortDetail": "11/1 - 1:00 PM EST"
+                },
+                "isTBDFlex": false
+              },
+              "competitors": [
+                {
+                  "id": "30",
+                  "homeAway": "home",
+                  "team": {
+                    "id": "30",
+                    "abbreviation": "JAX",
+                    "displayName": "Jacksonville Jaguars",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/nfl/500/jax.png"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "11",
+                  "homeAway": "away",
+                  "team": {
+                    "id": "11",
+                    "abbreviation": "IND",
+                    "displayName": "Indianapolis Colts",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "chargers",
+      "sport": "football",
+      "league": "nfl",
+      "teamID": "24",
+      "eventID": "401873032",
+      "source": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401873032",
+      "response": {
+        "header": {
+          "id": "401873032",
+          "timeValid": true,
+          "competitions": [
+            {
+              "id": "401873032",
+              "date": "2026-11-01T21:05Z",
+              "status": {
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_SCHEDULED",
+                  "state": "pre",
+                  "completed": false,
+                  "description": "Scheduled",
+                  "detail": "Sun, November 1st at 4:05 PM EST",
+                  "shortDetail": "11/1 - 4:05 PM EST"
+                },
+                "isTBDFlex": false
+              },
+              "competitors": [
+                {
+                  "id": "14",
+                  "homeAway": "home",
+                  "team": {
+                    "id": "14",
+                    "abbreviation": "LAR",
+                    "displayName": "Los Angeles Rams",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/nfl/500/lar.png"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "24",
+                  "homeAway": "away",
+                  "team": {
+                    "id": "24",
+                    "abbreviation": "LAC",
+                    "displayName": "Los Angeles Chargers",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/nfl/500/lac.png"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "college-football",
+      "sport": "football",
+      "league": "ncaa",
+      "teamID": "333",
+      "eventID": "401856727",
+      "source": "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=401856727",
+      "response": {
+        "header": {
+          "id": "401856727",
+          "timeValid": true,
+          "competitions": [
+            {
+              "id": "401856727",
+              "date": "2026-10-24T19:30Z",
+              "status": {
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_SCHEDULED",
+                  "state": "pre",
+                  "completed": false,
+                  "description": "Scheduled",
+                  "detail": "Sat, October 24th at 3:30 PM EDT",
+                  "shortDetail": "10/24 - 3:30 PM EDT"
+                }
+              },
+              "competitors": [
+                {
+                  "id": "333",
+                  "homeAway": "home",
+                  "team": {
+                    "id": "333",
+                    "abbreviation": "ALA",
+                    "displayName": "Alabama Crimson Tide",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/ncaa/500/333.png"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "245",
+                  "homeAway": "away",
+                  "team": {
+                    "id": "245",
+                    "abbreviation": "TA&M",
+                    "displayName": "Texas A&M Aggies",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/ncaa/500/245.png"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "braves",
+      "sport": "baseball",
+      "league": "mlb",
+      "teamID": "15",
+      "eventID": "401917886",
+      "source": "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/summary?event=401917886",
+      "response": {
+        "header": {
+          "id": "401917886",
+          "timeValid": false,
+          "competitions": [
+            {
+              "id": "401917886",
+              "date": "2027-02-19T05:00Z",
+              "status": {
+                "type": {
+                  "id": "1",
+                  "name": "STATUS_SCHEDULED",
+                  "state": "pre",
+                  "completed": false,
+                  "description": "Scheduled",
+                  "detail": "Scheduled",
+                  "shortDetail": "TBD"
+                },
+                "periodPrefix": "Top"
+              },
+              "competitors": [
+                {
+                  "id": "1",
+                  "homeAway": "home",
+                  "team": {
+                    "id": "1",
+                    "abbreviation": "BAL",
+                    "displayName": "Baltimore Orioles",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/mlb/500/bal.png"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "id": "15",
+                  "homeAway": "away",
+                  "team": {
+                    "id": "15",
+                    "abbreviation": "ATL",
+                    "displayName": "Atlanta Braves",
+                    "logos": [
+                      {
+                        "href": "https://a.espncdn.com/i/teamlogos/mlb/500/atl.png"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
