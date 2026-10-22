@@ -11,9 +11,11 @@ jobs:
         run: git ls-files -z -- '*.php' | xargs -0 -n1 php -l
       - name: Version profiles
         run: |
-          for version in 8.0 8.5.1 9.0 9.4 10.0 10.1.2 10.2; do
+          for version in 8.0 8.5.1 9.0 9.4 10.0 10.1.2 10.2 10.3; do
             PSS_TEST_FPP_VERSION="$version" php tests/run.php || exit 1
           done
+      - name: FPP 10.3 strict API and video fixtures
+        run: php tests/fpp-10.3.php
       - name: Status buttons
         run: node tests/status-buttons.mjs
       - name: Concurrent settings
@@ -31,7 +33,7 @@ jobs:
         run: |
           git init /tmp/fpp-contracts
           git -C /tmp/fpp-contracts remote add origin https://github.com/FalconChristmas/fpp.git
-          git -C /tmp/fpp-contracts fetch --depth 1 origin tag 8.0 tag 8.5.1 tag 9.0 tag 9.4 tag 10.0 tag 10.1.2 tag 10.2
+          git -C /tmp/fpp-contracts fetch --depth 1 origin tag 8.0 tag 8.5.1 tag 9.0 tag 9.4 tag 10.0 tag 10.1.2 tag 10.2 tag 10.3
       - name: Source contracts and FPP 8 startup regression
         run: |
           python3 tests/check_fpp_contracts.py /tmp/fpp-contracts
