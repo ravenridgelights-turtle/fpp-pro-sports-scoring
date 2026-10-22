@@ -29,11 +29,11 @@ This maintained version is derived from the original work by Ben Kools (koolsb) 
 
 ## Supported FPP versions
 
-The shared release **2026.10.19.1** supports **FPP 8, 9 and 10**. Scoring, manual celebration buttons, FSEQ/media helpers, WLED and ticker use the common command contract; optional live video preview requires FPP 10.1+ and an available video API. New installs use `modernize-fpp-espn`; existing `legacy-fpp7-9` installations retain their branch for updates. FPP 7 is no longer supported.
+The shared release **2026.10.21.1** supports **FPP 8, 9 and 10**. Scoring, manual celebration buttons, FSEQ/media helpers, WLED and ticker use the common command contract; optional live video preview requires FPP 10.1+ and an available video API. New installs use `modernize-fpp-espn`; existing `legacy-fpp7-9` installations retain their branch for updates. FPP 7 is no longer supported.
 
 See the [compatibility audit, update instructions and hardware checklist](docs/FPP_COMPATIBILITY.md). For a two-player setup, use one automatic scoring controller for the same outputs and configure its Remote/Both target instead of leaving two independent scorers enabled.
 
-**FPP 10.3 recheck (October 21, 2026):** no breaking change was found in the maintained plugin's API contracts. The existing runtime release remains **2026.10.19.1**; this audit adds tests and documentation, with no playback or settings changes. See the [10.3 findings](docs/FPP_COMPATIBILITY.md#fpp-103-recheck--october-21-2026). Source checks and simulated API tests do not replace an on-device celebration/interrupt/resume test after updating FPP.
+**FPP 10.3 recheck (October 21, 2026):** no breaking change was found in the maintained plugin's API contracts. Audit release **2026.10.21.1** adds tests, documentation and a version marker for confirming installation. Playback behavior and settings formats are the same as 2026.10.19.1. See the [10.3 findings](docs/FPP_COMPATIBILITY.md#fpp-103-recheck--october-21-2026). Source checks and simulated API tests do not replace an on-device celebration/interrupt/resume test after updating FPP.
 
 ## Regression checks
 

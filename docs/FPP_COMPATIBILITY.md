@@ -1,6 +1,6 @@
 # FPP 8–10 compatibility audit
 
-Release: **2026.10.19.1**. FPP 8 is the minimum supported major version. FPP 7 and unverified future major versions are excluded from the install manifest.
+Release: **2026.10.21.1**. FPP 8 is the minimum supported major version. FPP 7 and unverified future major versions are excluded from the install manifest.
 
 This audit checked the official source at **8.0, 8.5.1, 9.0, 9.4, 10.0, 10.1.2, 10.2 and 10.3**, then exercised the plugin with simulated API responses. The 10.3 recheck was completed October 21, 2026. It does **not** claim physical playback testing on those releases. Machine-readable commits and source links are in [fpp-source-contracts.json](fpp-source-contracts.json).
 
@@ -53,7 +53,7 @@ The 9.4 notes also identify upstream playlist/API race and playlist-command cras
 
 Relevant 10.3 source: [command POST/error handling](https://github.com/FalconChristmas/fpp/blob/10.3/src/commands/Commands.cpp), [playlist insertion arguments](https://github.com/FalconChristmas/fpp/blob/10.3/src/commands/PlaylistCommands.cpp), [playlist API](https://github.com/FalconChristmas/fpp/blob/10.3/www/api/controllers/playlist.php), [overlay commands](https://github.com/FalconChristmas/fpp/blob/10.3/src/overlays/PixelOverlay.cpp), [Text arguments](https://github.com/FalconChristmas/fpp/blob/10.3/src/overlays/PixelOverlayEffects.cpp), [video input config](https://github.com/FalconChristmas/fpp/blob/10.3/src/mediaoutput/VideoInputManager.cpp), [browser request gate](https://github.com/FalconChristmas/fpp/blob/10.3/etc/apache2.site), [plugin loading](https://github.com/FalconChristmas/fpp/blob/10.3/src/Plugins.cpp) and [plugin upgrades](https://github.com/FalconChristmas/fpp/blob/10.3/www/api/controllers/plugin.php).
 
-Validation: the existing production-function suite passes 77 assertions for each of the eight version profiles; the added 10.3 fixtures cover strict failures, remote helper creation and preview configuration. Official source contracts pass for all eight tags. PHP syntax, status-button JavaScript, concurrent settings and the lifecycle regression are also checked. CI now includes 10.3 and the new fixtures. The runtime version remains **2026.10.19.1**, since no runtime code changed.
+Validation: the existing production-function suite passes 77 assertions for each of the eight version profiles; the added 10.3 fixtures cover strict failures, remote helper creation and preview configuration. Official source contracts pass for all eight tags. PHP syntax, status-button JavaScript, concurrent settings and the lifecycle regression are also checked. CI now includes 10.3 and the new fixtures. Audit release **2026.10.21.1** records these checks in the plugin's version marker; playback behavior and settings formats are the same as 2026.10.19.1.
 
 After updating FPP, reboot as directed by the release notes, confirm a responding plugin worker, test one celebration while a normal show is playing, and check its return to the show. If used, test the ticker, Remote/Both destination and live preview too. Actual light/audio output, USB capture and physical interrupt/resume remain on-device acceptance checks.
 
@@ -94,7 +94,7 @@ git pull --ff-only origin modernize-fpp-espn
 sudo bash scripts/fpp_install.sh
 ```
 
-For a clean legacy installation, use `legacy-fpp7-9` in the pull command. The legacy branch name is retained for existing installations; this release supports FPP 8–10. An update is successful only if the installer exits successfully and the Status page shows **2026.10.19.1**, the expected branch/commit and a responding worker.
+For a clean legacy installation, use `legacy-fpp7-9` in the pull command. The legacy branch name is retained for existing installations; this release supports FPP 8–10. An update is successful only if the installer exits successfully and the Status page shows **2026.10.21.1**, the expected branch/commit and a responding worker.
 
 ## Two-player installations
 
