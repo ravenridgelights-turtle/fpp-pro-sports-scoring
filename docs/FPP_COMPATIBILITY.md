@@ -1,6 +1,6 @@
 # FPP 8–10 compatibility audit
 
-Release: **2026.10.21.1**. FPP 8 is the minimum supported major version. FPP 7 and unverified future major versions are excluded from the install manifest.
+Release: **2026.10.21.2**. FPP 8 is the minimum supported major version. FPP 7 and unverified future major versions are excluded from the install manifest.
 
 This audit checked the official source at **8.0, 8.5.1, 9.0, 9.4, 10.0, 10.1.2, 10.2 and 10.3**, then exercised the plugin with simulated API responses. The 10.3 recheck was completed October 21, 2026. It does **not** claim physical playback testing on those releases. Machine-readable commits and source links are in [fpp-source-contracts.json](fpp-source-contracts.json).
 
@@ -59,6 +59,18 @@ After updating FPP, reboot as directed by the release notes, confirm a respondin
 
 ## Verified problems and fixes
 
+### ESPN scheduled-game follow-up — 2026.10.21.2
+
+The FPP API audit did not cover ESPN's scoreless scheduled-game response. Captured summaries for the Steelers, Jaguars, Chargers, college football and Braves demonstrate that upcoming games can omit competitor scores. The plugin previously rejected those otherwise complete summaries, leaving a selected NFL team with no opponent and “ESPN snapshot refresh failed.” Scheduled missing/null/empty scores now default to zero; malformed values and incomplete live/final scores remain invalid.
+
+A second issue hid that failure on already-populated cards: a saved pregame snapshot skipped ESPN until twenty minutes before the saved kickoff. Complete-looking NCAA/MLB cards therefore did not establish that their current summary refresh worked. Future matchups now refresh at worker startup and at most every ten minutes per team, including when another league is live. A failed refresh preserves saved data and retries after about a minute. A same-event transition to live/final keeps normal score and win handling; switching to a newly discovered event uses the existing historical-score baseline.
+
+ESPN's `timeValid: false` is now retained with the event. Status, kiosk refresh data and the ticker display the known date with **Time TBD**, and game-time schedules wait for a confirmed kickoff instead of using a placeholder midnight. The current Braves source marks its time TBD; the plugin does not substitute an independently advertised ticket-site time.
+
+Reduced source responses and URLs are in [espn-pregame.json](../tests/fixtures/espn-pregame.json); [espn-pregame.php](../tests/espn-pregame.php) exercises the production parser, worker repair, independent NFL slots, stale-event/date correction, failed refreshes, scoring transitions and TBD display/scheduling. This supplements the FPP tagged-source and fixture suites above. Existing selected teams are refreshed automatically by the restarted worker after a successful plugin update.
+
+### Earlier FPP 8–10 reliability fixes
+
 1. **Startup on FPP 8:** the modern lifecycle enabled `set -u` before sourcing FPP common. FPP 8.5.1 reads optional variables such as `LD_LIBRARY_PATH` without a default, causing startup to abort. The installer also ignored worker-start failures. Lifecycle now permits those optional variables and propagates failed startup. A stale PID file cannot terminate an unrelated process; a worker lock prevents duplicate daemons on one player.
 2. **Saved model lists:** PHP's INI parser strips embedded quotes from JSON model lists. Locked, string-preserving reads and a compatible writer retain these lists, encode unsafe values for FPP 8's own parser, recover simple previously stripped lists, and avoid rewriting unchanged settings. A game snapshot is saved in one settings transaction. Complex names already damaged by an older writer may still need reselecting.
 3. **Lost celebrations:** the previous code advanced scoring/completion markers even if FPP rejected playback. Automatic events now enter a persistent outbox before acknowledgment. Each successful destination is retained independently; an offline remote does not replay a successful local celebration. Explicit failures retry about every five seconds for up to two minutes. Waiting for an existing celebration does not consume that failure window; queued events have a 15-minute age limit. Disabled, changed-team, changed-event and overturned-score events are cancelled.
@@ -94,7 +106,7 @@ git pull --ff-only origin modernize-fpp-espn
 sudo bash scripts/fpp_install.sh
 ```
 
-For a clean legacy installation, use `legacy-fpp7-9` in the pull command. The legacy branch name is retained for existing installations; this release supports FPP 8–10. An update is successful only if the installer exits successfully and the Status page shows **2026.10.21.1**, the expected branch/commit and a responding worker.
+For a clean legacy installation, use `legacy-fpp7-9` in the pull command. The legacy branch name is retained for existing installations; this release supports FPP 8–10. An update is successful only if the installer exits successfully and the Status page shows **2026.10.21.2**, the expected branch/commit and a responding worker.
 
 ## Two-player installations
 

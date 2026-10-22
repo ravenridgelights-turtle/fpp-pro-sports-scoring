@@ -37,6 +37,7 @@ function pss_initializePluginDefaults() {
             $defaults["{$prefix}TeamName"] = '';
             $defaults["{$prefix}TeamNextEventID"] = '';
             $defaults["{$prefix}Start"] = '';
+            $defaults["{$prefix}StartTimeValid"] = 'ON';
             $defaults["{$prefix}GameStatus"] = '';
             $defaults["{$prefix}GameDetail"] = '';
             $defaults["{$prefix}OppoID"] = '';

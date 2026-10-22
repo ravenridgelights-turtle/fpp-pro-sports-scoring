@@ -1,6 +1,6 @@
 <?php
 // One command contract for FPP 8-10; optional features are discovered separately.
-const PSS_VERSION = '2026.10.21.1';
+const PSS_VERSION = '2026.10.21.2';
 
 function pss_fppVersion() {
     return function_exists('getFPPVersion') ? (string)getFPPVersion() : 'Unknown';
